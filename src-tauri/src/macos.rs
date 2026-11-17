@@ -977,13 +977,16 @@ pub mod recording {
     use objc2::runtime::{AnyClass, AnyObject, Bool, ProtocolObject};
     use objc2::{msg_send, MainThreadMarker, MainThreadOnly};
     use objc2_app_kit::{
-        NSBackingStoreType, NSEvent, NSEventMask, NSEventModifierFlags, NSPanel, NSPasteboard,
-        NSScreenSaverWindowLevel, NSWindowCollectionBehavior, NSWindowStyleMask,
+        NSAppearance, NSAppearanceCustomization, NSAppearanceNameDarkAqua, NSBackingStoreType, NSEvent, NSEventMask,
+        NSEventModifierFlags, NSPanel, NSPasteboard, NSScreenSaverWindowLevel, NSView, NSVisualEffectBlendingMode,
+        NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView, NSWindowCollectionBehavior, NSWindowStyleMask,
     };
-    use objc2_foundation::{NSArray, NSString, NSURL};
+    use objc2_core_graphics::CGPath;
+    use objc2_foundation::{NSArray, NSPoint, NSRect, NSSize, NSString, NSURL};
     use tauri::{AppHandle, WebviewWindow};
 
     use super::{make_panel, ns_window, primary_height, to_cocoa};
+    use crate::recording::setup::GlassPiece;
 
     /// The recorder's webview panels.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1298,6 +1301,192 @@ pub mod recording {
     pub fn bubble_window_number(_mtm: MainThreadMarker) -> Option<u32> {
         BUBBLE.with(|slot| {
             let number = slot.borrow().as_ref()?.panel.windowNumber();
+            u32::try_from(number).ok().filter(|n| *n > 0)
+        })
+    }
+
+    // ------------------------------------------------------------------ the bar's backdrop
+    //
+    // The bar window is exactly as large as its glass and sits over the live screen, where the
+    // page's `backdrop-filter` finds nothing to blur and its shadow falls outside the window. A
+    // native panel under it does both, as the overlay's frozen frame does for the capture
+    // toolbar: the dark HUD material blurs and dims the screen (white arrives at 165, black at
+    // 24, close to the kit's 158 and 0), the page's glass tint lies over it, and the kit's
+    // shadow and outer ring are drawn around it. The panel lets every click through, so the
+    // room it takes for the shadow takes no clicks from the app below.
+
+    /// Room around the bar window for the shadows: `--shadow-float` reaches its 12-point offset
+    /// and its 32-point blur below the glass.
+    const BACKDROP_ROOM: f64 = 48.0;
+    /// The kit's glass shadows (`--shadow-float` and `--shadow-small` in `src/styles/tokens.css`),
+    /// each as a downward offset, a CSS blur radius and an opacity.
+    const SHADOW_FLOAT: [(f64, f64, f32); 2] = [(12.0, 32.0, 0.34), (2.0, 8.0, 0.22)];
+    const SHADOW_SMALL: [(f64, f64, f32); 2] = [(4.0, 14.0, 0.30), (1.0, 3.0, 0.20)];
+    /// The opacity of the edge's outer ring (`--edge-outer`), which draws the outline on white.
+    const EDGE_OUTER: f32 = 0.55;
+
+    thread_local! {
+        /// The glass under the bar window, made on the main thread the first time the bar shows.
+        static BACKDROP: RefCell<Option<Retained<NSPanel>>> = const { RefCell::new(None) };
+    }
+
+    fn make_backdrop(mtm: MainThreadMarker) -> Retained<NSPanel> {
+        let style = NSWindowStyleMask::Borderless | NSWindowStyleMask::NonactivatingPanel;
+        let panel = NSPanel::initWithContentRect_styleMask_backing_defer(
+            NSPanel::alloc(mtm),
+            NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(1.0, 1.0)),
+            style,
+            NSBackingStoreType::Buffered,
+            false,
+        );
+        // SAFETY: the panel is owned by `Retained`, so closing must not release it as well.
+        unsafe { panel.setReleasedWhenClosed(false) };
+        // One level under the bars, so the backdrop is always under its bar and over the target.
+        panel.setLevel(NSScreenSaverWindowLevel + 1);
+        panel.setCollectionBehavior(behaviour());
+        panel.setOpaque(false);
+        // SAFETY: NSColor's clear colour, set as the panel's background so only the glass shows.
+        unsafe {
+            if let Ok(colors) = class(c"NSColor") {
+                let clear: Retained<AnyObject> = msg_send![colors, clearColor];
+                let _: () = msg_send![&*panel, setBackgroundColor: &*clear];
+            }
+        }
+        panel.setHasShadow(false);
+        panel.setIgnoresMouseEvents(true);
+        panel.setHidesOnDeactivate(false);
+        // The kit's glass is dark in either system appearance, so the material is too.
+        // SAFETY: AppKit's constant for the dark appearance's name.
+        if let Some(dark) = NSAppearance::appearanceNamed(unsafe { NSAppearanceNameDarkAqua }) {
+            panel.setAppearance(Some(&dark));
+        }
+        if let Some(view) = panel.contentView() {
+            view.setWantsLayer(true);
+        }
+        panel
+    }
+
+    /// The kit's shadow and the edge's outer ring for a piece of glass at `rect` (in `host`'s
+    /// bottom-up coordinates), as layers of `host`. Each shadow is cast by its path alone, so it
+    /// needs no visible layer; the material over the piece covers the part under the glass.
+    ///
+    /// # Safety
+    ///
+    /// `host` must be a CALayer, used on the main thread.
+    unsafe fn cast_shadow(host: &AnyObject, bounds: NSRect, rect: NSRect, radius: f64, small: bool, hairline: f64) {
+        let Ok(layers) = class(c"CALayer") else {
+            return;
+        };
+        // SAFETY: `radius` is at most half the shorter side (`setup::glass_pieces`), which
+        // CGPathCreateWithRoundedRect asks for; the path is retained by every layer it is set on.
+        let path = unsafe { CGPath::with_rounded_rect(rect, radius, radius, std::ptr::null()) };
+        for (dy, blur, opacity) in if small { SHADOW_SMALL } else { SHADOW_FLOAT } {
+            // SAFETY: a new CALayer and its own setters; a CSS blur radius is twice the layer's.
+            unsafe {
+                let layer: Retained<AnyObject> = msg_send![layers, layer];
+                let _: () = msg_send![&*layer, setFrame: bounds];
+                let _: () = msg_send![&*layer, setShadowPath: &*path];
+                let _: () = msg_send![&*layer, setShadowOpacity: opacity];
+                let _: () = msg_send![&*layer, setShadowRadius: blur / 2.0];
+                let _: () = msg_send![&*layer, setShadowOffset: NSSize::new(0.0, -dy)];
+                let _: () = msg_send![host, addSublayer: &*layer];
+            }
+        }
+        let ring = NSRect::new(
+            NSPoint::new(rect.origin.x - hairline, rect.origin.y - hairline),
+            NSSize::new(rect.size.width + 2.0 * hairline, rect.size.height + 2.0 * hairline),
+        );
+        // SAFETY: a new CALayer whose border (black by default) is the ring.
+        unsafe {
+            let layer: Retained<AnyObject> = msg_send![layers, layer];
+            let _: () = msg_send![&*layer, setFrame: ring];
+            let _: () = msg_send![&*layer, setCornerRadius: radius + hairline];
+            let _: () = msg_send![&*layer, setBorderWidth: hairline];
+            let _: () = msg_send![&*layer, setOpacity: EDGE_OUTER];
+            let _: () = msg_send![host, addSublayer: &*layer];
+        }
+    }
+
+    /// Puts the glass under the bar window at `frame` (global top-left points): for each piece
+    /// (in points from the window's top-left corner) the material blurs the screen behind it and
+    /// the kit's shadow and outer ring sit around it.
+    pub fn backdrop_show(bar: &WebviewWindow, frame: LogicalRect, pieces: &[GlassPiece], mtm: MainThreadMarker) {
+        let Some(bar_window) = ns_window(bar, mtm) else {
+            return;
+        };
+        let hairline = 1.0 / bar_window.backingScaleFactor().max(1.0);
+        BACKDROP.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            let panel = slot.get_or_insert_with(|| make_backdrop(mtm));
+            let room = BACKDROP_ROOM;
+            let outer = LogicalRect {
+                x: frame.x - room,
+                y: frame.y - room,
+                width: frame.width + 2.0 * room,
+                height: frame.height + 2.0 * room,
+            };
+            panel.setFrame_display(to_cocoa(outer), false);
+            let Some(view) = panel.contentView() else {
+                return;
+            };
+            for old in view.subviews().iter() {
+                old.removeFromSuperview();
+            }
+            let bounds = view.bounds();
+            let shadows = NSView::initWithFrame(NSView::alloc(mtm), bounds);
+            shadows.setWantsLayer(true);
+            view.addSubview(&shadows);
+            // SAFETY: a layer-backed view's layer is a CALayer.
+            let host: Option<Retained<AnyObject>> = unsafe { msg_send![&*shadows, layer] };
+            for piece in pieces {
+                let r = piece.rect;
+                let rect = NSRect::new(
+                    NSPoint::new(room + r.x, outer.height - room - r.y - r.height),
+                    NSSize::new(r.width, r.height),
+                );
+                if let Some(host) = &host {
+                    // SAFETY: `host` is the shadow view's CALayer, on the main thread.
+                    unsafe { cast_shadow(host, bounds, rect, piece.radius, piece.small_shadow, hairline) };
+                }
+                let glass = NSVisualEffectView::initWithFrame(NSVisualEffectView::alloc(mtm), rect);
+                glass.setMaterial(NSVisualEffectMaterial::HUDWindow);
+                glass.setBlendingMode(NSVisualEffectBlendingMode::BehindWindow);
+                // Active even though the app never is: a bar over another app keeps its blur.
+                glass.setState(NSVisualEffectState::Active);
+                glass.setWantsLayer(true);
+                // SAFETY: the effect view's CALayer; its corner radius clips the blur as well.
+                unsafe {
+                    let layer: Option<Retained<AnyObject>> = msg_send![&*glass, layer];
+                    if let Some(layer) = layer {
+                        let _: () = msg_send![&*layer, setCornerRadius: piece.radius];
+                        let _: () = msg_send![&*layer, setMasksToBounds: Bool::YES];
+                    }
+                }
+                view.addSubview(&glass);
+            }
+            panel.orderFrontRegardless();
+        });
+    }
+
+    /// Lets the bar's window take the mouse (the pointer is over its glass) or pass it to what
+    /// lies below (the pointer is over the stage's empty part).
+    pub fn take_mouse(window: &WebviewWindow, takes: bool, mtm: MainThreadMarker) {
+        if let Some(w) = ns_window(window, mtm) {
+            w.setIgnoresMouseEvents(!takes);
+        }
+    }
+
+    pub fn backdrop_hide(_mtm: MainThreadMarker) {
+        BACKDROP.with(|slot| {
+            if let Some(panel) = slot.borrow().as_ref() {
+                panel.orderOut(None);
+            }
+        });
+    }
+
+    pub fn backdrop_window_number(_mtm: MainThreadMarker) -> Option<u32> {
+        BACKDROP.with(|slot| {
+            let number = slot.borrow().as_ref()?.windowNumber();
             u32::try_from(number).ok().filter(|n| *n > 0)
         })
     }

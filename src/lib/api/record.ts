@@ -193,7 +193,8 @@ export type RecordTick = {
 export type TargetMode = "area" | "window" | "display";
 
 /** A window the setup can record, local to the setup's display. */
-export type SetupWindow = { id: WindowId; title: string | null; appName: string; rect: LogicalRect };
+/** A window the setup can record; `cornerRadius` is the window's own, when the system reports it. */
+export type SetupWindow = { id: WindowId; title: string | null; appName: string; rect: LogicalRect; cornerRadius: number | null };
 
 /** The setup surface's state (`record://setup`): what the take will record. */
 export type RecordSetup = {
@@ -241,8 +242,22 @@ export type SetupUpdate = {
 };
 
 /** Which side of the bar its popover hangs on; the page draws the bar at the other edge of its
- * window. */
-export type BarLayout = { popoverSide: "below" | "above" };
+ * window, which is a stage of `width` × `height` points: the bar and, on the popover's side, the
+ * room for whatever hangs from it, so a popover opens without the window moving
+ * (`record://bar-layout` too). */
+export type BarLayout = { popoverSide: "below" | "above"; width: number; height: number };
+
+/** How the bar page draws its glass, so the core lays the native blur and shadow under it: the
+ * side it lays the bar out for, the bar's corner radius and, for what hangs from it, its corner
+ * radius, its distance from the window's right edge and whether it casts the kit's small shadow
+ * instead of the floating one. */
+export type BarGlass = {
+  side: "below" | "above";
+  barRadius: number;
+  popoverRadius: number;
+  popoverRight: number;
+  popoverSmall: boolean;
+};
 
 /** The webcam bubble (`record://bubble`), in global points. */
 export type BubbleState = {
@@ -298,6 +313,7 @@ export const RECORD_CLICK = "record://click";
 export const RECORD_KEYS = "record://keys";
 export const RECORD_POINTER = "record://pointer";
 export const RECORD_TRIM = "record://trim";
+export const RECORD_BAR_LAYOUT = "record://bar-layout";
 
 /** The URL scheme that serves recordings, their frames and their waveforms
  * (`glimpsfy-recording://file/<id>`; `http://glimpsfy-recording.localhost/file/<id>` on Windows). */
@@ -341,9 +357,14 @@ export function record_setup_close(): Promise<void> {
   return call("record_setup_close");
 }
 
-/** The bar page measured its bar and its open popover; the core places the window. */
-export function record_bar_fit(bar: { width: number; height: number }, popover: { width: number; height: number } | null): Promise<BarLayout> {
-  return call("record_bar_fit", { bar, popover });
+/** The bar page measured its bar and its open popover; the core places the window and the
+ * glass under it. */
+export function record_bar_fit(
+  bar: { width: number; height: number },
+  popover: { width: number; height: number } | null,
+  glass: BarGlass,
+): Promise<BarLayout> {
+  return call("record_bar_fit", { bar, popover, glass });
 }
 
 // ------------------------------------------------------------------------------- the take
@@ -471,6 +492,12 @@ export function onRecordExportProgress(handler: (progress: ExportProgress) => vo
 
 export function onRecordSetup(handler: (setup: RecordSetup | null) => void) {
   return on<RecordSetup | null>(RECORD_SETUP, handler);
+}
+
+/** To the bar window only: the bar belongs on the other side of its stage, and the window waits
+ * until the page has laid it out there and fitted it again. */
+export function onRecordBarLayout(handler: (layout: BarLayout) => void) {
+  return on<BarLayout>(RECORD_BAR_LAYOUT, handler);
 }
 
 export function onRecordLevels(handler: (levels: MeterLevels) => void) {

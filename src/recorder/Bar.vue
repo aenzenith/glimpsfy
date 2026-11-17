@@ -5,7 +5,14 @@
 // it (a popover, a device menu, a failure sentence or a tooltip): the page measures both and calls
 // `record_bar_fit`, and the core sizes and places the window and says on which side the popover
 // hangs. The bar keeps the window's right edge, so it grows to the left and Record and Stop keep
-// their place in every language.
+// their place in every language. The window sits over the live screen, where `backdrop-filter`
+// blurs nothing and a shadow falls outside the window, so the page also reports how its glass is
+// drawn and the core lays a native blur, the kit's shadow and the outer ring under it.
+//
+// The window is a stage with room for whatever hangs from the bar, so opening a popover or a tip
+// never moves or grows it, and the core shows it only once the page lays the bar out for the
+// side it chose (`record://bar-layout`). A popover that closes leaves the page only after the
+// core took its native glass away, so no blur shows for a moment with nothing over it.
 //
 // Tooltips are drawn by this page in the popover's place instead of the kit's `g-tipwrap`, because
 // a tip outside the bar would fall outside the window and never show.
@@ -16,6 +23,7 @@ import KeyCaps from "../components/KeyCaps.vue";
 import { on } from "../lib/api/core";
 import { permissions_open_settings, permissions_request, permissions_status, type Permissions, type PermissionState } from "../lib/api/permissions";
 import {
+  onRecordBarLayout,
   onRecordLevels,
   onRecordSetup,
   onRecordState,
@@ -34,6 +42,8 @@ import {
   record_setup_update,
   record_start,
   record_stop,
+  type BarGlass,
+  type BarLayout,
   type MeterLevels,
   type RecordingDevices,
   type RecordingState,
@@ -61,6 +71,8 @@ type Popover = "more" | "mic" | "cam" | "permMic" | "permCam" | "error";
 const GAP = 8;
 /** The kit's tooltip delay. */
 const TIP_DELAY = 500;
+/** The kit's glass that casts `--shadow-small` instead of `--shadow-float` (`components.css`). */
+const SMALL_SHADOW = '.g-tip, .g-size, .g-hint, .g-tag, .g-glass[data-material="strong"]';
 
 const setup = ref<RecordSetup | null>(null);
 const state = ref<RecordingState>({ kind: "idle" });
@@ -71,6 +83,8 @@ const levels = shallowRef<MeterLevels>({ microphones: {}, system: null });
 const popover = ref<Popover | null>(null);
 const problem = ref("");
 const side = ref<"below" | "above">("below");
+/** The bar window's size as the core made it, 0 until it has. */
+const stage = reactive({ width: 0, height: 0 });
 const starting = ref(false);
 const stopping = ref(false);
 
@@ -432,7 +446,8 @@ watch(
 
 // -------------------------------------------------------------------------------- tooltips
 
-const tip = shallowRef<{ text: string; keys: string; el: HTMLElement } | null>(null);
+type Tip = { text: string; keys: string; el: HTMLElement };
+const tip = shallowRef<Tip | null>(null);
 let tipTimer = 0;
 let tipFor: HTMLElement | null = null;
 
@@ -471,6 +486,31 @@ function onFocusIn(event: FocusEvent): void {
 
 const hanging = computed(() => (view.value ? (popover.value ?? (tip.value ? "tip" : null)) : null));
 
+/** What hangs from the bar as the page draws it. It follows `hanging` at once when something
+ * opens, and only after the core has taken the native glass away when it closes or changes. */
+const drawn = shallowRef<{ kind: string; tip: Tip | null } | null>(null);
+/** How many closing fits run; while one does, the page reports no popover. */
+let leaving = 0;
+let drawTurn = 0;
+
+async function redraw(): Promise<void> {
+  const turn = ++drawTurn;
+  const kind = hanging.value;
+  const nowTip = kind === "tip" ? tip.value : null;
+  const was = drawn.value;
+  if (was?.kind === kind && was.tip === nowTip) return;
+  if (was) {
+    leaving++;
+    try {
+      await fit();
+    } finally {
+      leaving--;
+    }
+    if (turn !== drawTurn) return;
+  }
+  drawn.value = kind ? { kind, tip: nowTip } : null;
+}
+
 const popStyle = computed(() => ({
   right: `${geom.popRight}px`,
   top: side.value === "below" ? `${geom.barH + GAP}px` : "auto",
@@ -483,11 +523,12 @@ function anchorOf(kind: string | null): HTMLElement | null {
   if (!bar) return null;
   if (kind === "mic" || kind === "permMic") return bar.querySelector<HTMLElement>('[data-id="mic"]');
   if (kind === "cam" || kind === "permCam") return bar.querySelector<HTMLElement>('[data-id="camera"]');
-  if (kind === "tip") return tip.value?.el ?? null;
+  if (kind === "tip") return drawn.value?.tip?.el ?? null;
   return null;
 }
 
 let lastFit = "";
+let fitDone: Promise<void> = Promise.resolve();
 let layoutFrame = 0;
 
 function layout(): void {
@@ -499,10 +540,10 @@ function layout(): void {
   geom.barH = bar.offsetHeight;
   geom.popW = pop?.offsetWidth ?? 0;
   geom.popH = pop?.offsetHeight ?? 0;
-  const width = Math.max(geom.barW, geom.popW);
+  const width = Math.max(stage.width, geom.barW, geom.popW);
   const barLeft = width - geom.barW;
   let left = width - geom.popW;
-  const kind = hanging.value;
+  const kind = drawn.value?.kind ?? null;
   const anchor = anchorOf(kind);
   if (pop && anchor) {
     const x = barLeft + anchor.getBoundingClientRect().left - bar.getBoundingClientRect().left;
@@ -518,18 +559,44 @@ function scheduleLayout(): void {
   if (!layoutFrame) layoutFrame = window.setTimeout(layout, 0);
 }
 
-async function fit(): Promise<void> {
+/** The corner radius an element draws, in points. */
+function radiusOf(el: Element | null | undefined): number {
+  return el ? parseFloat(getComputedStyle(el).borderTopLeftRadius) || 0 : 0;
+}
+
+/** Reports the bar and what hangs from it; resolves once the core has placed them, at once when
+ * nothing changed since the last report that did. */
+function fit(): Promise<void> {
+  const shown = leaving === 0 && drawn.value && popEl.value ? popEl.value : null;
   const barSize = { width: geom.barW, height: geom.barH };
-  const popSize = popEl.value ? { width: geom.popW, height: geom.popH } : null;
-  const key = JSON.stringify([barSize, popSize]);
-  if (key === lastFit || !barSize.width) return;
+  const popSize = shown ? { width: geom.popW, height: geom.popH } : null;
+  const popGlass = shown?.firstElementChild;
+  const glass: BarGlass = {
+    side: side.value,
+    barRadius: radiusOf(barEl.value?.firstElementChild),
+    popoverRadius: radiusOf(popGlass),
+    popoverRight: shown ? geom.popRight : 0,
+    popoverSmall: popGlass?.matches(SMALL_SHADOW) ?? false,
+  };
+  // A tip that moves to a button of the same width keeps its size, and its glass moves with it.
+  const key = JSON.stringify([barSize, popSize, glass]);
+  if (key === lastFit || !barSize.width) return fitDone;
   lastFit = key;
-  try {
-    const placed = await record_bar_fit(barSize, popSize);
-    side.value = placed.popoverSide;
-  } catch (error) {
+  fitDone = record_bar_fit(barSize, popSize, glass).then(placed, (error) => {
     console.error("The bar window could not be fitted.", error);
-  }
+  });
+  return fitDone;
+}
+
+/** The core's stage for the bar. A new side moves the bar to the stage's other edge, and the
+ * page fits again so the core shows the window; a new width moves what hangs from the bar. */
+function placed(layout: BarLayout): void {
+  if (!layout.width) return;
+  const moved = layout.popoverSide !== side.value || layout.width !== stage.width;
+  side.value = layout.popoverSide;
+  stage.width = layout.width;
+  stage.height = layout.height;
+  if (moved) void nextTick(scheduleLayout);
 }
 
 const observer = new ResizeObserver(() => scheduleLayout());
@@ -545,7 +612,8 @@ watch(
   },
   { flush: "post" },
 );
-watch([hanging, tip], () => nextTick(scheduleLayout));
+watch([hanging, tip], () => void redraw());
+watch(drawn, () => nextTick(scheduleLayout));
 
 // -------------------------------------------------------------------------------- keyboard
 
@@ -628,6 +696,7 @@ onMounted(async () => {
       }),
     );
     stops.push(await onRecordState((next) => void (state.value = next)));
+    stops.push(await onRecordBarLayout(placed));
     stops.push(
       await onRecordTick((tick) => {
         if (tick.id !== take.id && take.id) return;
@@ -698,9 +767,9 @@ const onClicks = (on: boolean) => persist((r) => void (r.highlightClicks = on));
       <ControlBar v-else-if="view === 'control'" v-bind="controlModel" @action="controlAction" />
     </div>
 
-    <div v-if="hanging" ref="popEl" class="r-pop-slot" :style="popStyle">
+    <div v-if="drawn" ref="popEl" class="r-pop-slot" :style="popStyle">
       <OptionsPop
-        v-if="popover === 'more' && setup && rec"
+        v-if="drawn.kind === 'more' && setup && rec"
         :fps="rec.fps"
         :resolution="rec.resolution"
         :output-size="setup.outputSize"
@@ -712,7 +781,7 @@ const onClicks = (on: boolean) => persist((r) => void (r.highlightClicks = on));
         @keys="setShowKeys"
       />
       <DeviceMenu
-        v-else-if="popover === 'mic'"
+        v-else-if="drawn.kind === 'mic'"
         :title="t('record.mic.menu')"
         :devices="devices?.microphones ?? []"
         :chosen="chosenMic"
@@ -721,7 +790,7 @@ const onClicks = (on: boolean) => persist((r) => void (r.highlightClicks = on));
         @pick="pickMic"
       />
       <DeviceMenu
-        v-else-if="popover === 'cam'"
+        v-else-if="drawn.kind === 'cam'"
         :title="t('record.camera.menu')"
         :devices="devices?.cameras ?? []"
         :chosen="chosenCamera"
@@ -730,21 +799,21 @@ const onClicks = (on: boolean) => persist((r) => void (r.highlightClicks = on));
         @pick="pickCamera"
       />
       <PermissionPop
-        v-else-if="popover === 'permMic'"
+        v-else-if="drawn.kind === 'permMic'"
         device="microphone"
         @open="openPrivacy('microphone')"
         @without="withoutDevice('microphone')"
       />
-      <PermissionPop v-else-if="popover === 'permCam'" device="camera" @open="openPrivacy('camera')" @without="withoutDevice('camera')" />
-      <div v-else-if="popover === 'error'" class="g-pop g-glass r-problem" data-material="strong" role="alert">
+      <PermissionPop v-else-if="drawn.kind === 'permCam'" device="camera" @open="openPrivacy('camera')" @without="withoutDevice('camera')" />
+      <div v-else-if="drawn.kind === 'error'" class="g-pop g-glass r-problem" data-material="strong" role="alert">
         <GIcon name="warning" :size="16" class="r-warn" />
         <p class="r-problem-text">{{ problem }}</p>
         <button type="button" class="g-btn" data-size="small" :aria-label="t('record.error.dismiss')" @click="popover = null">
           <GIcon name="close" :size="16" />
         </button>
       </div>
-      <div v-else-if="tip" class="g-tip" role="tooltip">
-        {{ tip.text }}<KeyCaps v-if="tip.keys" :caps="[tip.keys]" />
+      <div v-else-if="drawn.kind === 'tip' && drawn.tip" class="g-tip" role="tooltip">
+        {{ drawn.tip.text }}<KeyCaps v-if="drawn.tip.keys" :caps="[drawn.tip.keys]" />
       </div>
     </div>
   </div>
@@ -752,6 +821,12 @@ const onClicks = (on: boolean) => persist((r) => void (r.highlightClicks = on));
 
 <style>
 .r-bar-page { position: fixed; inset: 0; overflow: hidden; }
+/* The core draws the shadow and the outer ring under this window's glass (`record_bar_fit`); drawn
+   here too, they would darken twice wherever the window has room beside the glass. */
+.r-bar-page > :is(.r-bar-slot, .r-pop-slot) > :is(.g-bar, .g-pop, .g-tip) {
+  box-shadow: inset 0 0 0 var(--hairline) var(--edge-inner), inset 0 1px 0 0 var(--edge-top),
+    inset 0 -1px 0 0 var(--edge-bottom), inset 0 0 12px 0 var(--edge-glow);
+}
 .r-bar-slot { position: absolute; right: 0; top: 0; display: flex; width: max-content; }
 .r-bar-slot[data-side="above"] { top: auto; bottom: 0; }
 .r-pop-slot { position: absolute; display: flex; width: max-content; }

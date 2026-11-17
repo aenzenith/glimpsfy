@@ -14,7 +14,7 @@ use tauri::AppHandle;
 
 use crate::commands::error::{CommandError, CommandResult, ErrorCode};
 use crate::recording::media::{self, RecordingInfo, StartFormat, TrimSource};
-use crate::recording::setup::{BarLayout, RecordSetup, SetupRequest, SetupUpdate, Size};
+use crate::recording::setup::{BarGlass, BarLayout, RecordSetup, SetupRequest, SetupUpdate, Size};
 use crate::recording::{self, BubbleChange, BubbleState, CanvasConfig};
 
 impl From<RecordError> for CommandError {
@@ -70,11 +70,15 @@ pub mod events {
     pub const CLICK: &str = "record://click";
     /// To `rec-canvas` only: a key press as caps. Payload: `{ caps: string[] }`.
     pub const KEYS: &str = "record://keys";
-    /// To `rec-canvas` only, with the keystroke overlay on: the pointer, global, or `null` when it
-    /// left the recorded rectangle.
+    /// To `rec-canvas`, with the keystroke overlay on: the pointer, global, or `null` when it left
+    /// the recorded rectangle. To `rec-target`, while the setup picks a window: the pointer,
+    /// global, or `null` over the bar or off the display.
     pub const POINTER: &str = "record://pointer";
     /// To the trim window only: the recording it shows. Payload: `RecordingInfo`.
     pub const TRIM: &str = "record://trim";
+    /// To `rec-bar` only: the bar belongs on the other side of its stage, and the window waits
+    /// until the page has laid it out there and fits it again. Payload: `BarLayout`.
+    pub const BAR_LAYOUT: &str = "record://bar-layout";
 
     #[derive(Clone, Debug, PartialEq, Serialize)]
     #[serde(rename_all = "camelCase")]
@@ -115,10 +119,11 @@ pub fn record_setup_close(app: AppHandle) {
     recording::close_setup(&app);
 }
 
-/// The bar page measured its bar and its open popover; the window is placed for them.
+/// The bar page measured its bar and its open popover; the window is placed for them, and the
+/// glass under them follows `glass`.
 #[tauri::command]
-pub fn record_bar_fit(app: AppHandle, bar: Size, popover: Option<Size>) -> CommandResult<BarLayout> {
-    recording::fit_bar(&app, bar, popover)
+pub fn record_bar_fit(app: AppHandle, bar: Size, popover: Option<Size>, glass: BarGlass) -> CommandResult<BarLayout> {
+    recording::fit_bar(&app, bar, popover, glass)
 }
 
 // ------------------------------------------------------------------------------- the take

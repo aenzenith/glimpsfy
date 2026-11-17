@@ -43,7 +43,7 @@ use crate::shortcuts::Action;
 use crate::{trace, windows, AppState};
 
 use self::media::Library;
-use self::setup::{BubbleSize, RecordSetup, SetupDisplay, SetupRequest, SetupUpdate, Size, TargetMode};
+use self::setup::{BarGlass, BubbleSize, RecordSetup, SetupDisplay, SetupRequest, SetupUpdate, Size, TargetMode};
 
 pub const TARGET: &str = "rec-target";
 pub const BAR: &str = "rec-bar";
@@ -117,9 +117,14 @@ struct Inner {
     shape: WebcamShape,
     camera_device: Option<String>,
     canvas: Option<CanvasConfig>,
-    /// The bar's last measured sizes, to place it again when the target moves.
-    bar: Option<(Size, Option<Size>)>,
+    /// The bar's last measured sizes and glass, to place it again when the target moves.
+    bar: Option<(Size, Option<Size>, BarGlass)>,
     bar_shown: bool,
+    /// The glass the bar window shows, in global points, empty while it is hidden: the window
+    /// takes the mouse only over it and lets every other click through to what lies below.
+    bar_hit: Vec<LogicalRect>,
+    /// Whether the bar window takes the mouse now.
+    bar_mouse: bool,
     meter: Option<Meter>,
 }
 
@@ -257,10 +262,65 @@ fn show(app: &AppHandle, label: &str, frame: LogicalRect, key: bool, through: bo
     }
 }
 
+/// Shows the bar window at `frame` and, under it, the native glass for `pieces` in the same
+/// turn of the main thread, so the blur and the shadow move with the bar; `through` lets the
+/// clicks pass while the pointer is off the glass.
+fn show_bar(app: &AppHandle, frame: LogicalRect, key: bool, through: bool, pieces: Vec<setup::GlassPiece>) {
+    #[cfg(target_os = "macos")]
+    {
+        let Some(window) = panel(app, BAR) else { return };
+        crate::macos::on_main(app, move |mtm| {
+            crate::macos::recording::show(&window, frame, key, through, mtm);
+            crate::macos::recording::backdrop_show(&window, frame, &pieces, mtm);
+        });
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (pieces, through);
+        show(app, BAR, frame, key, false);
+    }
+}
+
+/// Lets the bar window take the mouse, or pass it to what lies below.
+fn bar_take_mouse(app: &AppHandle, takes: bool) {
+    let Some(window) = app.get_webview_window(BAR) else { return };
+    #[cfg(target_os = "macos")]
+    crate::macos::on_main(app, move |mtm| crate::macos::recording::take_mouse(&window, takes, mtm));
+    #[cfg(not(target_os = "macos"))]
+    let _ = (window, takes);
+}
+
+/// Whether the pointer is over one of `rects` (global points). Off macOS there is no pointer to
+/// read, and the bar always takes the mouse.
+fn pointer_over(rects: &[LogicalRect]) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        let pointer = crate::macos::pointer();
+        rects.iter().any(|r| r.contains(pointer))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = rects;
+        true
+    }
+}
+
+/// Hides a `rec-*` window; its caller holds no lock on the recording's state.
 fn hide(app: &AppHandle, label: &str) {
+    if label == BAR {
+        lock(&state(app).inner).bar_hit.clear();
+    }
     let Some(window) = app.get_webview_window(label) else { return };
     #[cfg(target_os = "macos")]
-    crate::macos::on_main(app, move |mtm| crate::macos::recording::hide(&window, mtm));
+    {
+        let bar = label == BAR;
+        crate::macos::on_main(app, move |mtm| {
+            crate::macos::recording::hide(&window, mtm);
+            if bar {
+                crate::macos::recording::backdrop_hide(mtm);
+            }
+        });
+    }
     #[cfg(not(target_os = "macos"))]
     {
         let _ = app;
@@ -288,6 +348,9 @@ fn own_windows(app: &AppHandle) -> OwnWindows {
             }
             if let Some(n) = crate::macos::recording::bubble_window_number(_mtm) {
                 own.shown.push(WindowId(n));
+            }
+            if let Some(n) = crate::macos::recording::backdrop_window_number(_mtm) {
+                own.hidden.push(WindowId(n));
             }
             own
         }
@@ -397,8 +460,8 @@ fn show_setup(app: &AppHandle) {
     show(app, TARGET, frame, true, false);
     // The bar page shows nothing until it has a setup; it calls `record_bar_fit` then.
     let _ = panel(app, BAR);
-    if let Some((bar, pop)) = bar {
-        let _ = fit_bar(app, bar, pop);
+    if let Some((bar, pop, glass)) = bar {
+        let _ = fit_bar(app, bar, pop, glass);
     }
 }
 
@@ -416,10 +479,14 @@ pub fn update_setup(app: &AppHandle, update: SetupUpdate) -> CommandResult<Recor
             }
         }
     }
+    // The windows are read again on every entry into the window mode and every pick, since the
+    // user may have moved, opened or closed some since the last read.
     let needs_windows = {
         let inner = lock(&rec.inner);
-        let setup = inner.setup.as_ref().ok_or_else(|| CommandError::not_found("no recording setup is open"))?;
-        (update.mode == Some(TargetMode::Window) || update.window_id.is_some()) && setup.windows.is_empty()
+        if inner.setup.is_none() {
+            return Err(CommandError::not_found("no recording setup is open"));
+        }
+        update.mode == Some(TargetMode::Window) || update.window_id.is_some()
     };
     let windows = if needs_windows {
         let backend = app.state::<AppState>().backend.clone();
@@ -433,6 +500,9 @@ pub fn update_setup(app: &AppHandle, update: SetupUpdate) -> CommandResult<Recor
         let mut inner = lock(&rec.inner);
         let setup = inner.setup.as_mut().ok_or_else(|| CommandError::not_found("no recording setup is open"))?;
         if let Some(windows) = windows {
+            // The chosen window follows its new place, or goes when it closed.
+            let chosen = setup.window.as_ref().map(|w| w.id);
+            setup.window = chosen.and_then(|id| windows.iter().find(|w| w.id == id).cloned());
             setup.windows = windows;
         }
         if let Some(mode) = update.mode {
@@ -440,6 +510,11 @@ pub fn update_setup(app: &AppHandle, update: SetupUpdate) -> CommandResult<Recor
                 setup.chip = mode == TargetMode::Display;
             }
             setup.mode = mode;
+        }
+        // The window mode starts with a window chosen, the front one (where the user works), so
+        // the dim shows the target at once and Record is ready; a click picks another.
+        if setup.mode == TargetMode::Window && setup.window.is_none() && update.window_id.is_none() {
+            setup.window = setup.windows.first().cloned();
         }
         if let Some(rect) = update.rect {
             setup.set_area(rect);
@@ -468,8 +543,8 @@ pub fn update_setup(app: &AppHandle, update: SetupUpdate) -> CommandResult<Recor
     };
     emit_setup(app);
     let bar = lock(&rec.inner).bar;
-    if let Some((bar, pop)) = bar {
-        let _ = fit_bar(app, bar, pop);
+    if let Some((bar, pop, glass)) = bar {
+        let _ = fit_bar(app, bar, pop, glass);
     }
     let _ = camera_changed;
     sync_bubble(app);
@@ -497,38 +572,51 @@ pub fn close_setup(app: &AppHandle) {
     emit_bubble(app);
 }
 
-/// Places the bar window for the bar and popover the page measured.
-pub fn fit_bar(app: &AppHandle, bar: Size, pop: Option<Size>) -> CommandResult<setup::BarLayout> {
+/// Places the bar window for the bar and popover the page measured, with the glass under them.
+pub fn fit_bar(app: &AppHandle, bar: Size, pop: Option<Size>, glass: BarGlass) -> CommandResult<setup::BarLayout> {
     let rec = state(app);
     let now = rec.recorder.state();
-    let (frame, side, key) = {
-        let mut inner = lock(&rec.inner);
-        inner.bar = Some((bar, pop));
-        let place = match (&inner.take, &inner.setup) {
-            (Some(take), _) if !matches!(now, RecordingState::Idle | RecordingState::Countdown { .. }) => {
-                Some((take.mode, take.rect, take.display.clone(), false))
-            }
-            (None, Some(setup)) if now == RecordingState::Idle => {
-                setup.global_rect().map(|rect| (setup.mode, rect, setup.display.clone(), !inner.bar_shown))
-            }
-            _ => None,
-        };
-        let Some((mode, rect, display, key)) = place else {
-            // Nothing shows a bar now (the countdown, or no setup).
-            drop(inner);
-            hide(app, BAR);
-            return Ok(setup::BarLayout { popover_side: setup::PopoverSide::Below });
-        };
-        let (frame, side) = setup::place_bar(mode, rect, &display, bar, pop);
-        inner.bar_shown = true;
-        (frame, side, key)
+    let mut inner = lock(&rec.inner);
+    inner.bar = Some((bar, pop, glass));
+    let place = match (&inner.take, &inner.setup) {
+        (Some(take), _) if !matches!(now, RecordingState::Idle | RecordingState::Countdown { .. }) => {
+            Some((take.mode, take.rect, take.display.clone(), false))
+        }
+        (None, Some(setup)) if now == RecordingState::Idle => {
+            setup.global_rect().map(|rect| (setup.mode, rect, setup.display.clone(), !inner.bar_shown))
+        }
+        _ => None,
     };
-    if bar.width <= 0.0 || bar.height <= 0.0 {
+    let Some((mode, rect, display, key)) = place else {
+        // Nothing shows a bar now (the countdown, or no setup).
+        drop(inner);
         hide(app, BAR);
-    } else {
-        show(app, BAR, frame, key, false);
+        return Ok(setup::BarLayout { popover_side: setup::PopoverSide::Below, width: 0.0, height: 0.0 });
+    };
+    let (frame, side) = setup::place_bar(mode, rect, &display, bar, pop);
+    let layout = setup::BarLayout { popover_side: side, width: frame.width, height: frame.height };
+    if side != glass.side {
+        // The page draws the bar at the stage's other edge: shown now, the bar would sit a
+        // popover's height away from its place until the page moved it. The window stays as it
+        // is until the page has laid the bar out for this side and fits it again.
+        drop(inner);
+        let _ = app.emit_to(EventTarget::webview_window(BAR), events::BAR_LAYOUT, layout);
+        return Ok(layout);
     }
-    Ok(setup::BarLayout { popover_side: side })
+    inner.bar_shown = true;
+    if bar.width <= 0.0 || bar.height <= 0.0 {
+        drop(inner);
+        hide(app, BAR);
+        return Ok(layout);
+    }
+    let pieces = setup::glass_pieces(frame, bar, pop, side, glass);
+    inner.bar_hit =
+        pieces.iter().map(|p| LogicalRect { x: frame.x + p.rect.x, y: frame.y + p.rect.y, ..p.rect }).collect();
+    inner.bar_mouse = pointer_over(&inner.bar_hit);
+    // Sent while the state is locked, so a change the watch thread makes next reaches the
+    // window after this one.
+    show_bar(app, frame, key, !inner.bar_mouse, pieces);
+    Ok(layout)
 }
 
 // ------------------------------------------------------------------------------- the bubble
@@ -707,13 +795,28 @@ fn watch(app: &AppHandle) {
         let mut was_down = false;
         let mut controls = false;
         let mut last_pointer: Option<LogicalPoint> = None;
+        // What the target was last told about the pointer while a window is picked.
+        let mut last_pick: Option<Option<LogicalPoint>> = None;
+        let mut pace = Duration::from_millis(30);
         loop {
-            std::thread::sleep(Duration::from_millis(30));
-            let (open, bubble, canvas, keys) = {
+            std::thread::sleep(pace);
+            let (open, bubble, canvas, keys, picking) = {
                 let inner = lock(&state(&app).inner);
                 let keys = inner.take.as_ref().is_some_and(|t| t.config.keystrokes.enabled);
-                (inner.setup.is_some() || inner.take.is_some(), inner.bubble.clone(), inner.canvas.clone(), keys)
+                let picking = match (&inner.setup, &inner.take) {
+                    (Some(setup), None) if setup.mode == TargetMode::Window => Some(setup.display.frame),
+                    _ => None,
+                };
+                (
+                    inner.setup.is_some() || inner.take.is_some(),
+                    inner.bubble.clone(),
+                    inner.canvas.clone(),
+                    keys,
+                    picking,
+                )
             };
+            // The outline follows the pointer at the display's pace while a window is picked.
+            pace = Duration::from_millis(if picking.is_some() { 16 } else { 30 });
             if !open {
                 state(&app).watching.store(false, Ordering::SeqCst);
                 if controls {
@@ -725,6 +828,39 @@ fn watch(app: &AppHandle) {
             let (pointer, down) = (crate::macos::pointer(), crate::macos::recording::left_button_down());
             #[cfg(not(target_os = "macos"))]
             let (pointer, down) = (LogicalPoint { x: 0.0, y: 0.0 }, false);
+
+            // While a window is picked, the target outlines the window under the pointer. Its web
+            // view gets no mouse moves while the bar holds the keyboard, so the pointer comes
+            // from here; over the bar's glass or off the display there is none.
+            match picking {
+                Some(display) => {
+                    let over_bar = lock(&state(&app).inner).bar_hit.iter().any(|r| r.contains(pointer));
+                    let at = (!over_bar && display.contains(pointer)).then_some(pointer);
+                    let moved = match (at, last_pick.flatten()) {
+                        (Some(a), Some(b)) => (a.x - b.x).abs() + (a.y - b.y).abs() >= 1.0,
+                        _ => last_pick != Some(at),
+                    };
+                    if moved {
+                        last_pick = Some(at);
+                        let _ = app.emit_to(EventTarget::webview_window(TARGET), events::POINTER, at);
+                    }
+                }
+                None => last_pick = None,
+            }
+
+            // The bar's window takes the mouse only over its glass; with a button down nothing
+            // changes, so a press keeps its window until it is let go.
+            #[cfg(target_os = "macos")]
+            {
+                let mut inner = lock(&state(&app).inner);
+                if !inner.bar_hit.is_empty() && !down {
+                    let over = inner.bar_hit.iter().any(|r| r.contains(pointer));
+                    if over != inner.bar_mouse {
+                        inner.bar_mouse = over;
+                        bar_take_mouse(&app, over);
+                    }
+                }
+            }
 
             if let Some(bubble) = bubble.filter(|b| b.visible) {
                 let over = bubble.rect.contains(pointer);
@@ -1050,8 +1186,8 @@ fn go_live(app: &AppHandle, id: &RecordingId) {
     // The bar page fits the control bar when its size differs from the last one it reported; when
     // it is the same the page stays silent, so the last sizes place the window here.
     let bar = lock(&rec.inner).bar;
-    if let Some((bar, pop)) = bar {
-        let _ = fit_bar(app, bar, pop);
+    if let Some((bar, pop, glass)) = bar {
+        let _ = fit_bar(app, bar, pop, glass);
     }
     ticks(app, id.clone());
 }

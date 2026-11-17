@@ -3,7 +3,9 @@
 // display's local points. During the setup it draws what the take will record and lets the user
 // change it: an area with its edge, handles and size label (drag inside to move it, a handle to
 // resize it, outside to draw a new one), the windows to pick from, or the whole display with its
-// chip. During the countdown it draws the red frame, the ring and Cancel, and it owns the keyboard
+// chip. Picking a window, the window under the pointer carries the outline and the chosen one is
+// the clear part of the dim; the pointer comes from the core, because this page gets no mouse
+// moves while the bar holds the keyboard. During the countdown it draws the red frame, the ring and Cancel, and it owns the keyboard
 // (Esc cancels, Return starts at once). During the take it draws only the frame, dashed and
 // neutral while paused; the core makes the window click-through then. While the webcam bubble is
 // dragged it shows the four corner slots it can snap to.
@@ -12,6 +14,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import GIcon from "../components/GIcon.vue";
 import {
   onRecordBubble,
+  onRecordPointer,
   onRecordSetup,
   onRecordState,
   record_bubble_state,
@@ -122,7 +125,7 @@ const hovered = computed<SetupWindow | null>(() => {
 const hole = computed<Rect>(() => {
   const s = setup.value;
   if (!s) return NO_HOLE;
-  if (s.mode === "window") return hovered.value?.rect ?? s.window?.rect ?? NO_HOLE;
+  if (s.mode === "window") return s.window?.rect ?? NO_HOLE;
   return area.value ?? NO_HOLE;
 });
 
@@ -166,7 +169,8 @@ const tagAt = computed(() => {
   return { left: `${r.x}px`, top: `${Math.max(visible.value.y + 4, r.y - 26)}px` };
 });
 
-const windowRadius = computed(() => (mode.value === "window" ? `${WINDOW_RADIUS}px` : ""));
+const radiusOf = (w: SetupWindow | null | undefined) => `${w?.cornerRadius ?? WINDOW_RADIUS}px`;
+const windowRadius = computed(() => (mode.value === "window" ? radiusOf(setup.value?.window) : ""));
 
 // ------------------------------------------------------------------------------- countdown
 
@@ -385,6 +389,13 @@ onMounted(async () => {
     );
     stops.push(await onRecordState((next) => void (state.value = next)));
     stops.push(
+      await onRecordPointer((global) => {
+        const frame = setup.value?.display.frame;
+        if (mode.value !== "window" || !frame) return;
+        pointer.value = global ? { x: global.x - frame.x, y: global.y - frame.y } : null;
+      }),
+    );
+    stops.push(
       await onRecordBubble((next) => {
         heardBubble = true;
         bubble.value = next;
@@ -424,7 +435,7 @@ onUnmounted(() => {
       </template>
       <template v-else-if="mode === 'window'">
         <div class="g-dim" :style="{ ...box(hole), borderRadius: windowRadius }" />
-        <div v-if="setup.window" class="r-target" :style="{ ...box(setup.window.rect), borderRadius: windowRadius }" />
+        <div v-if="hovered" class="r-win" :style="{ ...box(hovered.rect), '--r-radius': radiusOf(hovered) }" />
       </template>
       <template v-else>
         <div class="g-dim" :style="box(hole)" />
@@ -490,9 +501,10 @@ onUnmounted(() => {
 .r-target-page .g-dim { box-shadow: 0 0 0 200vmax var(--dim); }
 .r-abs { position: absolute; }
 
-/* targets: a window and a whole display */
-.r-target { position: absolute; pointer-events: none; background: var(--window-tint);
-  box-shadow: 0 0 0 2px var(--iris), inset 0 0 0 1px var(--selection-inner), 0 0 24px var(--iris-glow); }
+/* targets: the window under the pointer, as the capture overlay outlines it, and a whole display */
+.r-win { position: absolute; pointer-events: none; border-radius: var(--r-radius); background: var(--window-tint); }
+.r-win::after { content: ""; position: absolute; inset: -2px; border: 2px solid var(--iris); border-radius: calc(var(--r-radius) + 2px);
+  box-shadow: inset 0 0 0 1px var(--selection-inner), 0 0 24px var(--iris-glow); }
 .r-target-display { position: absolute; inset: 0; pointer-events: none;
   box-shadow: inset 0 0 0 3px var(--iris), inset 0 0 0 4px var(--selection-inner); }
 .r-chip { position: absolute; left: 50%; top: 50%; transform: translate(-50%, calc(-50% - 20px)); pointer-events: none; }

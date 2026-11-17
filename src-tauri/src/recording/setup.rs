@@ -17,6 +17,12 @@ use crate::settings::{self, Recording};
 
 /// The gap between a bar and the area, and between a bar and its popover.
 const GAP: f64 = 8.0;
+/// The room a side needs for the bar's popovers (the options card is the tallest) to open there.
+const POPOVER_ROOM: f64 = 280.0;
+/// The bar window's room for what hangs from the bar, and its least width: a glass popover is
+/// 296 points wide (`--pop-w`), a device menu 300.
+const STAGE_HANG: f64 = 480.0;
+const STAGE_WIDTH: f64 = 320.0;
 /// A display's bar sits this far above the Dock, or above the bottom when the Dock hides.
 const ABOVE_DOCK: f64 = 16.0;
 const ABOVE_BOTTOM: f64 = 24.0;
@@ -57,6 +63,8 @@ pub struct SetupWindow {
     pub app_name: String,
     /// Local to the setup's display.
     pub rect: LogicalRect,
+    /// The window's own corner radius, when the system reports one.
+    pub corner_radius: Option<f64>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -139,17 +147,44 @@ pub struct Size {
     pub height: f64,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum PopoverSide {
+    #[default]
     Below,
     Above,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BarLayout {
     pub popover_side: PopoverSide,
+    /// The stage's size: the page measures where a popover hangs inside it.
+    pub width: f64,
+    pub height: f64,
+}
+
+/// How the bar page draws its glass: the side it lays the bar out for (the bar keeps the stage's
+/// other edge), the bar's corner radius and, for what hangs from the bar, its corner radius, its
+/// distance from the window's right edge and whether it casts the kit's small shadow (a tooltip,
+/// a strong card) instead of the floating one.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BarGlass {
+    pub side: PopoverSide,
+    pub bar_radius: f64,
+    pub popover_radius: f64,
+    pub popover_right: f64,
+    pub popover_small: bool,
+}
+
+/// One piece of glass in the bar window, in points from the window's top-left corner; the
+/// native backdrop blurs the screen under it and casts its shadow.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GlassPiece {
+    pub rect: LogicalRect,
+    pub radius: f64,
+    pub small_shadow: bool,
 }
 
 pub fn to_global(rect: LogicalRect, display: &SetupDisplay) -> LogicalRect {
@@ -194,6 +229,7 @@ pub fn windows_on(all: &[WindowInfo], display: &SetupDisplay) -> Vec<SetupWindow
             title: w.title.clone(),
             app_name: w.app_name.clone(),
             rect: to_local(w.bounds, display),
+            corner_radius: w.corner_radius,
         })
         .collect()
 }
@@ -231,7 +267,12 @@ impl RecordSetup {
         microphone: bool,
     ) -> RecordSetup {
         let area = Some(rect.map(|r| clamp_area(r, &display)).unwrap_or_else(|| default_area(&display)));
-        let window = window.and_then(|id| windows.iter().find(|w| w.id == id).cloned());
+        // A window setup starts with the asked window, or the front one.
+        let window = match window {
+            Some(id) => windows.iter().find(|w| w.id == id).cloned(),
+            None if mode == TargetMode::Window => windows.first().cloned(),
+            None => None,
+        };
         let mut setup = RecordSetup {
             mode,
             chip: mode == TargetMode::Display,
@@ -290,7 +331,14 @@ impl RecordSetup {
 /// Where the bar window goes for a bar of `bar` with an optional popover of `pop`, beside the
 /// recorded `target` (global): a display's bar sits centred above the Dock; an area's or a
 /// window's bar is right-aligned under it, then above it, then beside it, then inside its
-/// corner, and it never shrinks. The popover hangs away from the area, so it never covers it.
+/// corner, and it never shrinks.
+///
+/// The window is a stage that holds the bar and, on one side of it, the room for everything that
+/// hangs from it (`STAGE_HANG` points, or up to the screen's edge), `STAGE_WIDTH` points wide at
+/// least. The side and the stage come from the bar alone, so a popover or a tooltip opens inside
+/// a window that neither moves nor grows: a window that grew upward would show the bar too high
+/// until WebKit drew it again. Popovers hang away from the area when the screen has room there
+/// and over it when it has not. The stage's empty part lets clicks through (`watch`).
 pub fn place_bar(
     mode: TargetMode,
     target: LogicalRect,
@@ -300,8 +348,25 @@ pub fn place_bar(
 ) -> (LogicalRect, PopoverSide) {
     let v = display.visible;
     let f = display.frame;
-    let hang = pop.map(|p| GAP + p.height).unwrap_or(0.0);
-    let width = bar.width.max(pop.map(|p| p.width).unwrap_or(0.0));
+    // The preferred side when it has room for a popover, the other when that one has, and else
+    // the side with more room.
+    let side_for = |top: f64, preferred: PopoverSide| {
+        let room = |side: PopoverSide| match side {
+            PopoverSide::Below => v.y + v.height - (top + bar.height),
+            PopoverSide::Above => top - v.y,
+        };
+        let other = match preferred {
+            PopoverSide::Below => PopoverSide::Above,
+            PopoverSide::Above => PopoverSide::Below,
+        };
+        if room(preferred) >= POPOVER_ROOM {
+            preferred
+        } else if room(other) >= POPOVER_ROOM || room(other) > room(preferred) {
+            other
+        } else {
+            preferred
+        }
+    };
     let (bar_right, bar_top, side) = if mode == TargetMode::Display {
         let dock_hidden = (v.y + v.height - (f.y + f.height)).abs() < 1.0;
         let bottom = if dock_hidden { f.y + f.height - ABOVE_BOTTOM } else { v.y + v.height - ABOVE_DOCK };
@@ -311,29 +376,70 @@ pub fn place_bar(
         let right = target.x + target.width;
         let below = target.y + target.height + GAP;
         let above = target.y - GAP - bar.height;
-        if below + bar.height + hang <= v.y + v.height {
-            (right, below, PopoverSide::Below)
-        } else if above - hang >= v.y {
-            (right, above, PopoverSide::Above)
+        if below + bar.height <= v.y + v.height {
+            (right, below, side_for(below, PopoverSide::Below))
+        } else if above >= v.y {
+            (right, above, side_for(above, PopoverSide::Above))
         } else if right + GAP + bar.width <= v.x + v.width {
-            // Beside, level with the area's bottom; the popover hangs where there is room.
+            // Beside, level with the area's bottom.
             let top = (target.y + target.height - bar.height).max(v.y);
-            let side = if top + bar.height + hang <= v.y + v.height { PopoverSide::Below } else { PopoverSide::Above };
-            (right + GAP + bar.width, top, side)
+            (right + GAP + bar.width, top, side_for(top, PopoverSide::Below))
         } else {
             let top = target.y + target.height - GAP - bar.height;
-            let side = if top - hang >= v.y { PopoverSide::Above } else { PopoverSide::Below };
-            (right - GAP, top, side)
+            (right - GAP, top, side_for(top, PopoverSide::Above))
         }
     };
+    let room = match side {
+        PopoverSide::Below => v.y + v.height - (bar_top + bar.height),
+        PopoverSide::Above => bar_top - v.y,
+    };
+    // A popover taller than the stage's room makes it grow, once, as far as the screen allows.
+    let wanted = STAGE_HANG.max(pop.map(|p| GAP + p.height).unwrap_or(0.0));
+    let hang = wanted.min(room).max(0.0);
     let height = bar.height + hang;
     let top = match side {
         PopoverSide::Below => bar_top,
         PopoverSide::Above => bar_top - hang,
     };
+    // Wider to the left than the bar, as far as the screen goes, so the bar keeps the right edge.
+    let wanted = bar.width.max(STAGE_WIDTH).max(pop.map(|p| p.width).unwrap_or(0.0));
+    let width = wanted.min(bar_right - v.x).max(bar.width);
     let left = (bar_right - width).clamp(v.x, (v.x + v.width - width).max(v.x));
     let top = top.clamp(f.y, (f.y + f.height - height).max(f.y));
     (LogicalRect { x: left.round(), y: top.round(), width: width.ceil(), height: height.ceil() }, side)
+}
+
+/// Where the bar page draws its glass inside the stage `place_bar` made (`frame`): the bar keeps
+/// the stage's right edge and its edge away from the popover's side, and the popover hangs `GAP`
+/// from the bar, `popover_right` points in from the right edge (`Bar.vue` lays them out the same
+/// way). In points from the stage's top-left corner.
+pub fn glass_pieces(
+    frame: LogicalRect,
+    bar: Size,
+    pop: Option<Size>,
+    side: PopoverSide,
+    glass: BarGlass,
+) -> Vec<GlassPiece> {
+    let (width, height) = (frame.width, frame.height);
+    let piece = |x: f64, y: f64, size: Size, radius: f64, small_shadow: bool| GlassPiece {
+        rect: LogicalRect { x, y, width: size.width, height: size.height },
+        radius: radius.clamp(0.0, size.width.min(size.height) / 2.0),
+        small_shadow,
+    };
+    let bar_top = match side {
+        PopoverSide::Below => 0.0,
+        PopoverSide::Above => height - bar.height,
+    };
+    let mut pieces = vec![piece(width - bar.width, bar_top, bar, glass.bar_radius, false)];
+    if let Some(p) = pop.filter(|p| p.width > 0.0 && p.height > 0.0) {
+        let top = match side {
+            PopoverSide::Below => bar.height + GAP,
+            PopoverSide::Above => height - bar.height - GAP - p.height,
+        };
+        let left = (width - p.width - glass.popover_right).max(0.0);
+        pieces.push(piece(left, top, p, glass.popover_radius, glass.popover_small));
+    }
+    pieces
 }
 
 // ----------------------------------------------------------------------- the bubble's place
