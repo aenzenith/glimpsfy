@@ -571,31 +571,34 @@ onUnmounted(() => {
           </div>
         </div>
         <div class="r-transport">
-          <TipWrap :tip="t('record.trim.prev')" :caps="['←']" align="start">
-            <button type="button" class="g-btn" :aria-label="t('record.trim.prev')" @click="step(-1)"><GIcon name="chevron-left" /></button>
-          </TipWrap>
-          <TipWrap :tip="playing ? t('record.trim.pause') : t('record.trim.play')" :caps="['Space']">
-            <button type="button" class="g-btn" :aria-label="playing ? t('record.trim.pause') : t('record.trim.play')" @click="togglePlay">
-              <GIcon :name="playing ? 'pause' : 'play'" />
-            </button>
-          </TipWrap>
-          <TipWrap :tip="t('record.trim.next')" :caps="['→']">
-            <button type="button" class="g-btn" :aria-label="t('record.trim.next')" @click="step(1)"><GIcon name="chevron-right" /></button>
-          </TipWrap>
           <span class="r-time"
             ><b>{{ tenths(playMs) }}</b><span> / {{ tenths(totalMs) }}</span></span
           >
-          <span class="g-spacer" />
-          <TipWrap :tip="t('record.trim.loop')" :caps="['L']">
-            <button type="button" class="g-btn" :aria-label="t('record.trim.loop')" :aria-pressed="loop" @click="loop = !loop">
-              <GIcon name="repeat" />
-            </button>
-          </TipWrap>
-          <TipWrap :tip="t('record.trim.mute')" align="end">
-            <button type="button" class="g-btn" :aria-label="t('record.trim.mute')" :aria-pressed="muted" @click="toggleMute">
-              <GIcon :name="muted ? 'speaker-off' : 'speaker'" />
-            </button>
-          </TipWrap>
+          <div class="r-transport-play">
+            <TipWrap :tip="t('record.trim.prev')" :caps="['←']">
+              <button type="button" class="g-btn" :aria-label="t('record.trim.prev')" @click="step(-1)"><GIcon name="chevron-left" /></button>
+            </TipWrap>
+            <TipWrap :tip="playing ? t('record.trim.pause') : t('record.trim.play')" :caps="['Space']">
+              <button type="button" class="g-btn" :aria-label="playing ? t('record.trim.pause') : t('record.trim.play')" @click="togglePlay">
+                <GIcon :name="playing ? 'pause' : 'play'" />
+              </button>
+            </TipWrap>
+            <TipWrap :tip="t('record.trim.next')" :caps="['→']">
+              <button type="button" class="g-btn" :aria-label="t('record.trim.next')" @click="step(1)"><GIcon name="chevron-right" /></button>
+            </TipWrap>
+          </div>
+          <div class="r-transport-end">
+            <TipWrap :tip="t('record.trim.loop')" :caps="['L']">
+              <button type="button" class="g-btn" :aria-label="t('record.trim.loop')" :aria-pressed="loop" @click="loop = !loop">
+                <GIcon name="repeat" />
+              </button>
+            </TipWrap>
+            <TipWrap :tip="t('record.trim.mute')" align="end">
+              <button type="button" class="g-btn" :aria-label="t('record.trim.mute')" :aria-pressed="muted" @click="toggleMute">
+                <GIcon :name="muted ? 'speaker-off' : 'speaker'" />
+              </button>
+            </TipWrap>
+          </div>
         </div>
         <Timeline
           :recording-id="result.id"
@@ -644,16 +647,15 @@ onUnmounted(() => {
             </p>
             <p v-else-if="uploadLine" class="g-help" role="status">{{ uploadLine }}</p>
             <p v-else class="g-help">{{ t("record.export.saveTo", { folder: info.folderName }) }}</p>
-            <div class="r-actions">
+            <div class="r-outputs">
               <TipWrap :tip="t('record.export.uploadTip')" :caps="['⌘', 'U']" align="start">
                 <button type="button" class="g-button" :disabled="preparing" @click="startUpload">
                   <GIcon name="upload" :size="16" />{{ t("record.export.upload") }}
                 </button>
               </TipWrap>
-              <TipWrap :tip="t('record.export.copyTip')" :caps="['⌘', 'C']">
+              <TipWrap :tip="t('record.export.copyTip')" :caps="['⌘', 'C']" align="end">
                 <button type="button" class="g-button" @click="copy"><GIcon name="copy" :size="16" />{{ t("record.export.copy") }}</button>
               </TipWrap>
-              <span class="g-spacer" />
               <TipWrap :tip="t('record.export.saveTip')" :caps="['⌘', 'S']" align="end">
                 <button type="button" class="g-button" data-variant="primary" @click="save">
                   <GIcon name="save" :size="16" />{{ t("record.export.save") }}
@@ -709,8 +711,12 @@ onUnmounted(() => {
 .r-video > video { display: block; width: 100%; height: 100%; object-fit: contain; }
 .r-video-error { position: absolute; inset: auto 12px 12px; margin: 0; padding: var(--space-8) var(--space-12); border-radius: var(--radius-field);
   background: var(--win-raised); color: var(--win-text); font: var(--type-body); box-shadow: var(--win-shadow-lift); }
-.r-transport { position: relative; display: flex; align-items: center; gap: var(--space-4); flex: none; height: 52px; padding: 0 var(--space-16); }
-.r-time { margin-left: var(--space-8); font: var(--type-timecode); font-variant-numeric: tabular-nums; color: var(--win-text); white-space: nowrap; }
+/* Two equal side columns keep the play controls in the middle of the stage, whatever the clock's
+   width; a clock wider than its column pushes them aside instead of running under them. */
+.r-transport { position: relative; display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: var(--space-8); flex: none; height: 52px; padding: 0 var(--space-16); }
+.r-transport-play, .r-transport-end { display: flex; align-items: center; gap: var(--space-4); }
+.r-transport-end { justify-content: flex-end; }
+.r-time { justify-self: start; margin-left: var(--space-8); font: var(--type-timecode); font-variant-numeric: tabular-nums; color: var(--win-text); white-space: nowrap; }
 .r-time > b { font-weight: inherit; }
 .r-time > span { color: var(--win-text-3); font-weight: 500; }
 .r-export-foot { display: flex; flex-direction: column; gap: var(--space-12); padding: var(--space-16) var(--space-20) var(--space-20); box-shadow: inset 0 var(--hairline) 0 var(--win-line); }
@@ -718,6 +724,11 @@ onUnmounted(() => {
 /* In a short window the options scroll and the actions stay in reach. */
 .r-export > .r-export-foot { position: sticky; bottom: 0; z-index: 1; background: var(--win-content); }
 .r-actions { display: flex; align-items: center; gap: var(--space-8); }
+/* The panel is 300 points wide, and Upload, Copy and Save in one row outgrow it in most languages:
+   the two secondary actions share a row and Save takes the full width under them. */
+.r-outputs { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-8); }
+.r-outputs > .g-tipwrap:last-child { grid-column: 1 / -1; }
+.r-outputs .g-button { width: 100%; min-width: 0; }
 .r-progress-head { display: flex; justify-content: space-between; font: var(--type-title); color: var(--win-text); }
 .r-progress-head > span:last-child { font: var(--type-num); color: var(--win-text-2); }
 .r-link { display: inline; padding: 0; margin-left: 2px; font: inherit; }
