@@ -172,6 +172,10 @@ const SELECTION: RefRow[] = [
   { name: "settings.shortcuts.overlay.move10", caps: ["⇧", ...ARROWS] },
   { name: "settings.shortcuts.overlay.resize1", caps: ["⌥", ...ARROWS] },
 ];
+const DRAWINGS: RefRow[] = [
+  { name: "settings.shortcuts.overlay.selectAll", caps: ["⌘", "A"] },
+  { name: "settings.shortcuts.overlay.drawOver", caps: ["⌘"] },
+];
 </script>
 
 <template>
@@ -235,6 +239,8 @@ const SELECTION: RefRow[] = [
         <div v-for="row in ACTIONS" :key="row.name" class="p-keyrow"><span>{{ t(row.name) }}</span><KeyCaps :caps="row.caps" /></div>
         <h3>{{ t("settings.shortcuts.overlaySelection") }}</h3>
         <div v-for="row in SELECTION" :key="row.name" class="p-keyrow"><span>{{ t(row.name) }}</span><KeyCaps :caps="row.caps" /></div>
+        <h3>{{ t("settings.shortcuts.overlayDrawings") }}</h3>
+        <div v-for="row in DRAWINGS" :key="row.name" class="p-keyrow"><span>{{ t(row.name) }}</span><KeyCaps :caps="row.caps" /></div>
       </div>
     </div>
   </div>

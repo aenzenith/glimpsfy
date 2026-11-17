@@ -121,14 +121,14 @@ const gapAtEnd = computed(() => {
         </button>
       </TipWrap>
     </div>
-    <div class="g-list" role="listbox" :aria-label="t('editor.list')" @dragover.prevent @drop="onDrop">
+    <div class="g-list" role="listbox" aria-multiselectable="true" :aria-label="t('editor.list')" @dragover.prevent @drop="onDrop">
       <template v-for="(o, i) in rows" :key="o.id">
         <div v-if="gapBefore(i)" class="e-gap" aria-hidden="true" />
         <div
           class="g-row"
           role="option"
           :tabindex="selectedId === o.id ? 0 : -1"
-          :aria-selected="selectedId === o.id"
+          :aria-selected="selectedId === o.id || engine.inGroup(o.id)"
           :data-hidden="o.hidden ? '' : undefined"
           :data-dragging="dragged === o.id ? '' : undefined"
           draggable="true"

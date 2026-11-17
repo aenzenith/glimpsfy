@@ -73,6 +73,8 @@
   --crosshair: rgba(255, 255, 255, 0.82);
   --crosshair-halo: rgba(0, 0, 0, 0.30);
   --selection-inner: rgba(255, 255, 255, 0.55); /* hairline inside the iris edge */
+  --hover-edge: rgba(108, 92, 246, 0.55);       /* object under the pointer: iris edge at half strength */
+  --hover-inner: rgba(255, 255, 255, 0.30);     /* hairline inside the hover edge */
   --window-tint: rgba(108, 92, 246, 0.08);      /* hovered window wash */
   --ocr-veil: rgba(12, 10, 30, 0.16);
   --ocr-line: rgba(108, 92, 246, 0.85);

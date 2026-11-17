@@ -581,9 +581,16 @@ function onMouseDown(e: MouseEvent): void {
   e.preventDefault();
 
   if (mode.value === "sel" && sel.value) {
-    // The selected object's handles come before the selection's, wherever they are.
     const fp = toFrame(p);
-    if (engine.handleAt(fp, reach.value) && annotations.press(fp, reach.value, true) !== "none") return;
+    // With ⌘ held a press only draws: inside the selection the tool starts a new object even on
+    // top of another one or on a handle, and no object is picked up.
+    const over = e.metaKey;
+    if (over && engine.tool && inside(sel.value, p)) {
+      annotations.press(fp, reach.value, true, true);
+      return;
+    }
+    // The selected object's handles come before the selection's, wherever they are.
+    if (!over && engine.handleAt(fp, reach.value) && annotations.press(fp, reach.value, true) !== "none") return;
     const handle = handleAt(sel.value, p);
     if (handle) {
       mode.value = "resize";
@@ -594,7 +601,7 @@ function onMouseDown(e: MouseEvent): void {
     if (inside(sel.value, p)) {
       // With a tool, a press draws; without one, it picks an object, and on empty ground it
       // moves the selection.
-      if (annotations.press(fp, reach.value, true) !== "none") return;
+      if (annotations.press(fp, reach.value, true, over) !== "none") return;
       mode.value = "move";
       grab = { offset: { x: p.x - sel.value.x, y: p.y - sel.value.y }, origin: { ...sel.value }, handle: null };
       barsShown.value = false;
@@ -624,6 +631,7 @@ function onMouseMove(e: MouseEvent): void {
   if (!frame.value) return;
   const p = point(e);
   pointer.value = p;
+  if (mode.value !== "sel") annotations.hover(null, reach.value);
 
   switch (mode.value) {
     case "idle":
@@ -667,16 +675,28 @@ function onMouseMove(e: MouseEvent): void {
         annotations.move(toFrame(p), { shift: e.shiftKey, alt: e.altKey });
         break;
       }
-      if (sel.value) {
-        const fp = toFrame(p);
-        const objectHandle = engine.handleAt(fp, reach.value);
-        const handle = handleAt(sel.value, p);
-        const within = inside(sel.value, p);
-        const drawing = within ? annotations.cursorAt(fp, reach.value) : null;
-        cursor.value = objectHandle ? (drawing ?? "move") : handle ? RESIZE_CURSORS[handle.join(",")] : within ? (drawing ?? "move") : "crosshair";
-      }
+      aim(p, e.metaKey);
       break;
   }
+}
+
+/** The cursor and the hover frame for the pointer at `p` over the selection; `over` is ⌘ held,
+ * when a press only draws. Also called when ⌘ goes down or up without the pointer moving. */
+function aim(p: Point, over: boolean): void {
+  if (!sel.value) return;
+  const fp = toFrame(p);
+  const within = inside(sel.value, p);
+  if (over && engine.tool && within) {
+    cursor.value = annotations.cursorAt(fp, reach.value, true) ?? "crosshair";
+    annotations.hover(null, reach.value);
+    return;
+  }
+  const objectHandle = !over && engine.handleAt(fp, reach.value);
+  const handle = handleAt(sel.value, p);
+  const drawing = within ? annotations.cursorAt(fp, reach.value, over) : null;
+  cursor.value = objectHandle ? (drawing ?? "move") : handle ? RESIZE_CURSORS[handle.join(",")] : within ? (drawing ?? "move") : "crosshair";
+  // Framed only where a press picks the object up: inside the selection, off its handles.
+  annotations.hover(within && !handle && !over ? fp : null, reach.value);
 }
 
 function onDoubleClick(e: MouseEvent): void {
@@ -727,6 +747,7 @@ function onMouseUp(e: MouseEvent): void {
 }
 
 function onMouseLeave(): void {
+  annotations.hover(null, reach.value);
   if (mode.value === "idle") {
     loupe.shown = false;
     pointer.value = null;
@@ -775,6 +796,10 @@ function onKeyDown(e: KeyboardEvent): void {
   }
   if (e.key === "Alt" && mode.value === "sel") {
     allTips.value = true;
+    return;
+  }
+  if (e.key === "Meta" && mode.value === "sel" && pointer.value && !annotations.busy()) {
+    aim(pointer.value, true);
     return;
   }
   if (mode.value !== "sel" || !sel.value) return;
@@ -832,6 +857,7 @@ function onKeyDown(e: KeyboardEvent): void {
 
 function onKeyUp(e: KeyboardEvent): void {
   if (e.key === "Alt") allTips.value = false;
+  if (e.key === "Meta" && mode.value === "sel" && pointer.value && !annotations.busy()) aim(pointer.value, false);
 }
 
 function onResize(): void {

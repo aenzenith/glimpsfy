@@ -1,7 +1,8 @@
 <script setup lang="ts">
 // The annotation layer over an image, shared by the overlay and the editor: the composed canvas
 // (the image with its redactions and drawings, from compose.ts), the selected object's outline and
-// handles, and the field the user types a text into. The page around it owns the pointer and
+// handles, the faded outline of the object under the pointer, and the field the user types a text
+// into. The page around it owns the pointer and
 // converts it with the same `view`; this component only shows the engine's state.
 //
 // The canvas holds the composed area at the image's own resolution and is scaled by CSS, so what
@@ -13,7 +14,7 @@ import { Composer, type ImageSource } from "./compose";
 import { layoutText } from "./draw";
 import type { AnnotationEngine } from "./engine";
 import type { PixelRect } from "./redact";
-import { TEXT_PAD, TEXT_RADIUS, cssOf, textFont } from "./style";
+import { TEXT_PAD, TEXT_RADIUS, arrowMetrics, cssOf, textFont } from "./style";
 import type { View } from "./textLayer";
 
 type Text = Extract<AnnotationObject, { kind: "text" }>;
@@ -92,6 +93,54 @@ const selection = computed(() => {
   if (kind === "arrow" || kind === "line") return null;
   const r = e.frame(e.selectedId);
   return r ? screen(r) : null;
+});
+
+/** Space between an outlined arrow or line and its capsule, in screen points. */
+const CAPSULE_MARGIN = 4;
+
+/** The outline around an object on the screen: its frame, or for an arrow or a line a capsule
+ * along the stroke, because a box around a slanted stroke reads as a crop. */
+function outline(o: AnnotationObject) {
+  const { k, ox, oy } = props.view;
+  if (o.kind === "arrow" || o.kind === "line") {
+    const length = Math.hypot(o.to.x - o.from.x, o.to.y - o.from.y);
+    const reach = o.kind === "arrow" ? arrowMetrics(o.stroke.width, length).headHalf : o.stroke.width / 2;
+    const half = reach * k + CAPSULE_MARGIN;
+    const angle = Math.atan2(o.to.y - o.from.y, o.to.x - o.from.x);
+    return {
+      left: px(ox + o.from.x * k - half),
+      top: px(oy + o.from.y * k - half),
+      width: px(length * k + half * 2),
+      height: px(half * 2),
+      borderRadius: px(half),
+      transformOrigin: `${px(half)} 50%`,
+      transform: `rotate(${angle}rad)`,
+    };
+  }
+  const r = props.engine.frame(o.id);
+  return r ? { ...screen(r), borderRadius: "2px" } : null;
+}
+
+// The object under the pointer: the selection's outline, faded and without handles, so the user
+// sees what a press would pick up.
+const hover = computed(() => {
+  void rev.value;
+  const e = props.engine;
+  const o = e.get(e.hovered.value);
+  if (!props.chrome || !o || o.id === e.selectedId || e.inGroup(o.id) || o.hidden || o.locked || e.busy() || e.editingId) return null;
+  return outline(o);
+});
+
+// The group ⌘A picked: every member gets the selection's outline, and none gets handles, because
+// the group only moves and goes away together.
+const group = computed(() => {
+  void rev.value;
+  const e = props.engine;
+  if (!props.chrome || e.busy() || e.editingId) return [];
+  return e.group().flatMap((o) => {
+    const style = outline(o);
+    return style ? [{ key: o.id, style }] : [];
+  });
 });
 
 const handles = computed(() => {
@@ -178,7 +227,9 @@ function onBlur(): void {
 
 <template>
   <canvas v-if="composed && source" :key="source.colorSpace" ref="canvas" class="a-canvas" :style="canvasStyle" aria-hidden="true" />
+  <div v-if="hover" class="a-objhover" :style="hover" aria-hidden="true" />
   <div v-if="selection" class="a-objsel" :style="selection" aria-hidden="true" />
+  <div v-for="g in group" :key="g.key" class="a-objsel" data-group :style="g.style" aria-hidden="true" />
   <span v-for="h in handles" :key="h.key" class="g-handle a-handle" :data-handle="h.kind" :style="h.style" aria-hidden="true" />
   <div
     v-if="editing"
@@ -222,6 +273,31 @@ function onBlur(): void {
   inset: 0;
   border-radius: 1px;
   box-shadow: inset 0 0 0 1px var(--selection-inner);
+}
+/* A group member's outline takes its shape from the element: a box, or a capsule along a stroke. */
+.a-objsel[data-group]::before,
+.a-objsel[data-group]::after {
+  border-radius: inherit;
+}
+/* The object under the pointer: the same outline at half strength, under the selected one. */
+.a-objhover {
+  position: absolute;
+  z-index: 5;
+  pointer-events: none;
+}
+.a-objhover::before,
+.a-objhover::after {
+  content: "";
+  position: absolute;
+  border-radius: inherit;
+}
+.a-objhover::before {
+  inset: -1.5px;
+  border: 1.5px solid var(--hover-edge);
+}
+.a-objhover::after {
+  inset: 0;
+  box-shadow: inset 0 0 0 1px var(--hover-inner);
 }
 .a-handle {
   z-index: 7;

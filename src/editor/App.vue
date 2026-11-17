@@ -516,11 +516,13 @@ function onPointerDown(e: PointerEvent): void {
     pan = { x: e.clientX, y: e.clientY, view: view.value };
     target.setPointerCapture(e.pointerId);
     cursor.value = "grabbing";
+    engine.hover(null, 0);
     e.preventDefault();
     return;
   }
   if (e.button !== 0) return;
-  const result = engine.pointerDown(toImage(local(e)), reach());
+  // With ⌘ held a press only draws, even on top of another object.
+  const result = engine.pointerDown(toImage(local(e)), reach(), e.metaKey);
   if (result === "handle" || result === "object" || result === "draw") target.setPointerCapture(e.pointerId);
   // A press that starts a text leaves the focus to its field.
   if (result !== "text") e.preventDefault();
@@ -537,8 +539,24 @@ function onPointerMove(e: PointerEvent): void {
     engine.pointerMove(p, { shift: e.shiftKey, alt: e.altKey });
     return;
   }
-  cursor.value = spaceHeld.value ? "grab" : (engine.cursorAt(p, reach()) ?? "default");
+  lastPoint = p;
+  aim(p, e.metaKey);
   updateReadout(p);
+}
+
+/** The pointer's last place in image pixels, so ⌘ going down or up can change the cursor. */
+let lastPoint: { x: number; y: number } | null = null;
+
+/** The cursor and the hover frame at `p`; `over` is ⌘ held, when a press only draws. */
+function aim(p: { x: number; y: number }, over: boolean): void {
+  cursor.value = spaceHeld.value ? "grab" : (engine.cursorAt(p, reach(), over) ?? "default");
+  // With Space held a press pans and with ⌘ it only draws, so nothing is about to be picked up.
+  engine.hover(spaceHeld.value || over ? null : p, reach());
+}
+
+function onPointerLeave(): void {
+  lastPoint = null;
+  engine.hover(null, 0);
 }
 
 function onPointerUp(e: PointerEvent): void {
@@ -635,6 +653,10 @@ function onKeyDown(e: KeyboardEvent): void {
     cursor.value = "grab";
     return;
   }
+  if (e.key === "Meta") {
+    if (lastPoint && !pan && !engine.busy()) aim(lastPoint, true);
+    return;
+  }
   if (cropMode.value && (e.key === "Enter" || e.key === "Escape") && !engine.busy()) {
     e.preventDefault();
     if (e.key === "Enter") engine.applyCrop();
@@ -678,6 +700,7 @@ function onKeyDown(e: KeyboardEvent): void {
 }
 
 function onKeyUp(e: KeyboardEvent): void {
+  if (e.key === "Meta" && lastPoint && !pan && !engine.busy()) aim(lastPoint, false);
   if (e.key === " ") {
     spaceHeld.value = false;
     if (!pan) cursor.value = "default";
@@ -821,6 +844,7 @@ onUnmounted(() => {
         @pointermove="onPointerMove"
         @pointerup="onPointerUp"
         @pointercancel="onPointerUp"
+        @pointerleave="onPointerLeave"
         @dblclick="onDoubleClick"
         @wheel="onWheel"
       >

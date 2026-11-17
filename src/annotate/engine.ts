@@ -69,7 +69,9 @@ export type Modifiers = { shift?: boolean; alt?: boolean };
 type Gesture =
   | { kind: "draw"; tool: ToolId; start: Point; id: string; travelled: number }
   | { kind: "move"; id: string; start: Point; origin: AnnotationObject }
-  | { kind: "handle"; id: string; handle: string; origin: AnnotationObject };
+  | { kind: "handle"; id: string; handle: string; origin: AnnotationObject }
+  /** The whole group follows the pointer; `id` is the member that was pressed. */
+  | { kind: "group"; id: string; start: Point; origins: ReadonlyMap<string, AnnotationObject> };
 
 let counter = 0;
 function newId(kind: string): string {
@@ -114,9 +116,15 @@ export type EngineOptions = {
 export class AnnotationEngine {
   /** Counts every change the surfaces show; read it to subscribe. */
   readonly rev = ref(0);
+  /** The object a press would pick up, framed before the press. A ref of its own, apart from
+   * `rev`, so that the pointer passing over objects does not recompose the canvas. */
+  readonly hovered = ref<string | null>(null);
   doc: AnnotationDocument;
   tool: ToolId | null = null;
   selectedId: string | null = null;
+  /** The objects ⌘A picked, two or more, moved and deleted together. While it holds anything,
+   * `selectedId` is null, so the strip, the handles and the single-object keys stay out of it. */
+  groupIds: readonly string[] = [];
   /** The text object being typed into, which the surface's text field shows instead of the
    * canvas. */
   editingId: string | null = null;
@@ -159,6 +167,20 @@ export class AnnotationEngine {
 
   selected(): AnnotationObject | null {
     return this.get(this.selectedId);
+  }
+
+  /** Whether a press or ⌘A can pick the object up. */
+  private selectable(o: AnnotationObject | null): o is AnnotationObject {
+    return o !== null && o.kind !== "crop" && !o.hidden && !o.locked;
+  }
+
+  inGroup(id: string): boolean {
+    return this.groupIds.includes(id);
+  }
+
+  /** The group's members, bottom first. */
+  group(): AnnotationObject[] {
+    return this.doc.objects.filter((o) => this.groupIds.includes(o.id));
   }
 
   /** The drawn objects, without the crop, bottom first. */
@@ -210,6 +232,11 @@ export class AnnotationEngine {
   private set(objects: Objects): void {
     this.doc = { ...this.doc, objects: objects as AnnotationObject[] };
     if (this.selectedId && !this.get(this.selectedId)) this.selectedId = null;
+    if (this.groupIds.length) {
+      // Undo can take members away, and a lock or a hide drops one; a group of one is no group.
+      const left = this.groupIds.filter((id) => this.selectable(this.get(id)));
+      this.groupIds = left.length > 1 ? left : [];
+    }
     if (this.editingId && !this.get(this.editingId)) this.editingId = null;
     this.bump();
   }
@@ -234,6 +261,7 @@ export class AnnotationEngine {
     this.doc = doc;
     this.saved = unsaved ? [] : doc.objects;
     this.selectedId = null;
+    this.groupIds = [];
     this.editingId = null;
     this.cropSession = null;
     this.history.clear();
@@ -262,6 +290,7 @@ export class AnnotationEngine {
     this.tool = tool;
     if (tool === "crop") {
       this.selectedId = null;
+      this.groupIds = [];
       this.cropSession = { objects: this.doc.objects, past: this.history.past.length };
     }
     if (tool && (tool === "blur" || tool === "pixelate") && !this.prefs.redactionNoticeSeen) this.onRedaction();
@@ -271,6 +300,19 @@ export class AnnotationEngine {
   select(id: string | null): void {
     if (id !== this.editingId) this.finishText();
     this.selectedId = id;
+    this.groupIds = [];
+    this.bump();
+  }
+
+  /** ⌘A: every object a press could pick up. One object is an ordinary selection, two or more a
+   * group. Crop mode has no objects to pick. */
+  selectAll(): void {
+    if (this.tool === "crop") return;
+    this.finishText();
+    const ids = this.doc.objects.filter((o) => this.selectable(o)).map((o) => o.id);
+    if (ids.length < 2) return this.select(ids[0] ?? null);
+    this.selectedId = null;
+    this.groupIds = ids;
     this.bump();
   }
 
@@ -315,20 +357,29 @@ export class AnnotationEngine {
   }
 
   remove(id: string): void {
-    const target = this.get(id);
-    if (!target) return;
+    this.removeAll([id]);
+  }
+
+  /** Removes the objects as one undo step. */
+  private removeAll(ids: readonly string[]): void {
+    const gone = new Set(ids);
+    const steps = this.doc.objects.flatMap((o) => (gone.has(o.id) && o.kind === "step" ? [o.number] : []));
     this.apply((objects) => {
-      let rest = objects.filter((o) => o.id !== id);
-      // Removing a step marker closes the gap in the sequence.
-      if (target.kind === "step") {
-        rest = rest.map((o) => (o.kind === "step" && o.number > target.number ? { ...o, number: o.number - 1 } : o));
-      }
-      return rest;
+      const rest = objects.filter((o) => !gone.has(o.id));
+      if (rest.length === objects.length) return objects;
+      // Removing step markers closes the gaps in the sequence.
+      if (!steps.length) return rest;
+      return rest.map((o) => {
+        if (o.kind !== "step") return o;
+        const below = steps.filter((n) => n < o.number).length;
+        return below ? { ...o, number: o.number - below } : o;
+      });
     });
   }
 
   deleteSelected(): void {
-    if (this.selectedId) this.remove(this.selectedId);
+    if (this.groupIds.length) this.removeAll(this.groupIds);
+    else if (this.selectedId) this.remove(this.selectedId);
   }
 
   duplicate(): void {
@@ -379,6 +430,10 @@ export class AnnotationEngine {
   }
 
   nudge(dx: number, dy: number): void {
+    if (this.groupIds.length) {
+      this.apply((objects) => objects.map((o) => (this.inGroup(o.id) ? moved(o, dx, dy) : o)));
+      return;
+    }
     const object = this.selected();
     if (!object || object.locked) return;
     this.apply(() => this.replace(object.id, moved(object, dx, dy)));
@@ -590,8 +645,10 @@ export class AnnotationEngine {
     return null;
   }
 
-  /** What a press at `p` would do, for the surface's cursor. */
-  cursorAt(p: Point, reach: number): string | null {
+  /** What a press at `p` would do, for the surface's cursor. `over` is a press that only draws
+   * (⌘ held), so it ignores objects and handles. */
+  cursorAt(p: Point, reach: number, over = false): string | null {
+    if (over) return this.tool === "text" ? "text" : this.tool ? "crosshair" : null;
     const handle = this.handleAt(p, reach);
     if (handle) return handle.kind === "point" ? "crosshair" : handle.id === "0,0" || handle.id === "1,1" ? "nwse-resize" : handle.id === "1,0" || handle.id === "0,1" ? "nesw-resize" : handle.kind === "x" ? "ns-resize" : "ew-resize";
     if (this.tool === "crop" && !this.options.cropDrawsInside) {
@@ -603,12 +660,22 @@ export class AnnotationEngine {
     return this.tool ? "crosshair" : null;
   }
 
-  /** A press at `p` in image pixels. */
-  pointerDown(p: Point, reach: number): PressResult {
+  /** Notes the object a press at `p` would pick up, by the same rules as `pointerDown`; `null`
+   * means the pointer is somewhere a press picks up nothing. */
+  hover(p: Point | null, reach: number): void {
+    const free = p !== null && !this.gesture && !this.editingId && this.tool !== "crop" && !this.handleAt(p, reach);
+    const object = free ? this.objectAt(p, reach, this.tool === null) : null;
+    const id = object && object.id !== this.selectedId && !this.inGroup(object.id) ? object.id : null;
+    if (this.hovered.value !== id) this.hovered.value = id;
+  }
+
+  /** A press at `p` in image pixels. With `over` (⌘ held) the press only draws: it starts a new
+   * object with the active tool even on top of another, and never picks one up. */
+  pointerDown(p: Point, reach: number, over = false): PressResult {
     if (this.editingId) {
       this.finishText();
     }
-    const handle = this.handleAt(p, reach);
+    const handle = over ? null : this.handleAt(p, reach);
     const crop = this.tool === "crop" && !this.options.cropDrawsInside;
     if (handle) {
       const target = crop ? this.get(CROP_ID) : this.selected();
@@ -617,15 +684,23 @@ export class AnnotationEngine {
         return "handle";
       }
     }
-    if (crop) {
+    // A press that only draws skips both pick-ups below, so nothing stays selected either.
+    if (crop && !over) {
       const current = this.crop();
       if (current && contains(current, p)) {
         const object = this.get(CROP_ID)!;
         this.begin({ kind: "move", id: CROP_ID, start: p, origin: object });
         return "object";
       }
-    } else if (this.tool !== "crop") {
+    } else if (this.tool !== "crop" && !over) {
       const object = this.objectAt(p, reach, this.tool === null);
+      if (object && this.inGroup(object.id)) {
+        const origins = new Map(this.group().map((o) => [o.id, o]));
+        this.begin({ kind: "group", id: object.id, start: p, origins });
+        return "object";
+      }
+      // Any other press ends the group, as a click beside a selection ends it.
+      this.groupIds = [];
       if (object) {
         this.selectedId = object.id;
         this.begin({ kind: "move", id: object.id, start: p, origin: object });
@@ -633,6 +708,7 @@ export class AnnotationEngine {
       }
     }
     this.selectedId = null;
+    this.groupIds = [];
     if (!this.tool) {
       this.bump();
       return "none";
@@ -663,6 +739,15 @@ export class AnnotationEngine {
     if (!g) return;
     const object = this.get(g.id);
     if (!object) return;
+    if (g.kind === "group") {
+      const dx = p.x - g.start.x;
+      const dy = p.y - g.start.y;
+      this.set(this.doc.objects.map((o) => {
+        const origin = g.origins.get(o.id);
+        return origin ? moved(origin, dx, dy) : o;
+      }));
+      return;
+    }
     if (g.kind === "move") {
       let dx = p.x - g.start.x;
       let dy = p.y - g.start.y;
@@ -819,8 +904,9 @@ export class AnnotationEngine {
 
   /**
    * The keys the engine answers, whichever surface it is on: ⌫ deletes, ⌘D duplicates, ⌘] and ⌘[
-   * change the order, ⌘L locks, ⇧⌘H hides, ⌥C changes the colour, the arrows nudge (⇧ by ten)
-   * and Esc ends a gesture or drops the selection. Returns whether the key was used.
+   * change the order, ⌘L locks, ⇧⌘H hides, ⌥C changes the colour, the arrows nudge (⇧ by ten),
+   * ⌘A picks every object up as a group, and Esc ends a gesture or drops the selection. A group
+   * answers only to ⌫, the arrows and Esc. Returns whether the key was used.
    */
   key(e: KeyboardEvent): boolean {
     if (this.editingId) return false;
@@ -830,8 +916,27 @@ export class AnnotationEngine {
         this.cancelGesture();
         return true;
       }
-      if (this.selectedId) {
+      if (this.selectedId || this.groupIds.length) {
         this.select(null);
+        return true;
+      }
+      return false;
+    }
+    // ⌘A is always the engine's, even with nothing drawn, so the page never selects its own text.
+    if (command && !e.shiftKey && !e.altKey && e.code === "KeyA") {
+      if (!this.gesture) this.selectAll();
+      return true;
+    }
+    const arrows: Record<string, [number, number]> = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
+    const step = arrows[e.key];
+    if (this.groupIds.length) {
+      if ((e.key === "Backspace" || e.key === "Delete") && !command) {
+        this.deleteSelected();
+        return true;
+      }
+      if (step && !command) {
+        const by = (e.shiftKey ? 10 : 1) * this.scale;
+        this.nudge(step[0] * by, step[1] * by);
         return true;
       }
       return false;
@@ -862,8 +967,6 @@ export class AnnotationEngine {
       this.setHidden(object.id, !object.hidden);
       return true;
     }
-    const arrows: Record<string, [number, number]> = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
-    const step = arrows[e.key];
     if (step && !command) {
       const by = (e.shiftKey ? 10 : 1) * this.scale;
       this.nudge(step[0] * by, step[1] * by);

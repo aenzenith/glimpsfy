@@ -98,18 +98,25 @@ export function setTool(tool: ToolId | null): void {
  * anything else only counts inside the selection. `none` leaves the press to the page, which then
  * moves the selection.
  */
-export function press(p: Point, reach: number, inside: boolean): PressResult {
-  if (engine.handleAt(p, reach)) return engine.pointerDown(p, reach);
+export function press(p: Point, reach: number, inside: boolean, over = false): PressResult {
+  if (!over && engine.handleAt(p, reach)) return engine.pointerDown(p, reach);
   if (!inside) {
     if (engine.editingId) engine.finishText();
     return "none";
   }
-  return engine.pointerDown(p, reach);
+  return engine.pointerDown(p, reach, over);
 }
 
-/** Whether a press at `p` would land on the selected object's handle, for the page's cursor. */
-export function cursorAt(p: Point, reach: number): string | null {
-  return engine.cursorAt(p, reach);
+/** What a press at `p` would do, for the page's cursor; `over` is a press with ⌘ held, which
+ * only draws. */
+export function cursorAt(p: Point, reach: number, over = false): string | null {
+  return engine.cursorAt(p, reach, over);
+}
+
+/** The pointer is at `p` (frame pixels), or somewhere a press picks up no object (`null`); the
+ * object a press would pick up gets the hover frame. */
+export function hover(p: Point | null, reach: number): void {
+  engine.hover(p, reach);
 }
 
 export function move(p: Point, mods: Modifiers): void {
