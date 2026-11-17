@@ -10,9 +10,13 @@ pub const CAPTURE_STARTED: &str = "capture://started";
 /// To every overlay window: the capture ended (copied, saved, cancelled or failed).
 /// Payload: `commands::capture::CaptureClosed`.
 pub const CAPTURE_CLOSED: &str = "capture://closed";
-/// From an overlay window to the others: the user started a selection on this display, so the
-/// other displays drop theirs. Payload: `{ captureId, displayId }`.
+/// From an overlay window to the others and the core: the user started a selection on this
+/// display, so the other displays drop theirs and the keyboard stays here
+/// (`windows::follow_pointer`). Payload: `{ captureId, displayId }`.
 pub const OVERLAY_SELECTION_STARTED: &str = "overlay://selection-started";
+/// From an overlay window to the others and the core: this display's selection is gone, so the
+/// keyboard follows the pointer again. Payload: `{ captureId, displayId }`.
+pub const OVERLAY_SELECTION_ENDED: &str = "overlay://selection-ended";
 
 /// The image of a capture reached the clipboard. Payload: `commands::output::OutputDone`.
 pub const OUTPUT_COPIED: &str = "output://copied";

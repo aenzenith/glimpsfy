@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use glimpsfy_capture::DisplayId;
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, EventTarget, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, EventTarget, Listener, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
 use crate::commands::capture::CaptureId;
 use crate::commands::error::{CommandError, ErrorCode};
@@ -36,6 +36,7 @@ fn overlays(app: &AppHandle) -> Vec<(DisplayId, WebviewWindow)> {
 /// Makes the windows that wait for use and starts watching the displays. Once, at start, on the
 /// main thread.
 pub fn setup(app: &AppHandle) {
+    watch_selections(app);
     #[cfg(target_os = "macos")]
     {
         sync_overlays(app);
@@ -161,8 +162,10 @@ pub fn hide_overlays(app: &AppHandle) {
     }
 }
 
-/// While a capture is open, the overlay under the pointer takes the keyboard, so Esc, the arrow
-/// keys and ⌘C act on the display the user is looking at, and hover reaches its page.
+/// While a capture is open, the overlay under the pointer takes the keyboard, so Esc and the
+/// space bar act on the display the user is looking at, and hover reaches its page. Once a
+/// display holds a selection, its overlay keeps the keyboard wherever the pointer goes, so Copy,
+/// Save and the arrow keys still reach the selection from another display.
 pub fn follow_pointer(app: &AppHandle, id: CaptureId) {
     #[cfg(target_os = "macos")]
     {
@@ -176,23 +179,48 @@ pub fn follow_pointer(app: &AppHandle, id: CaptureId) {
                     return;
                 };
                 let pointer = crate::macos::pointer();
-                let Some(entry) = session.displays.iter().find(|d| d.display.frame.contains(pointer)) else {
+                let under = session.displays.iter().find(|d| d.display.frame.contains(pointer)).map(|d| d.display.id);
+                let holder = session.holder();
+                let Some(display) = holder.or(under) else {
                     continue;
                 };
-                let display = entry.display.id;
-                if last != Some(display) {
-                    if last.is_some() {
-                        if let Some(window) = app.get_webview_window(&overlay_label(display)) {
-                            crate::macos::on_main(&app, move |mtm| crate::macos::key_overlay(&window, mtm));
-                        }
+                // A click makes the panel under it key on its own (AppKit), so while the pointer
+                // is away from the selection the keyboard is taken back at every check; the call
+                // does nothing while the holder is still key.
+                let away = holder.is_some() && under != holder;
+                if (last.is_some() && last != Some(display)) || away {
+                    if let Some(window) = app.get_webview_window(&overlay_label(display)) {
+                        crate::macos::on_main(&app, move |mtm| crate::macos::key_overlay(&window, mtm));
                     }
-                    last = Some(display);
                 }
+                last = Some(display);
             }
         });
     }
     #[cfg(not(target_os = "macos"))]
     let _ = (app, id);
+}
+
+/// The overlay pages say which display holds the selection; [`follow_pointer`] keeps the
+/// keyboard there.
+fn watch_selections(app: &AppHandle) {
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Selection {
+        capture_id: CaptureId,
+        display_id: DisplayId,
+    }
+    for (name, held) in [(events::OVERLAY_SELECTION_STARTED, true), (events::OVERLAY_SELECTION_ENDED, false)] {
+        let handle = app.clone();
+        app.listen_any(name, move |event| {
+            let Ok(selection) = serde_json::from_str::<Selection>(event.payload()) else {
+                return;
+            };
+            if let Some(session) = handle.state::<AppState>().sessions.get(selection.capture_id) {
+                session.hold(selection.display_id, held);
+            }
+        });
+    }
 }
 
 // ------------------------------------------------------------------------------------ toasts

@@ -166,6 +166,9 @@ pub struct CaptureSession {
     /// Every window on screen at capture time, frontmost first.
     pub all_windows: Vec<WindowInfo>,
     picked: Mutex<Option<Arc<Picked>>>,
+    /// The display whose overlay holds the selection; its overlay keeps the keyboard wherever
+    /// the pointer goes.
+    holder: Mutex<Option<DisplayId>>,
     /// Closed by the measurement loop once painted (`GLIMPSFY_AUTOCAPTURE`).
     pub auto: bool,
 }
@@ -211,6 +214,23 @@ impl CaptureSession {
             mode: self.mode,
             after_selection: self.after,
         })
+    }
+
+    /// `display` took the selection (`held`) or lost it. Only the holder's own loss clears it: a
+    /// display drops its selection after another one took over, and that must not undo the take.
+    pub fn hold(&self, display: DisplayId, held: bool) {
+        let mut holder = self.holder.lock().unwrap_or_else(|p| p.into_inner());
+        if held {
+            *holder = Some(display);
+        } else if *holder == Some(display) {
+            *holder = None;
+        }
+    }
+
+    /// The display that holds the selection, while it is still part of the capture.
+    pub fn holder(&self) -> Option<DisplayId> {
+        let holder = *self.holder.lock().unwrap_or_else(|p| p.into_inner());
+        holder.filter(|id| self.display(*id).is_some_and(SessionDisplay::live))
     }
 
     /// The origin of an image taken from `display` of this capture.
@@ -505,6 +525,7 @@ fn capture_frozen(
         after: after_for(mode, settings.general.after_selection),
         all_windows,
         picked: Mutex::new(None),
+        holder: Mutex::new(None),
         auto,
     })
 }
@@ -935,8 +956,9 @@ pub fn reshow(app: &AppHandle, id: CaptureId) {
     let Some(session) = state.sessions.get(id) else {
         return;
     };
+    let keyed = session.holder().or(session.pointer_display);
     for entry in session.displays.iter().filter(|d| d.live() && d.ready.load(Ordering::SeqCst)) {
-        let key = session.pointer_display.map_or(entry.display.is_primary, |p| p == entry.display.id);
+        let key = keyed.map_or(entry.display.is_primary, |k| k == entry.display.id);
         windows::show_overlay(app, entry.display.id, key);
     }
 }

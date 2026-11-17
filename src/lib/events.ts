@@ -4,8 +4,10 @@
 
 export const CAPTURE_STARTED = "capture://started";
 export const CAPTURE_CLOSED = "capture://closed";
-/** Sent by an overlay page to the others when a selection starts on its display. */
+/** Sent by an overlay page to the others and the core when a selection starts on its display. */
 export const OVERLAY_SELECTION_STARTED = "overlay://selection-started";
+/** Sent by an overlay page to the others and the core when its display's selection is gone. */
+export const OVERLAY_SELECTION_ENDED = "overlay://selection-ended";
 
 export const OUTPUT_COPIED = "output://copied";
 export const OUTPUT_SAVED = "output://saved";

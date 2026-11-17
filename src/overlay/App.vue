@@ -39,7 +39,7 @@ import { record_setup } from "../lib/api/record";
 import { output_save_as_rendered } from "../lib/api/render";
 import { upload_capture } from "../lib/api/upload";
 import { pin_open } from "../lib/api/windows";
-import { CAPTURE_CLOSED, CAPTURE_STARTED, OVERLAY_SELECTION_STARTED } from "../lib/events";
+import { CAPTURE_CLOSED, CAPTURE_STARTED, OVERLAY_SELECTION_ENDED, OVERLAY_SELECTION_STARTED } from "../lib/events";
 import { t, type Key } from "../lib/i18n";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import * as annotations from "./annotations";
@@ -85,6 +85,10 @@ const hintFaded = ref(false);
 const notice = ref<string | null>(null);
 const allTips = ref(false);
 const cursor = ref("crosshair");
+/** The display that holds the selection when it is another one. This display then waits: no
+ * crosshair, no loupe and no window hover, and a drag here starts a new selection, as a press
+ * outside the selection does on its own display. */
+const heldElsewhere = ref<number | null>(null);
 const view = reactive({ w: window.innerWidth, h: window.innerHeight });
 const loupe = reactive({ shown: false, x: 0, y: 0, hex: "#000000", swatch: "#000", px: 0, py: 0 });
 
@@ -175,7 +179,7 @@ const dimRect = computed<Rect>(() => {
   return { x: -1, y: -1, w: 0, h: 0 };
 });
 const dimRadius = computed(() => (!sel.value && hovered.value ? `${hovered.value.cornerRadius ?? 10}px` : ""));
-const showLines = computed(() => mode.value === "idle" && !windowMode.value && pointer.value !== null);
+const showLines = computed(() => mode.value === "idle" && !windowMode.value && heldElsewhere.value === null && pointer.value !== null);
 const pixelSize = computed(() => {
   const r = sel.value;
   return r ? { w: Math.round(r.w * ratio.value.x), h: Math.round(r.h * ratio.value.y) } : { w: 0, h: 0 };
@@ -291,6 +295,7 @@ function resetSelection(): void {
 
 function resetAll(): void {
   resetSelection();
+  heldElsewhere.value = null;
   windowMode.value = false;
   tool.value = null;
   annotations.setTool(null);
@@ -390,9 +395,16 @@ async function finishByMode(r: Rect, windowId: number | null): Promise<void> {
   }
 }
 
-function claim(): void {
-  if (frame.value) void send(OVERLAY_SELECTION_STARTED, { captureId: frame.value.captureId, displayId });
-}
+// A selection on this display holds the capture: the other displays drop theirs, and the core
+// keeps the keyboard here wherever the pointer goes (`windows::follow_pointer`). A press that
+// starts over on this display empties and refills `sel` in one tick, which sends nothing.
+watch(
+  () => sel.value !== null,
+  (held) => {
+    const f = frame.value;
+    if (f) void send(held ? OVERLAY_SELECTION_STARTED : OVERLAY_SELECTION_ENDED, { captureId: f.captureId, displayId });
+  },
+);
 
 function close(): void {
   if (frame.value) void capture_close(frame.value.captureId);
@@ -590,18 +602,21 @@ function onMouseDown(e: MouseEvent): void {
     }
   }
 
-  claim();
-  if (mode.value === "idle" && windowMode.value) {
+  // While another display holds the selection, no window shows as hovered here, so a press
+  // draws a new selection rather than taking a window the user could not see.
+  if (mode.value === "idle" && windowMode.value && heldElsewhere.value === null) {
     const w = windowAt(p);
     if (w) finishSelection(fromCorners({ x: w.rect.x, y: w.rect.y }, { x: w.rect.x + w.rect.width, y: w.rect.y + w.rect.height }), w.id);
     return;
   }
+  heldElsewhere.value = null;
   resetSelection();
   annotations.clear();
   mode.value = "drag";
   start = p;
   sel.value = { x: p.x, y: p.y, w: 0, h: 0 };
   hintFaded.value = true;
+  cursor.value = "crosshair";
   updateLoupe(p);
 }
 
@@ -612,6 +627,12 @@ function onMouseMove(e: MouseEvent): void {
 
   switch (mode.value) {
     case "idle":
+      if (heldElsewhere.value !== null) {
+        loupe.shown = false;
+        hovered.value = null;
+        cursor.value = "default";
+        break;
+      }
       if (windowMode.value) {
         loupe.shown = false;
         hovered.value = windowAt(p);
@@ -838,8 +859,19 @@ onMounted(async () => {
     await on<{ captureId: number; displayId: number }>(OVERLAY_SELECTION_STARTED, (other) => {
       if (other.displayId === displayId || other.captureId !== frame.value?.captureId) return;
       resetSelection();
+      heldElsewhere.value = other.displayId;
       loupe.shown = false;
       pointer.value = null;
+      cursor.value = "default";
+    }),
+  );
+  stops.push(
+    await on<{ captureId: number; displayId: number }>(OVERLAY_SELECTION_ENDED, (other) => {
+      // Only the holder's own end frees this display; an end from a display that just lost the
+      // selection to a third one changes nothing.
+      if (other.captureId !== frame.value?.captureId || other.displayId !== heldElsewhere.value) return;
+      heldElsewhere.value = null;
+      cursor.value = "crosshair";
     }),
   );
   // A page that loaded after `capture://started` was sent (a reload) picks the capture up.
