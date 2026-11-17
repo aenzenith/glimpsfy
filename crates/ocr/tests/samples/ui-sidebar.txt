@@ -1,0 +1,18 @@
+Settings
+
+General
+Shortcuts
+Output
+Recording
+Text recognition
+Upload
+About
+
+Text recognition
+
+Engine	Apple Vision
+Detect the language	On
+Keep line breaks	On
+
+Recognition runs on this Mac.
+Nothing leaves the machine.

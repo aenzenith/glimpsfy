@@ -1,0 +1,251 @@
+# Cuts releases with release-please and builds, signs and notarises the app for each one. It
+# follows Pitwall's release workflow; only macOS is built until the other platforms have backends.
+name: Release
+
+on:
+  push:
+    branches: [main]
+  # By hand, for a release that is already cut: its tag is built again and the files attached.
+  # A run started again from the Actions page can't do that: release-please then finds the
+  # release made and says none was created, and the builds are skipped.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "The release's tag to build again, e.g. v0.1.0"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+  # The release waits for CI's run on the pushed commit.
+  actions: read
+
+jobs:
+  # Conventional Commits decide the next version: feat → minor, fix/perf → patch; before 1.0 a
+  # breaking change bumps the minor version too. The release PR bumps package.json,
+  # tauri.conf.json, Cargo.toml and Cargo.lock together. The first release is 0.1.0.
+  #
+  # Nobody merges that PR by hand: once CI has passed on the pushed commit it is merged here and
+  # the release cut in the same run. The merge is made with the workflow's own token, which
+  # starts no run of its own, so the second pass below is what tags it.
+  release-please:
+    name: Release Please
+    if: ${{ github.event_name == 'push' }}
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+    outputs:
+      release_created: ${{ steps.cut.outputs.release_created || steps.release.outputs.release_created }}
+      tag_name: ${{ steps.cut.outputs.tag_name || steps.release.outputs.tag_name }}
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+      - name: Find the release PR
+        id: pr
+        run: |
+          number="$(gh pr list --state open --base main --label 'autorelease: pending' --json number --jq '.[0].number // empty')"
+          echo "number=$number" >> "$GITHUB_OUTPUT"
+
+      # CI starts alongside this run, so its run may not be listed yet. Anything but a pass (a
+      # failure, or a run cancelled by the next push) leaves the PR open.
+      - name: Wait for CI
+        id: ci
+        if: ${{ steps.pr.outputs.number != '' }}
+        timeout-minutes: 60
+        run: |
+          set -euo pipefail
+          run=""
+          for _ in $(seq 30); do
+            run="$(gh run list --workflow ci.yml --event push --commit "$GITHUB_SHA" --limit 1 --json databaseId --jq '.[0].databaseId // empty')"
+            [ -n "$run" ] && break
+            sleep 10
+          done
+          if [ -z "$run" ]; then
+            echo "::notice::No CI run for $GITHUB_SHA: the release PR stays open."
+            exit 0
+          fi
+
+          while [ "$(gh run view "$run" --json status --jq .status)" != completed ]; do
+            sleep 20
+          done
+          conclusion="$(gh run view "$run" --json conclusion --jq .conclusion)"
+          echo "conclusion=$conclusion" >> "$GITHUB_OUTPUT"
+          if [ "$conclusion" != success ]; then
+            echo "::notice::CI ended as $conclusion: the release PR stays open."
+          fi
+
+      # A push that came in meanwhile has a run of its own, and the PR is being written for it.
+      - name: Merge the release PR
+        id: merge
+        if: ${{ steps.ci.outputs.conclusion == 'success' }}
+        env:
+          PR: ${{ steps.pr.outputs.number }}
+        run: |
+          set -euo pipefail
+          head="$(gh api "repos/$GH_REPO/commits/main" --jq .sha)"
+          if [ "$head" != "$GITHUB_SHA" ]; then
+            echo "::notice::main moved on to $head: that push's run takes the release."
+            exit 0
+          fi
+          gh api -X PUT "repos/$GH_REPO/pulls/$PR/merge" -f merge_method=squash
+          echo "merged=true" >> "$GITHUB_OUTPUT"
+
+      - uses: googleapis/release-please-action@v4
+        id: cut
+        if: ${{ steps.merge.outputs.merged == 'true' }}
+        with:
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+          skip-github-pull-request: true
+
+      # Merged and untagged, nothing would say so: the next run of this job cuts it.
+      - name: Check the release was cut
+        if: ${{ steps.merge.outputs.merged == 'true' && steps.cut.outputs.release_created != 'true' }}
+        run: |
+          echo "::error::The release PR was merged but no release was cut: run this job again."
+          exit 1
+
+  # When a release is cut, the app is built from its tag and the installer is attached to the
+  # release.
+  #
+  # macOS is signed with the Developer ID in tauri.conf.json when its certificate is among the
+  # secrets (APPLE_CERTIFICATE, the .p12 in base64, and APPLE_CERTIFICATE_PASSWORD), and notarised
+  # when Apple's account is too (APPLE_ID, APPLE_PASSWORD, an app-specific password, and
+  # APPLE_TEAM_ID). Without the certificate it is signed ad hoc, and macOS then forgets the
+  # screen recording permission with every update.
+  #
+  # With the updater's key among the secrets (TAURI_SIGNING_PRIVATE_KEY and its password), the
+  # archive an update is installed from is signed and attached too; the `manifest` job then
+  # writes `latest.json`. Without the key the release has the installer only.
+  build:
+    name: ${{ matrix.name }} build
+    needs: release-please
+    # `!cancelled()`: started by hand, release-please is skipped, and so would this be.
+    if: ${{ !cancelled() && (needs.release-please.outputs.release_created == 'true' || github.event_name == 'workflow_dispatch') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS
+            os: macos-latest
+            bundles: app,dmg
+            files: target/release/bundle/dmg/*.dmg
+            updater: target/release/bundle/macos/*.app.tar.gz target/release/bundle/macos/*.app.tar.gz.sig
+    runs-on: ${{ matrix.os }}
+    env:
+      TAG: ${{ inputs.tag || needs.release-please.outputs.tag_name }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag || needs.release-please.outputs.tag_name }}
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      # rust-toolchain.toml pins the channel; rustup installs it on first use.
+      - name: Rust toolchain
+        run: rustup show active-toolchain
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.os }}
+
+      - name: Install dependencies
+        run: npm ci
+
+      # The override goes in as a file: JSON on the command line doesn't survive npm on Windows.
+      - name: Build
+        shell: bash
+        run: |
+          args=(--bundles ${{ matrix.bundles }})
+          if [ -n "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo '{ "bundle": { "createUpdaterArtifacts": true } }' > "$GITHUB_WORKSPACE/updater.conf.json"
+            args+=(--config "$GITHUB_WORKSPACE/updater.conf.json")
+          fi
+          if [ "$RUNNER_OS" = macOS ] && [ -z "$APPLE_CERTIFICATE" ]; then
+            echo '{ "bundle": { "macOS": { "signingIdentity": "-" } } }' > "$GITHUB_WORKSPACE/adhoc.conf.json"
+            args+=(--config "$GITHUB_WORKSPACE/adhoc.conf.json")
+          fi
+          npm run tauri build -- "${args[@]}"
+
+      # The archive is `Glimpsfy.app.tar.gz` whatever it was built for; the manifest reads the
+      # architecture from its name.
+      - name: Name the macOS update
+        if: runner.os == 'macOS' && env.TAURI_SIGNING_PRIVATE_KEY != ''
+        shell: bash
+        run: |
+          arch="$(uname -m)"
+          [ "$arch" = arm64 ] && arch=aarch64
+          cd target/release/bundle/macos
+          mv Glimpsfy.app.tar.gz "Glimpsfy_${arch}.app.tar.gz"
+          mv Glimpsfy.app.tar.gz.sig "Glimpsfy_${arch}.app.tar.gz.sig"
+
+      - name: Attach to release
+        shell: bash
+        run: |
+          shopt -s nullglob
+          files=(${{ matrix.files }})
+          if [ -n "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            files+=(${{ matrix.updater }})
+          fi
+          gh release upload "$TAG" "${files[@]}" --clobber
+
+  # What an installed app asks for: the version and, per system, where its update is and its
+  # signature. Written last, from the signatures the release has, so it never names a file that
+  # isn't there.
+  manifest:
+    name: Update manifest
+    needs: [release-please, build]
+    if: ${{ !cancelled() && (needs.release-please.outputs.release_created == 'true' || github.event_name == 'workflow_dispatch') }}
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ inputs.tag || needs.release-please.outputs.tag_name }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Write latest.json
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          mkdir sigs
+          gh release download "$TAG" --pattern '*.sig' --dir sigs || true
+
+          base="https://github.com/$GH_REPO/releases/download/$TAG"
+          platforms='{}'
+          add() {
+            platforms="$(jq --arg key "$1" --arg url "$base/$(basename "${2%.sig}")" --arg signature "$(cat "$2")" \
+              '. + {($key): {signature: $signature, url: $url}}' <<<"$platforms")"
+          }
+
+          for sig in sigs/*.app.tar.gz.sig; do
+            name="$(basename "$sig" .app.tar.gz.sig)"
+            add "darwin-${name##*_}" "$sig"
+          done
+
+          if [ "$platforms" = '{}' ]; then
+            echo "No signatures on $TAG: no update manifest."
+            exit 0
+          fi
+
+          jq -n --arg version "${TAG#v}" --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --argjson platforms "$platforms" \
+            '{version: $version, pub_date: $date, platforms: $platforms}' > latest.json
+          cat latest.json
+          gh release upload "$TAG" latest.json --clobber

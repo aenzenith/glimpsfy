@@ -1,0 +1,920 @@
+/* Glimpsfy components, copied from design/kit/glass.css (line 382 to the end). The kit is the
+   source of truth: change the kit first, then copy the change here. */
+/* =============================================================================
+   Base: no default browser styling on anything the kit draws
+   ============================================================================= */
+:where([class^="g-"], [class*=" g-"]),
+:where([class^="g-"], [class*=" g-"])::before,
+:where([class^="g-"], [class*=" g-"])::after { box-sizing: border-box; }
+:where(h1, h2, h3, h4, h5, h6, p, ul, ol, dl, dd, figure, hr):where([class^="g-"], [class*=" g-"]) { margin: 0; padding: 0; list-style: none; }
+
+:where(button[class^="g-"], button[class*=" g-"], a[class^="g-"], a[class*=" g-"]) {
+  margin: 0; padding: 0; border: 0; background: none; color: inherit; font: inherit;
+  text-decoration: none; cursor: default; -webkit-appearance: none; appearance: none;
+  -webkit-tap-highlight-color: transparent;
+}
+/* bare children that the kit draws without a class of their own */
+:where(.g-seg > button) {
+  box-sizing: border-box; margin: 0; border: 0; background: none; color: inherit; font: inherit;
+  cursor: default; -webkit-appearance: none; appearance: none; -webkit-tap-highlight-color: transparent;
+}
+:where(input[class^="g-"], input[class*=" g-"], select[class^="g-"], textarea[class^="g-"]) {
+  margin: 0; font: inherit; color: inherit; -webkit-appearance: none; appearance: none;
+}
+:where(.g-search input, .g-select > select) {
+  box-sizing: border-box; margin: 0; font: inherit; color: inherit; -webkit-appearance: none; appearance: none;
+}
+:where(kbd.g-kbd) { font: inherit; }
+
+/* g-icon from icons.js: reserve the box before the script upgrades it */
+g-icon { display: inline-flex; flex: none; width: 20px; height: 20px; line-height: 0; vertical-align: middle; }
+g-icon[size="12"] { width: 12px; height: 12px; }
+g-icon[size="14"] { width: 14px; height: 14px; }
+g-icon[size="16"] { width: 16px; height: 16px; }
+g-icon[size="24"] { width: 24px; height: 24px; }
+g-icon[size="32"] { width: 32px; height: 32px; }
+g-icon[size="40"] { width: 40px; height: 40px; }
+g-icon > svg { display: block; overflow: visible; }
+
+/* =============================================================================
+   Glass material
+   ============================================================================= */
+.g-glass, .g-bar, .g-strip, .g-toast, .g-tip, .g-size, .g-chip, .g-hint, .g-countdown, .g-tag, .g-pop {
+  background: var(--glass-caustic), var(--glass-sheen), var(--glass-tint);
+  -webkit-backdrop-filter: var(--glass-filter);
+  backdrop-filter: var(--glass-filter);
+  box-shadow: var(--edge), var(--shadow-float);
+  color: var(--text);
+  font-family: var(--font);
+  -webkit-font-smoothing: antialiased;
+  /* surface roles on glass */
+  --surface-text: var(--text);
+  --surface-text-muted: var(--text-muted);
+  --surface-text-faint: var(--text-faint);
+  --surface-hover: var(--control-hover);
+  --surface-press: var(--control-press);
+  --surface-fill: transparent;
+  --surface-on: var(--control-press);
+  --surface-on-shadow: none;
+  --surface-button: var(--control-fill);
+  --surface-button-hover: var(--control-press);
+  --surface-button-press: var(--control-fill-press);
+  --surface-button-shadow: none;
+  --surface-line: var(--divider);
+  --surface-track: var(--track);
+  --surface-focus: var(--iris-text);
+  --surface-iris-text: var(--iris-text);
+  --surface-kbd: var(--control-fill);
+  --surface-kbd-shadow: inset 0 -1px 0 rgba(0, 0, 0, 0.25);
+  --tone-ok: var(--ok);
+  --tone-ok-soft: rgba(95, 214, 142, 0.16);
+  --tone-warn: var(--warn);
+  --tone-warn-soft: rgba(255, 179, 64, 0.16);
+  --tone-danger: var(--warn);                   /* red stays reserved for recording on glass */
+  --tone-danger-soft: rgba(255, 179, 64, 0.16);
+  --tone-iris: var(--iris-text);
+  --tone-iris-soft: var(--iris-soft);
+}
+.g-tip, .g-size, .g-hint, .g-tag, .g-glass[data-material="strong"] {
+  background: var(--glass-sheen), var(--glass-tint-strong);
+  box-shadow: var(--edge), var(--shadow-small);
+}
+
+/* Solid fallback: same sheen, edges and radii, no blur. It applies on request
+   (.solid on an element or an ancestor, html.no-blur), when the engine has no
+   backdrop-filter, and when the user asks the system to reduce transparency. */
+.solid :is(.g-glass, .g-bar, .g-strip, .g-toast, .g-tip, .g-size, .g-chip, .g-hint, .g-countdown, .g-tag, .g-pop),
+:is(.g-glass, .g-bar, .g-strip, .g-toast, .g-tip, .g-size, .g-chip, .g-hint, .g-countdown, .g-tag, .g-pop).solid,
+html.no-blur :is(.g-glass, .g-bar, .g-strip, .g-toast, .g-tip, .g-size, .g-chip, .g-hint, .g-countdown, .g-tag, .g-pop) {
+  background: var(--glass-solid-sheen);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+@media (prefers-reduced-transparency: reduce) {
+  :is(.g-glass, .g-bar, .g-strip, .g-toast, .g-tip, .g-size, .g-chip, .g-hint, .g-countdown, .g-tag, .g-pop) {
+    background: var(--glass-solid-sheen); -webkit-backdrop-filter: none; backdrop-filter: none;
+  }
+}
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  :is(.g-glass, .g-bar, .g-strip, .g-toast, .g-tip, .g-size, .g-chip, .g-hint, .g-countdown, .g-tag, .g-pop) { background: var(--glass-solid-sheen); }
+}
+
+/* =============================================================================
+   Floating layer
+   ============================================================================= */
+
+/* ---------------------------------------------------------------------- bar */
+.g-bar {
+  position: relative; display: inline-flex; align-items: center; gap: 0;
+  height: var(--bar-h); padding: var(--bar-pad); border-radius: var(--radius-bar);
+}
+.g-bar[aria-orientation="vertical"] { flex-direction: column; height: auto; width: var(--bar-h); }
+.g-bar > .g-button, .g-bar > .g-toggle { height: var(--button); border-radius: var(--radius-button); }
+.g-bar > .g-timecode { padding: 0 8px 0 10px; }
+
+/* ------------------------------------------------- round icon button (shared) */
+.g-btn {
+  position: relative; flex: none; display: inline-grid; place-items: center;
+  width: var(--button); height: var(--button); border-radius: var(--radius-button);
+  color: var(--surface-text);
+  transition: background-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out);
+}
+.g-btn[data-size="small"] { width: var(--button-small); height: var(--button-small); border-radius: calc(var(--button-small) / 2); }
+.g-btn:hover, .g-btn[data-state="hover"] { background: var(--surface-hover); }
+.g-btn:active, .g-btn[data-state="pressed"] { background: var(--surface-press); }
+.g-btn[aria-pressed="true"] { background: var(--iris); color: var(--text-on-iris); box-shadow: var(--shadow-active); }
+.g-btn[aria-pressed="true"]:hover, .g-btn[aria-pressed="true"][data-state="hover"] { background: var(--iris-hover); }
+.g-btn[aria-pressed="true"]:active, .g-btn[aria-pressed="true"][data-state="pressed"] { background: var(--iris-press); }
+.g-btn:disabled, .g-btn[aria-disabled="true"] { color: var(--surface-text-faint); background: none; box-shadow: none; }
+.g-btn[data-tone="muted"] { color: var(--surface-text-muted); }
+.g-btn[data-tone="record"] { color: var(--rec); }
+.g-btn[data-tone="record"]:is(:disabled, [aria-disabled="true"]) { color: var(--surface-text-faint); }
+
+/* ------------------------------------------------------------------ divider */
+.g-divider { flex: none; align-self: center; width: 1px; height: 18px; margin: 0 4px; background: var(--surface-line); border-radius: 1px; }
+.g-bar[aria-orientation="vertical"] > .g-divider { width: 18px; height: 1px; margin: 4px 0; }
+.g-strip > .g-divider { height: 16px; }
+.g-toolbar > .g-divider { height: 20px; margin: 0 6px; }
+
+/* ------------------------------------------------------------ options strip */
+.g-strip {
+  position: relative; display: inline-flex; align-items: center; gap: 0;
+  height: var(--strip-h); padding: 4px; border-radius: var(--radius-strip);
+}
+
+/* ------------------------------------------------------------ colour swatch */
+.g-swatch {
+  position: relative; flex: none; display: inline-grid; place-items: center;
+  width: 28px; height: 28px; border-radius: 14px;
+  transition: background-color var(--dur-fast) var(--ease-out);
+}
+.g-swatch::before {
+  content: ""; width: 16px; height: 16px; border-radius: 50%;
+  background: var(--swatch, var(--ink-red));
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.28), 0 0 0 0.5px rgba(0, 0, 0, 0.35);
+}
+.g-swatch:hover, .g-swatch[data-state="hover"] { background: var(--surface-hover); }
+.g-swatch[aria-checked="true"]::after, .g-swatch[aria-pressed="true"]::after {
+  content: ""; position: absolute; inset: 3px; border-radius: 50%; box-shadow: inset 0 0 0 1.5px var(--surface-text);
+}
+
+/* ------------------------------------------- option and stroke-width control */
+.g-option, .g-width {
+  position: relative; flex: none; display: inline-grid; place-items: center;
+  min-width: 28px; height: 28px; padding: 0 6px; border-radius: 14px;
+  color: var(--surface-text-muted); font: 600 13px/1 var(--font);
+  transition: background-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+.g-width::before { content: ""; display: block; width: 14px; height: var(--w, 2px); border-radius: 4px; background: currentColor; }
+.g-width[data-shape="dot"]::before { width: var(--w, 8px); height: var(--w, 8px); border-radius: 50%; }
+.g-option:hover, .g-width:hover, .g-option[data-state="hover"], .g-width[data-state="hover"] { background: var(--surface-hover); }
+.g-option[aria-checked="true"], .g-width[aria-checked="true"],
+.g-option[aria-pressed="true"], .g-width[aria-pressed="true"] { background: var(--surface-press); color: var(--surface-text); }
+
+/* --------------------------------------------------------------- size label */
+.g-size {
+  display: inline-flex; align-items: center; height: 24px; padding: 0 10px; border-radius: var(--radius-chip);
+  font: var(--type-num); font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.g-size-x { color: var(--text-muted); margin: 0 0.32em; }
+
+/* ------------------------------------------------------------------ key cap */
+.g-kbd {
+  display: inline-grid; place-items: center; flex: none;
+  min-width: 18px; height: 18px; padding: 0 5px; border-radius: var(--radius-key);
+  background: var(--surface-kbd); color: var(--surface-text); box-shadow: var(--surface-kbd-shadow);
+  font: var(--type-num-small); font-family: var(--font); letter-spacing: 0.02em; white-space: nowrap; /* SF draws the modifier glyphs at full size */
+}
+.g-keys { display: inline-flex; align-items: center; gap: 3px; }
+
+/* ------------------------------------------------------------------ tooltip */
+.g-tip {
+  display: inline-flex; align-items: center; gap: 8px;
+  height: 26px; padding: 0 4px 0 10px; border-radius: var(--radius-chip);
+  font: var(--type-label); white-space: nowrap; pointer-events: none;
+}
+.g-tip:not(:has(.g-kbd, .g-keys)) { padding-right: 10px; }
+
+/* ------------------------------------------------------------- hint capsule */
+.g-hint {
+  display: inline-flex; align-items: center; gap: 8px;
+  height: 32px; padding: 0 7px 0 14px; border-radius: var(--radius-chip);
+  font: var(--type-label); white-space: nowrap;
+}
+.g-hint > .g-divider { height: 14px; margin: 0 2px; }
+.g-muted { color: var(--surface-text-muted); }
+.g-mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+
+/* -------------------------------------------------- capsule button (shared) */
+.g-button {
+  position: relative; flex: none; display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  height: var(--control-h); padding: 0 12px; border-radius: calc(var(--control-h) / 2);
+  background: var(--surface-button); color: var(--surface-text); box-shadow: var(--surface-button-shadow);
+  font: var(--type-button); white-space: nowrap;
+  transition: background-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out);
+}
+:is(.g-glass, .g-bar, .g-strip, .g-toast, .g-chip, .g-pop) .g-button { font: var(--type-label); padding: 0 11px; }
+.g-button:has(> g-icon:first-child) { padding-left: 9px; }
+.g-button:hover, .g-button[data-state="hover"] { background: var(--surface-button-hover); }
+.g-button:active, .g-button[data-state="pressed"] { background: var(--surface-button-press); }
+.g-button[data-size="large"] { --control-h: 32px; padding: 0 16px; }
+.g-button[data-variant="primary"] { background: var(--iris); color: var(--text-on-iris); box-shadow: var(--shadow-active); }
+.g-button[data-variant="primary"]:hover, .g-button[data-variant="primary"][data-state="hover"] { background: var(--iris-hover); }
+.g-button[data-variant="primary"]:active, .g-button[data-variant="primary"][data-state="pressed"] { background: var(--iris-press); }
+.g-button[data-variant="record"] { --rec: #ffffff; background: var(--rec-fill); color: #ffffff; box-shadow: var(--shadow-rec); } /* a record icon inside turns white */
+.g-button[data-variant="record"]:hover, .g-button[data-variant="record"][data-state="hover"],
+.g-button[data-variant="record"]:active, .g-button[data-variant="record"][data-state="pressed"] { background: var(--rec-fill-hover); }
+/* Destructive, on both layers. --tone-danger is --win-danger in a window and --warn on
+   glass, because red on glass means recording. In a window the variant is red text on the
+   ordinary button and never a red fill. On glass it also drops the resting fill, which keeps
+   the amber at 5:1 over white (on the control fill it measured 3.8:1). */
+.g-button[data-variant="destructive"] { color: var(--tone-danger); }
+.g-button[data-variant="destructive"]:hover, .g-button[data-variant="destructive"][data-state="hover"] { background: var(--tone-danger-soft); }
+:is(.g-glass, .g-bar, .g-strip, .g-toast, .g-chip, .g-pop) .g-button[data-variant="destructive"] { background: none; box-shadow: none; }
+:is(.g-glass, .g-bar, .g-strip, .g-toast, .g-chip, .g-pop) .g-button[data-variant="destructive"]:is(:hover, [data-state="hover"], :active, [data-state="pressed"]) { background: var(--tone-danger-soft); color: var(--text); } /* amber on the amber hover fill fell to 3.9:1; white holds 7:1 */
+.g-button[data-variant="plain"] { background: none; box-shadow: none; }
+.g-button[data-variant="plain"]:hover, .g-button[data-variant="plain"][data-state="hover"] { background: var(--surface-hover); }
+.g-button[data-variant="plain"]:active, .g-button[data-variant="plain"][data-state="pressed"] { background: var(--surface-press); }
+.g-button:disabled, .g-button[aria-disabled="true"] { opacity: 0.42; box-shadow: none; }
+.g-button:disabled:hover, .g-button[aria-disabled="true"]:hover { background: var(--surface-button); }
+.g-button[data-variant="primary"]:disabled, .g-button[data-variant="primary"][aria-disabled="true"] { background: var(--iris); }
+.g-button[data-variant="plain"]:is(:disabled, [aria-disabled="true"]):hover,
+:is(.g-glass, .g-bar, .g-strip, .g-toast, .g-chip, .g-pop) .g-button[data-variant="destructive"]:is(:disabled, [aria-disabled="true"]):hover { background: none; }
+/* a disabled record button is an ordinary disabled button: no red fill, no red glyph */
+.g-button[data-variant="record"]:is(:disabled, [aria-disabled="true"]),
+.g-button[data-variant="record"]:is(:disabled, [aria-disabled="true"]):hover { background: var(--surface-button); color: var(--surface-text); box-shadow: none; }
+.g-button > .g-kbd { margin-right: -4px; }
+/* muted text inside a filled button on glass would fall to 4.3:1 over white, so it takes the full text colour */
+:is(.g-glass, .g-bar, .g-strip, .g-toast, .g-chip, .g-pop) .g-button:not([data-variant="plain"], [data-variant="destructive"]) .g-muted { color: var(--text); }
+
+/* A disabled control never shows recording red: the record glyph's dot follows the text colour. */
+:is(.g-btn, .g-button, .g-toggle, .g-menu-item, .g-pop-item, .g-seg > button):is(:disabled, [aria-disabled="true"]) { --rec: currentColor; }
+
+/* ------------------------------------------------ segmented control (shared)
+   role="radiogroup" with role="radio" buttons carrying aria-checked. On glass
+   the bar is the track; in a window the control draws its own track. */
+.g-seg {
+  position: relative; display: inline-flex; align-items: center; gap: 0; flex: none;
+  height: var(--control-h); padding: 0; border-radius: calc(var(--control-h) / 2);
+  background: var(--surface-fill);
+}
+.g-seg > button {
+  position: relative; display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  min-width: 28px; height: 100%; padding: 0 12px; border-radius: inherit;
+  color: var(--surface-text-muted); font: var(--type-label); white-space: nowrap; z-index: 0;
+  transition: color var(--dur-fast) var(--ease-out);
+}
+/* icon-only: the button names itself with aria-label and holds nothing but the icon */
+.g-seg > button[aria-label]:has(> g-icon:only-child) { padding: 0; width: 36px; }
+.g-seg > button::before {
+  content: ""; position: absolute; inset: 2px; border-radius: inherit; z-index: -1;
+  transition: background-color var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out);
+}
+.g-seg > button:hover::before, .g-seg > button[data-state="hover"]::before { background: var(--surface-hover); }
+.g-seg > button[aria-checked="true"] { color: var(--surface-text); }
+.g-seg > button[aria-checked="true"]::before { background: var(--surface-on); box-shadow: var(--surface-on-shadow); }
+.g-seg > button:disabled, .g-seg > button[aria-disabled="true"] { color: var(--surface-text-faint); }
+[data-theme] .g-seg > button { font: var(--type-button); font-weight: 500; }
+:is(.g-glass, .g-bar, .g-strip) .g-seg > button::before { inset: 0; }
+.g-bar > .g-seg { height: var(--button); border-radius: var(--radius-button); }
+.g-strip > .g-seg { height: 28px; }
+/* On a glass panel that is not a bar or a strip (a g-pop, a g-glass card, a toast) nothing
+   else draws the track, so the control draws its own and the chosen segment sits inside it. */
+:is(.g-glass, .g-pop, .g-toast, .g-chip) .g-seg:not(:is(.g-bar, .g-strip) > .g-seg) { background: var(--control-hover); }
+:is(.g-glass, .g-pop, .g-toast, .g-chip) .g-seg:not(:is(.g-bar, .g-strip) > .g-seg) > button::before { inset: 2px; }
+:is(.g-glass, .g-pop, .g-toast, .g-chip) .g-seg:not(:is(.g-bar, .g-strip) > .g-seg) > button[aria-checked="true"]::before { background: var(--control-fill-press); }
+
+/* --------------------------------------------------------- toggle (glass)
+   A capsule with an icon, an optional label and an optional level meter.
+   aria-pressed="false" mutes it; swap the icon for its -off variant. */
+.g-toggle {
+  position: relative; flex: none; display: inline-flex; align-items: center; gap: 6px;
+  height: var(--button); padding: 0 10px 0 6px; border-radius: var(--radius-button);
+  color: var(--surface-text-muted); font: var(--type-label); white-space: nowrap;
+  transition: background-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+.g-toggle[aria-label]:has(> g-icon:only-child) { padding: 0; width: var(--button); justify-content: center; }
+.g-toggle:hover, .g-toggle[data-state="hover"] { background: var(--surface-hover); }
+.g-toggle[aria-pressed="true"] { color: var(--surface-text); background: var(--surface-button); }
+.g-toggle[aria-pressed="true"]:hover, .g-toggle[aria-pressed="true"][data-state="hover"] { background: var(--surface-button-hover); }
+.g-toggle:active, .g-toggle[data-state="pressed"] { background: var(--surface-button-press); }
+.g-toggle:disabled, .g-toggle[aria-disabled="true"] { color: var(--surface-text-faint); background: none; }
+
+/* ------------------------------------------------------------- level meter
+   role="meter" with style="--level: 0.62". Seven cells, the last two amber. */
+.g-meter {
+  position: relative; display: inline-block; flex: none; width: 30px; height: 8px;
+  --cells: repeating-linear-gradient(90deg, #000 0 3px, transparent 3px 4.5px);
+  background: var(--surface-track);
+  -webkit-mask: var(--cells); mask: var(--cells);
+}
+.g-meter::before {
+  content: ""; position: absolute; inset: 0;
+  background: linear-gradient(90deg, var(--tone-ok) 0 69%, var(--tone-warn) 69%);
+  clip-path: inset(0 calc((1 - var(--level, 0)) * 100%) 0 0);
+}
+.g-toggle[aria-pressed="false"] .g-meter::before { opacity: 0; }
+
+/* ------------------------------------------------------- switch (shared)
+   <input type="checkbox" role="switch" class="g-switch"> */
+.g-switch {
+  position: relative; flex: none; display: inline-block; width: 36px; height: 20px; border-radius: 10px;
+  background: var(--surface-track); vertical-align: middle;
+  transition: background-color var(--dur-base) var(--ease-out);
+}
+.g-switch::before {
+  content: ""; position: absolute; left: 2px; top: 2px; width: 16px; height: 16px; border-radius: 50%;
+  background: #ffffff; box-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.16), 0 1px 3px rgba(0, 0, 0, 0.28);
+  transition: transform var(--dur-base) var(--ease-spring);
+}
+.g-switch::after { content: ""; position: absolute; inset: -4px -2px; } /* 40 × 28 hit area */
+.g-switch:checked { background: var(--iris); }
+.g-switch:checked::before { transform: translateX(16px); }
+.g-switch:disabled { opacity: 0.42; }
+
+/* ------------------------------------------------------- progress ring (shared)
+   <svg class="g-ring" viewBox="0 0 22 22" style="--progress: 62">
+     <circle cx="11" cy="11" r="8" pathLength="100"/><circle cx="11" cy="11" r="8" pathLength="100"/></svg> */
+.g-ring { display: block; flex: none; width: var(--ring-size, 22px); height: var(--ring-size, 22px); transform: rotate(-90deg); }
+.g-ring circle { fill: none; stroke: var(--surface-track); stroke-width: 2.4; }
+.g-ring circle + circle { stroke: var(--surface-iris-text); stroke-linecap: round; stroke-dasharray: var(--progress, 0) 100; transition: stroke-dasharray var(--dur-base) var(--ease-out); }
+.g-ring[data-state="indeterminate"] { animation: g-spin 900ms linear infinite; }
+.g-ring[data-state="indeterminate"] circle + circle { stroke-dasharray: 28 100; }
+@keyframes g-spin { from { transform: rotate(-90deg); } to { transform: rotate(270deg); } }
+
+/* --------------------------------------------------------- status badge */
+.g-status {
+  position: relative; display: inline-grid; place-items: center; flex: none;
+  width: 18px; height: 18px; border-radius: 50%; color: var(--on-status);
+}
+.g-status > g-icon { width: 12px; height: 12px; }
+.g-status[data-status="ok"] { background: var(--ok); }
+.g-status[data-status="warn"] { background: var(--warn); }
+.g-status[data-status="info"] { background: var(--iris); color: var(--text-on-iris); }
+.g-status[data-status="progress"] { width: 22px; height: 22px; background: rgba(19, 17, 32, 0.92); }
+.g-status[data-status="progress"] .g-ring { --ring-size: 22px; --surface-track: rgba(255, 255, 255, 0.22); --surface-iris-text: var(--iris-text); }
+.g-status[data-status="rec"] { background: rgba(19, 17, 32, 0.92); }
+.g-status[data-status="rec"]::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--rec); }
+
+/* ---------------------------------------------------------------- toast */
+.g-toast {
+  position: relative; display: flex; align-items: center; gap: 12px;
+  width: var(--toast-w); max-width: 100%; padding: 10px; border-radius: var(--radius-card);
+}
+.g-toast-thumb { position: relative; flex: none; width: 52px; height: 38px; border-radius: var(--radius-thumb); }
+.g-toast-thumb > :first-child:not(.g-status) {
+  position: absolute; inset: 0; width: 100%; height: 100%; border-radius: inherit; overflow: hidden; object-fit: cover;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.16);
+}
+.g-toast-thumb > .g-status { position: absolute; right: -5px; bottom: -5px; box-shadow: 0 0 0 2px rgba(19, 17, 32, 0.92); }
+.g-toast-thumb > .g-status[data-status="progress"] { right: -7px; bottom: -7px; }
+.g-toast-text { flex: 1; min-width: 0; }
+.g-toast-title { font: var(--type-title); }
+.g-toast-body { margin-top: 1px; font: var(--type-body); color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.g-toast-body[data-kind="mono"] { font: 400 11.5px/16px var(--font-mono); }
+.g-toast-body[data-kind="link"] { font: 500 11.5px/16px var(--font-mono); color: var(--iris-text); }
+.g-toast-body[data-kind="wrap"] { white-space: normal; }
+.g-toast-actions { display: flex; align-items: center; gap: 4px; flex: none; }
+.g-toast-actions > .g-btn { color: var(--text-muted); }
+.g-toasts { display: grid; gap: 10px; justify-items: end; }
+.g-toast[data-state="enter"] { animation: g-toast-in var(--dur-toast) var(--ease-out) both; }
+.g-toast[data-state="leave"] { animation: g-toast-out var(--dur-base) var(--ease-out) both; }
+@keyframes g-toast-in { from { opacity: 0; transform: translateY(-8px) scale(0.98); } to { opacity: 1; transform: none; } }
+@keyframes g-toast-out { to { opacity: 0; transform: translateX(12px); } }
+
+/* ----------------------------------------------------------------- chip */
+.g-chip {
+  position: relative; display: inline-flex; align-items: center; gap: 8px;
+  height: var(--bar-h); padding: 4px 4px 4px 12px; border-radius: var(--radius-bar); white-space: nowrap;
+}
+.g-chip > g-icon:first-child { color: var(--text-muted); }
+.g-chip-text { min-width: 0; max-width: 220px; overflow: hidden; text-overflow: ellipsis; font: var(--type-label); }
+.g-chip-text > small { display: block; font: var(--type-overline); letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-muted); }
+.g-chip > .g-button { height: 32px; border-radius: 16px; }
+
+/* ------------------------------------- tag: small glass label on content */
+.g-tag {
+  display: inline-flex; align-items: center; gap: 4px; height: 20px; padding: 0 7px; border-radius: var(--radius-chip);
+  font: var(--type-num-small); font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.g-tag > g-icon { width: 12px; height: 12px; margin-left: -2px; }
+
+/* --------------------------------------------- recording: dot, timecode, frame */
+.g-rec-dot { display: inline-block; flex: none; width: 10px; height: 10px; border-radius: 50%; background: var(--rec); box-shadow: 0 0 0 3px rgba(255, 90, 80, 0.22); animation: g-pulse 1.6s var(--ease-out) infinite; }
+.g-rec-dot[data-state="paused"] { background: var(--text-muted); box-shadow: none; animation: none; }
+@keyframes g-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+.g-timecode { display: inline-flex; align-items: center; gap: 8px; font: var(--type-timecode); font-variant-numeric: tabular-nums; white-space: nowrap; color: var(--surface-text); }
+.g-rec-frame { position: absolute; pointer-events: none; box-shadow: 0 0 0 1.5px var(--rec), 0 0 0 2.5px rgba(0, 0, 0, 0.35); border-radius: 2px; }
+
+/* ------------------------------------------------------------ countdown */
+.g-countdown {
+  position: relative; display: inline-grid; place-items: center; width: 112px; height: 112px; border-radius: 50%;
+  font: var(--type-countdown); font-variant-numeric: tabular-nums; letter-spacing: -0.02em;
+}
+.g-countdown > .g-ring { position: absolute; inset: 6px; --ring-size: 100px; }
+.g-countdown > .g-ring circle { stroke-width: 1.4; }
+
+/* ------------------------------------------------ selection and handles */
+/* the clear area of the frozen screen: place it over the selection or the recorded
+   area and everything outside it takes --dim (the screen must clip its overflow) */
+.g-dim { position: absolute; pointer-events: none; box-shadow: 0 0 0 4000px var(--dim); }
+.g-selection { position: absolute; pointer-events: none; }
+.g-selection::before { content: ""; position: absolute; inset: -1.5px; border: 1.5px solid var(--iris); }
+.g-selection::after { content: ""; position: absolute; inset: 0; box-shadow: inset 0 0 0 1px var(--selection-inner); }
+.g-handle {
+  position: absolute; z-index: 3; background: var(--handle);
+  box-shadow: 0 0 0 1.5px var(--iris), var(--shadow-handle);
+  width: var(--handle-corner); height: var(--handle-corner); border-radius: 50%; margin: -5px 0 0 -5px;
+}
+.g-handle[data-handle="x"] { width: 18px; height: 6px; border-radius: 3px; margin: -3px 0 0 -9px; }
+.g-handle[data-handle="y"] { width: 6px; height: 18px; border-radius: 3px; margin: -9px 0 0 -3px; }
+.g-handle::after { content: ""; position: absolute; left: 50%; top: 50%; width: 28px; height: 28px; margin: -14px 0 0 -14px; } /* hit area */
+
+/* ------------------------------------------------- tooltip wrapper (shared)
+   <span class="g-tipwrap"><button class="g-btn" aria-label="Copy">…</button>
+     <span class="g-tip" role="tooltip">Copy<kbd class="g-kbd">⌘C</kbd></span></span>
+   The tip appears 500 ms after hover or keyboard focus and leaves at once.
+   data-side="below" hangs it under the button; data-align="start" | "end" pins it
+   to a side when the button sits near a screen or window edge.
+   data-state="show" on the tip forces it for a static presentation. */
+.g-tipwrap { position: relative; display: inline-flex; flex: none; }
+.g-tipwrap > .g-tip {
+  position: absolute; bottom: calc(100% + 6px); left: 50%; transform: translateX(-50%); z-index: 40;
+  opacity: 0; visibility: hidden; transition: opacity var(--dur-base) var(--ease-out), visibility 0s linear var(--dur-base);
+}
+.g-tipwrap[data-side="below"] > .g-tip { bottom: auto; top: calc(100% + 6px); }
+.g-tipwrap[data-align="start"] > .g-tip { left: -2px; transform: none; }
+.g-tipwrap[data-align="end"] > .g-tip { left: auto; right: -2px; transform: none; }
+.g-tipwrap:hover > .g-tip, .g-tipwrap:focus-within > .g-tip { opacity: 1; visibility: visible; transition-delay: 500ms; }
+.g-tipwrap > .g-tip[data-state="show"] { opacity: 1; visibility: visible; transition: none; }
+
+/* ---------------------------------------------- glass popover and menu (g-pop)
+   The floating layer's own panel: the options of the setup bar, a device list, a
+   question that hangs from a bar. It is glass, so it needs no theme. g-popover is
+   the window layer's menu bar panel and is a different component.
+   Rows: g-pop-head (overline), g-pop-title + g-pop-text (a short question),
+   g-pop-row (a label with a control: <label class="g-pop-row"><span class="g-pop-label">…</span>
+   <input class="g-switch" …></label>), g-pop-item (a menu item: g-pop-check, g-pop-name,
+   g-pop-sub; aria-checked, aria-disabled, data-variant="destructive"), g-pop-help,
+   g-pop-sep, g-pop-actions, g-pop-foot. Radii: 18 outside − 6 padding = 12 rows. */
+.g-pop { position: relative; display: flex; flex-direction: column; width: var(--pop-w); max-width: 100%; padding: var(--space-6); border-radius: var(--radius-card); }
+.g-pop-head { padding: var(--space-8) var(--space-8) var(--space-4); font: var(--type-overline); letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-muted); }
+.g-pop-title { padding: var(--space-8) var(--space-8) 0; font: var(--type-title); color: var(--text); }
+.g-pop-text { padding: var(--space-4) var(--space-8) var(--space-12); font: var(--type-body); color: var(--text-muted); }
+.g-pop-row { display: flex; align-items: center; gap: var(--space-12); min-height: 40px; padding: 0 var(--space-4) 0 var(--space-8); border-radius: var(--radius-lens); }
+label.g-pop-row:hover { background: var(--control-hover); }
+.g-pop-label { flex: 1; min-width: 0; display: inline-flex; align-items: center; gap: var(--space-8); font: var(--type-label); color: var(--text); white-space: nowrap; }
+.g-pop-label > g-icon { color: var(--text-muted); }
+.g-pop-help { padding: 0 var(--space-8) var(--space-8); font: var(--type-body); color: var(--text-muted); }
+.g-pop-sep { height: 1px; margin: var(--space-4) var(--space-8); background: var(--divider); border: 0; }
+.g-pop-foot { padding: var(--space-4) var(--space-8) var(--space-6); font: var(--type-body); color: var(--text-muted); }
+.g-pop-actions { display: flex; gap: var(--space-6); padding: 0 var(--space-4) var(--space-4); }
+.g-pop-actions > .g-button { flex: 1; }
+.g-pop-item {
+  position: relative; display: flex; align-items: center; gap: var(--space-8); width: 100%; min-height: 36px; padding: 0 var(--space-8);
+  border-radius: var(--radius-lens); color: var(--text); font: var(--type-label); text-align: left;
+}
+.g-pop-item > g-icon { color: var(--text-muted); }
+.g-pop-item:hover, .g-pop-item[data-state="hover"] { background: var(--control-hover); }
+.g-pop-check { visibility: hidden; color: var(--iris-text); }
+.g-pop-item[aria-checked="true"] .g-pop-check { visibility: visible; }
+.g-pop-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.g-pop-sub { font: var(--type-caption); color: var(--text-muted); white-space: nowrap; }
+.g-pop-item[data-variant="destructive"], .g-pop-item[data-variant="destructive"] > g-icon { color: var(--warn); }
+.g-pop-item:is(:disabled, [aria-disabled="true"]), .g-pop-item:is(:disabled, [aria-disabled="true"]) > * { color: var(--text-faint); background: none; }
+
+/* ------------------------------------------------ linear progress (shared)
+   <div class="g-progress" role="progressbar" aria-valuenow="62" aria-valuemin="0"
+   aria-valuemax="100" style="--progress:62"></div> · data-state="indeterminate" ·
+   data-tone="warn" for a stalled or failed transfer. Same 0–100 scale as g-ring. */
+.g-progress { position: relative; display: block; width: 100%; height: 4px; overflow: hidden; border-radius: 2px; background: var(--surface-track); }
+.g-progress::before {
+  content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: calc(var(--progress, 0) * 1%);
+  border-radius: inherit; background: var(--surface-iris-text); transition: width var(--dur-base) var(--ease-out);
+}
+.g-progress[data-tone="warn"]::before { background: var(--tone-warn); }
+.g-progress[data-state="indeterminate"]::before { width: 32%; animation: g-progress-slide 1.3s var(--ease-out) infinite; }
+@keyframes g-progress-slide { from { left: -32%; } to { left: 100%; } }
+
+/* ---------------------------------------------------------- text link (shared)
+   <a class="g-link" href="…">. Iris text on every surface; underline on hover. */
+.g-link { color: var(--surface-iris-text); font-weight: 500; text-decoration: none; border-radius: 3px; white-space: nowrap; cursor: pointer; }
+.g-link:hover, .g-link[data-state="hover"] { text-decoration: underline; text-underline-offset: 2px; }
+
+/* =============================================================================
+   Window layer
+   ============================================================================= */
+
+/* --------------------------------------------------------------- window */
+.g-window {
+  position: relative; display: flex; overflow: hidden; isolation: isolate;
+  border-radius: var(--radius-window); box-shadow: var(--win-shadow-window);
+  color: var(--win-text); font: var(--type-text); -webkit-font-smoothing: antialiased;
+}
+.g-window::after { content: ""; position: absolute; inset: 0; border-radius: inherit; box-shadow: var(--win-rim); pointer-events: none; z-index: 10; }
+.g-window-main { position: relative; display: flex; flex-direction: column; flex: 1; min-width: 0; background: var(--win-content); }
+.g-traffic { display: inline-flex; gap: 8px; flex: none; }
+.g-traffic > i { display: block; width: 12px; height: 12px; border-radius: 50%; box-shadow: inset 0 0 0 0.5px rgba(0, 0, 0, 0.20); }
+.g-traffic > i:nth-child(1) { background: #ff5f57; }
+.g-traffic > i:nth-child(2) { background: #febc2e; }
+.g-traffic > i:nth-child(3) { background: #28c840; }
+.g-window[data-state="inactive"] .g-traffic > i { background: var(--win-track); box-shadow: none; }
+.g-titlebar {
+  position: relative; display: flex; align-items: center; flex: none; height: var(--titlebar-h); padding: 0 12px;
+  background: var(--win-ground); box-shadow: inset 0 calc(-1 * var(--hairline)) 0 var(--win-line);
+}
+.g-titlebar > .g-window-title { position: absolute; left: 80px; right: 80px; text-align: center; font: var(--type-title); color: var(--win-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.g-titlebar[data-variant="transparent"] { background: transparent; box-shadow: none; }
+.g-toolbar {
+  position: relative; display: flex; align-items: center; gap: 4px; flex: none;
+  height: var(--toolbar-h); padding: 0 12px 0 16px;
+  background: var(--win-toolbar); box-shadow: inset 0 calc(-1 * var(--hairline)) 0 var(--win-line);
+}
+.g-toolbar > .g-traffic { margin-right: 16px; }
+.g-toolbar > .g-window-title { font: var(--type-heading); white-space: nowrap; margin-right: 8px; }
+.g-toolbar > .g-search { margin-left: 4px; }
+.g-spacer { flex: 1; }
+.g-content { position: relative; flex: 1; min-height: 0; overflow: auto; padding: var(--space-20) var(--space-24); background: var(--win-content); }
+.g-content[data-padding="none"] { padding: 0; }
+.g-statusbar { display: flex; align-items: center; gap: 12px; flex: none; height: var(--statusbar-h); padding: 0 12px; font: var(--type-caption); color: var(--win-text-3); box-shadow: inset 0 var(--hairline) 0 var(--win-line); background: var(--win-content); }
+.g-statusbar[data-size="large"] { --statusbar-h: 36px; }                      /* the editor: zoom controls and a readout */
+
+/* ------------------------------------------------------------- sidebar */
+.g-sidebar {
+  position: relative; display: flex; flex-direction: column; flex: none; width: var(--sidebar-w);
+  background: var(--win-material);
+  -webkit-backdrop-filter: var(--win-material-filter); backdrop-filter: var(--win-material-filter);
+  box-shadow: inset calc(-1 * var(--hairline)) 0 0 var(--win-line);
+}
+.g-sidebar-head { display: flex; align-items: center; flex: none; height: var(--toolbar-h); padding: 0 20px; }
+.g-nav { display: flex; flex-direction: column; gap: 1px; padding: 0 10px 12px; overflow: auto; }
+.g-nav-section { padding: 14px 8px 5px; font: var(--type-caption-strong); color: var(--win-text-3); }
+.g-nav-section:first-child { padding-top: 2px; }
+.g-nav-item {
+  position: relative; display: flex; align-items: center; gap: 8px; flex: none;
+  height: var(--row-h); padding: 0 8px; border-radius: var(--radius-field);
+  color: var(--win-text); font: var(--type-text); white-space: nowrap;
+}
+.g-nav-item > g-icon { color: var(--win-iris-text); }
+.g-nav-item:hover, .g-nav-item[data-state="hover"] { background: var(--win-hover); }
+.g-nav-item[aria-current="page"], .g-nav-item[aria-selected="true"] { background: var(--win-selection-soft); }
+.g-nav-count { margin-left: auto; font: var(--type-caption); font-variant-numeric: tabular-nums; color: var(--win-text-2); }
+
+/* material fallbacks for the window layer */
+.solid :is(.g-sidebar, .g-popover, .g-menu), :is(.g-sidebar, .g-popover, .g-menu).solid,
+html.no-blur :is(.g-sidebar, .g-popover, .g-menu) { background: var(--win-material-solid); -webkit-backdrop-filter: none; backdrop-filter: none; }
+@media (prefers-reduced-transparency: reduce) {
+  :is(.g-sidebar, .g-popover, .g-menu) { background: var(--win-material-solid); -webkit-backdrop-filter: none; backdrop-filter: none; }
+}
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  :is(.g-sidebar, .g-popover, .g-menu) { background: var(--win-material-solid); }
+}
+
+/* -------------------------------------------------------- search field */
+.g-search {
+  position: relative; display: inline-flex; align-items: center; gap: 6px; flex: none;
+  width: var(--search-w); height: var(--control-h); padding: 0 6px 0 9px; border-radius: calc(var(--control-h) / 2);
+  background: var(--win-fill); color: var(--win-text-3);
+}
+.g-search > input {
+  flex: 1; min-width: 0; height: 100%; padding: 0; border: 0; outline: 0; background: none;
+  color: var(--win-text); font: var(--type-text); -webkit-appearance: none; appearance: none;
+}
+.g-search > input::placeholder { color: var(--win-text-3); opacity: 1; }
+.g-search > input::-webkit-search-decoration,
+.g-search > input::-webkit-search-cancel-button,
+.g-search > input::-webkit-search-results-button { -webkit-appearance: none; appearance: none; display: none; }
+.g-search:focus-within { box-shadow: 0 0 0 2px var(--win-focus); background: var(--win-field); }
+
+/* ---------------------------------------------------------- text field */
+.g-field {
+  display: block; width: 100%; height: var(--control-h); padding: 0 10px; border: 0; border-radius: var(--radius-field);
+  background: var(--win-field); color: var(--win-text); font: var(--type-text);
+  box-shadow: inset 0 0 0 1px var(--win-field-edge);
+  transition: box-shadow var(--dur-fast) var(--ease-out);
+}
+textarea.g-field { height: auto; min-height: 72px; padding: 6px 10px; resize: vertical; }
+.g-field::placeholder { color: var(--win-text-3); opacity: 1; }
+.g-field:focus { outline: 0; }
+.g-field:focus-visible, .g-field[data-state="focus"] { outline: 0; box-shadow: inset 0 0 0 1px var(--win-focus), 0 0 0 3px color-mix(in srgb, var(--win-focus) 35%, transparent); }
+.g-field[aria-invalid="true"] { box-shadow: inset 0 0 0 1.5px var(--win-danger); }
+.g-field:disabled { opacity: 0.5; }
+.g-field[readonly] { background: var(--win-fill); box-shadow: none; }
+.g-field[data-kind="mono"] { font: 400 12px/18px var(--font-mono); }
+
+/* --------------------------------------------------- select (pop-up button)
+   <label class="g-select"><select>…</select></label> */
+.g-select { position: relative; display: inline-flex; flex: none; min-width: 120px; }
+.g-select > select {
+  width: 100%; height: var(--control-h); padding: 0 30px 0 12px; border: 0; border-radius: calc(var(--control-h) / 2);
+  background: var(--surface-button); color: var(--surface-text); box-shadow: var(--surface-button-shadow);
+  font: var(--type-text); -webkit-appearance: none; appearance: none; cursor: default;
+}
+.g-select::after {
+  content: ""; position: absolute; right: 9px; top: 50%; width: 14px; height: 14px; margin-top: -7px; pointer-events: none;
+  background: var(--surface-text-muted);
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='%23000' stroke-width='1.9' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m7 7.5 3-3 3 3M7 12.5l3 3 3-3'/%3E%3C/svg%3E") center / 14px 14px no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='%23000' stroke-width='1.9' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m7 7.5 3-3 3 3M7 12.5l3 3 3-3'/%3E%3C/svg%3E") center / 14px 14px no-repeat;
+}
+.g-select > select:hover, .g-select[data-state="hover"] > select { background: var(--surface-button-hover); }
+.g-select > select:focus { outline: 0; }
+.g-select > select:disabled { opacity: 0.42; }
+.g-select:has(select:disabled)::after { opacity: 0.42; }
+
+/* ------------------------------------------------------ checkbox and radio */
+.g-checkbox, .g-radio {
+  position: relative; flex: none; display: inline-grid; place-items: center;
+  width: 16px; height: 16px; vertical-align: middle;
+  background: var(--win-field); box-shadow: inset 0 0 0 1px var(--win-line-strong);
+  transition: background-color var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out);
+}
+.g-checkbox { border-radius: var(--radius-check); }
+.g-radio { border-radius: 50%; }
+.g-checkbox::after, .g-radio::after { content: ""; position: absolute; inset: -6px; } /* 28 × 28 hit area */
+.g-checkbox:hover, .g-radio:hover { box-shadow: inset 0 0 0 1px var(--win-text-3); }
+.g-checkbox:checked, .g-checkbox:indeterminate, .g-radio:checked { background: var(--iris); box-shadow: inset 0 0 0 0.5px rgba(0, 0, 0, 0.12); }
+.g-checkbox:checked::before, .g-checkbox:indeterminate::before {
+  content: ""; width: 12px; height: 12px; background: #ffffff;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='%23000' stroke-width='2.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m5 10.5 3.25 3.25L15 6.5'/%3E%3C/svg%3E") center / 12px 12px no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='%23000' stroke-width='2.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m5 10.5 3.25 3.25L15 6.5'/%3E%3C/svg%3E") center / 12px 12px no-repeat;
+}
+.g-checkbox:indeterminate::before { -webkit-mask: none; mask: none; width: 8px; height: 2px; border-radius: 1px; }
+.g-radio:checked::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: #ffffff; }
+.g-checkbox:disabled, .g-radio:disabled { opacity: 0.42; }
+/* a label with its control: the whole row is the hit target */
+.g-choice { display: inline-flex; align-items: center; gap: 8px; min-height: var(--control-h); color: var(--win-text); font: var(--type-text); }
+.g-choice:has(input:disabled) { color: var(--win-text-disabled); }
+.g-choices { display: flex; flex-direction: column; gap: 0; }
+
+/* -------------------------------------------------------------- slider
+   <input type="range" class="g-slider" style="--value: 40%"> */
+.g-slider { display: block; width: 100%; height: var(--control-h); background: none; cursor: default; --value: 50%; }
+.g-slider:focus { outline: 0; }
+.g-slider::-webkit-slider-runnable-track {
+  height: 4px; border-radius: 2px;
+  background: linear-gradient(90deg, var(--iris) 0 var(--value), var(--surface-track) var(--value));
+}
+.g-slider::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none; width: 18px; height: 18px; margin-top: -7px; border-radius: 50%;
+  background: #ffffff; box-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.18), 0 1px 3px rgba(0, 0, 0, 0.28);
+  transition: box-shadow var(--dur-fast) var(--ease-out);
+}
+.g-slider::-moz-range-track { height: 4px; border-radius: 2px; background: var(--surface-track); }
+.g-slider::-moz-range-progress { height: 4px; border-radius: 2px; background: var(--iris); }
+.g-slider::-moz-range-thumb { width: 18px; height: 18px; border: 0; border-radius: 50%; background: #ffffff; box-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.18), 0 1px 3px rgba(0, 0, 0, 0.28); }
+.g-slider:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 2px var(--surface-focus), 0 1px 3px rgba(0, 0, 0, 0.28); }
+.g-slider[data-state="focus"]::-webkit-slider-thumb { box-shadow: 0 0 0 2px var(--surface-focus), 0 1px 3px rgba(0, 0, 0, 0.28); }
+.g-slider:focus-visible::-moz-range-thumb { box-shadow: 0 0 0 2px var(--surface-focus); }
+.g-slider:disabled { opacity: 0.42; }
+.g-slider-row { display: flex; align-items: center; gap: 10px; color: var(--surface-text-muted); }
+
+/* ------------------------------------------------- shortcut recorder field */
+.g-shortcut {
+  position: relative; display: inline-flex; align-items: center; flex: none;
+  min-width: 156px; height: var(--control-h); border-radius: var(--radius-field);
+  background: var(--win-field); box-shadow: inset 0 0 0 1px var(--win-field-edge);
+}
+.g-shortcut-keys {
+  flex: 1; display: inline-flex; align-items: center; gap: 3px; height: 100%; min-width: 0;
+  padding: 0 4px 0 6px; border-radius: inherit; color: var(--win-text-3); font: var(--type-text); white-space: nowrap;
+}
+.g-shortcut-keys:focus-visible { outline: 0; }
+.g-shortcut:has(.g-shortcut-keys:focus-visible) { box-shadow: inset 0 0 0 1px var(--win-focus), 0 0 0 3px color-mix(in srgb, var(--win-focus) 35%, transparent); }
+.g-shortcut-clear {
+  flex: none; display: grid; place-items: center; width: 28px; height: 28px; border-radius: 50%; color: var(--win-text-3);
+}
+.g-shortcut-clear::before { content: ""; position: absolute; width: 18px; height: 18px; border-radius: 50%; background: transparent; transition: background-color var(--dur-fast) var(--ease-out); }
+.g-shortcut-clear > g-icon { position: relative; }
+.g-shortcut-clear:hover::before { background: var(--win-hover); }
+.g-shortcut[data-state="empty"] .g-shortcut-clear { display: none; }
+.g-shortcut[data-state="recording"] { background: var(--win-selection-soft); box-shadow: inset 0 0 0 1.5px var(--iris); }
+.g-shortcut[data-state="recording"] .g-shortcut-keys { color: var(--win-iris-text); font-weight: 500; }
+.g-shortcut[data-state="recording"] .g-shortcut-keys::before { content: ""; width: 6px; height: 6px; margin: 0 4px 0 2px; border-radius: 50%; background: var(--iris); animation: g-pulse 1.2s var(--ease-out) infinite; }
+.g-shortcut[data-state="conflict"] { box-shadow: inset 0 0 0 1.5px var(--win-warn); }
+/* while recording, the modifiers held so far show as key caps and a dashed cap waits for the key:
+   <button class="g-shortcut-keys"><kbd class="g-kbd">⌥</kbd><kbd class="g-kbd">⇧</kbd><span class="g-shortcut-slot"></span></button> */
+.g-shortcut-slot { display: inline-block; flex: none; width: 18px; height: 18px; border-radius: var(--radius-key); outline: 1px dashed var(--win-iris-text); outline-offset: -1px; }
+
+/* ---------------------------------------------------------------- list row */
+.g-list { display: flex; flex-direction: column; gap: 2px; }
+.g-row {
+  position: relative; display: flex; align-items: center; gap: 10px;
+  min-height: 36px; padding: 6px 10px; border-radius: var(--radius-field);
+  color: var(--win-text); font: var(--type-text); text-align: left;
+}
+.g-row-lead { flex: none; display: inline-grid; place-items: center; color: var(--win-iris-text); }
+.g-row-thumb { flex: none; width: 48px; height: 32px; border-radius: 6px; overflow: hidden; background: var(--win-sunken); box-shadow: 0 0 0 0.5px var(--win-line); }
+.g-row-thumb > * { width: 100%; height: 100%; object-fit: cover; display: block; }
+.g-row-text { flex: 1; min-width: 0; }
+.g-row-title { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.g-row-sub { display: block; font: var(--type-body); color: var(--win-text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.g-row-trail { flex: none; display: inline-flex; align-items: center; gap: 6px; font: var(--type-body); color: var(--win-text-2); font-variant-numeric: tabular-nums; }
+.g-row-actions { display: inline-flex; gap: 2px; opacity: 0; transition: opacity var(--dur-fast) var(--ease-out); }
+.g-row:hover .g-row-actions, .g-row:focus-within .g-row-actions, .g-row[data-state="hover"] .g-row-actions, .g-row[aria-selected="true"] .g-row-actions { opacity: 1; }
+.g-row:hover, .g-row[data-state="hover"] { background: var(--win-hover); }
+.g-row[aria-selected="true"] { background: var(--win-selection); color: var(--win-selection-text); }
+.g-row[aria-selected="true"] :is(.g-row-sub, .g-row-trail, .g-row-lead, .g-btn) { color: var(--win-selection-text); }
+.g-row[aria-selected="true"] .g-btn:hover { background: rgba(255, 255, 255, 0.18); }
+.g-row[aria-disabled="true"] { color: var(--win-text-disabled); }
+
+/* --------------------------------------------------------------- table */
+.g-table { width: 100%; border-collapse: separate; border-spacing: 0; font: var(--type-text); color: var(--win-text); }
+.g-table th {
+  height: 28px; padding: 0 10px; text-align: left; vertical-align: middle; white-space: nowrap;
+  font: var(--type-caption-strong); color: var(--win-text-2);
+  box-shadow: inset 0 calc(-1 * var(--hairline)) 0 var(--win-line);
+}
+.g-table td { height: 32px; padding: 0 10px; vertical-align: middle; white-space: nowrap; }
+.g-table tbody tr > td:first-child { border-radius: var(--radius-field) 0 0 var(--radius-field); }
+.g-table tbody tr > td:last-child { border-radius: 0 var(--radius-field) var(--radius-field) 0; }
+.g-table[data-zebra] tbody tr:nth-child(even) > td { background: var(--win-group); }
+.g-table tbody tr:hover > td, .g-table tbody tr[data-state="hover"] > td { background: var(--win-hover); }
+.g-table tbody tr[aria-selected="true"] > td { background: var(--win-selection); color: var(--win-selection-text); }
+.g-table tbody tr[aria-selected="true"] :is(.g-cell-sub, g-icon) { color: var(--win-selection-text); }
+.g-table .g-num, .g-table [data-align="end"] { text-align: right; font-variant-numeric: tabular-nums; }
+.g-cell-sub { color: var(--win-text-2); }
+.g-cell-icon { display: inline-flex; align-items: center; gap: 8px; }
+.g-cell-icon > g-icon { color: var(--win-iris-text); }
+
+/* ------------------------------------------------------ thumbnail card */
+.g-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(168px, 1fr)); gap: 8px; }
+.g-grid > * { min-width: 0; }                  /* long titles ellipsize instead of widening a column */
+.g-card {
+  position: relative; display: flex; flex-direction: column; gap: 4px; min-width: 0; padding: 4px; border-radius: var(--radius-group);
+  color: var(--win-text); text-align: left;
+  transition: background-color var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out);
+}
+.g-card-media {
+  position: relative; aspect-ratio: 16 / 10; border-radius: var(--radius-thumb); overflow: hidden;
+  background: var(--win-sunken); box-shadow: inset 0 0 0 0.5px var(--win-line);
+}
+.g-card-media > :first-child:not(.g-tag):not(.g-card-actions) { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.g-card-media::after { content: ""; position: absolute; inset: 0; z-index: 2; border-radius: inherit; box-shadow: inset 0 0 0 0.5px var(--win-media-rim); pointer-events: none; } /* light in the dark theme, so a dark capture keeps its edge */
+.g-card-media > .g-tag { position: absolute; left: 6px; bottom: 6px; }
+.g-card-actions { position: absolute; right: 6px; top: 6px; display: inline-flex; gap: 0; padding: 2px; border-radius: 16px; opacity: 0; transition: opacity var(--dur-fast) var(--ease-out); }
+.g-card:hover .g-card-actions, .g-card:focus-within .g-card-actions, .g-card[data-state="hover"] .g-card-actions { opacity: 1; }
+.g-card-meta { display: flex; align-items: center; gap: 6px; padding: 2px 4px 2px; min-width: 0; }
+.g-card-text { flex: 1; min-width: 0; }
+.g-card-title { display: block; font: var(--type-label); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.g-card-sub { display: block; font: var(--type-caption); color: var(--win-text-3); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.g-card:hover, .g-card[data-state="hover"] { background: var(--win-hover); }
+.g-card[aria-selected="true"] { background: var(--win-selection-soft); }
+.g-card[aria-selected="true"] .g-card-media { box-shadow: 0 0 0 2px var(--iris); }
+.g-card[aria-selected="true"] .g-card-sub { color: var(--win-text-2); }
+
+/* -------------------------------------------- section header, group, form row */
+.g-section-head { display: flex; align-items: flex-end; gap: 12px; padding: 0 4px 8px; }
+.g-section-head > :first-child { flex: 1; min-width: 0; }
+.g-section-title { font: var(--type-title); color: var(--win-text); }
+.g-section-desc { margin-top: 2px; font: var(--type-body); color: var(--win-text-2); }
+.g-page-title { font: var(--type-display); letter-spacing: -0.01em; color: var(--win-text); }
+.g-group { border-radius: var(--radius-group); background: var(--win-group); box-shadow: inset 0 0 0 0.5px var(--win-group-edge); }
+.g-group + .g-section-head, .g-group + .g-group { margin-top: 20px; }
+.g-form-row {
+  position: relative; display: flex; align-items: center; gap: 16px; min-height: 44px; padding: 8px 12px;
+}
+.g-group > .g-form-row + .g-form-row::before { content: ""; position: absolute; left: 12px; right: 12px; top: 0; height: var(--hairline); background: var(--win-line); }
+.g-form-label { flex: 1; min-width: 0; }
+.g-form-label > label, .g-form-label > .g-label { display: block; font: var(--type-text); color: var(--win-text); }
+.g-help { display: block; margin-top: 2px; font: var(--type-body); color: var(--win-text-2); }
+.g-help[data-tone="warn"] { color: var(--win-warn); }
+.g-help[data-tone="danger"] { color: var(--win-danger); }
+.g-help[data-tone="ok"] { color: var(--win-ok); }
+.g-help > g-icon { width: 14px; height: 14px; margin: -2px 4px 0 0; vertical-align: middle; }
+.g-form-control { flex: none; display: inline-flex; align-items: center; gap: 8px; }
+.g-form-row[data-layout="stacked"] { flex-direction: column; align-items: stretch; gap: 8px; }
+.g-form-row[data-layout="stacked"] > .g-form-control { flex: 1; }
+/* a row whose option depends on another one that is off: the label and help dim, and the
+   control inside carries its own disabled attribute */
+.g-form-row[aria-disabled="true"] > .g-form-label > :is(label, .g-label, .g-help) { color: var(--win-text-disabled); }
+.g-form-row[aria-disabled="true"] .g-swatch { opacity: 0.42; }       /* a swatch has no disabled look of its own; every other control carries its own disabled */
+.g-separator { height: var(--hairline); margin: 12px 0; border: 0; background: var(--win-line); }
+
+/* -------------------------------------------------------------- empty state */
+.g-empty { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 40px 24px; text-align: center; }
+.g-empty-icon { display: grid; place-items: center; width: 64px; height: 64px; margin-bottom: 8px; border-radius: var(--radius-card); background: var(--win-selection-soft); color: var(--win-iris-text); }
+.g-empty-title { font: var(--type-heading); color: var(--win-text); }
+.g-empty-text { max-width: 320px; font: var(--type-text); color: var(--win-text-2); }
+.g-empty-actions { display: flex; gap: 8px; margin-top: 12px; }
+
+/* -------------------------------------------------------------- badge */
+.g-badge {
+  display: inline-flex; align-items: center; gap: 4px; flex: none; height: 18px; padding: 0 7px; border-radius: 9px;
+  background: var(--surface-fill); color: var(--surface-text-muted); font: var(--type-caption-strong); white-space: nowrap;
+}
+.g-badge > g-icon { width: 12px; height: 12px; margin-left: -2px; }
+.g-badge[data-tone="iris"] { background: var(--tone-iris-soft); color: var(--tone-iris); }
+.g-badge[data-tone="ok"] { background: var(--tone-ok-soft); color: var(--tone-ok); }
+.g-badge[data-tone="warn"] { background: var(--tone-warn-soft); color: var(--tone-warn); }
+.g-badge[data-tone="danger"] { background: var(--tone-danger-soft); color: var(--tone-danger); }
+.g-badge[data-tone="rec"] { background: var(--rec-fill); color: #ffffff; }
+/* on an iris selection every badge turns white on a darker capsule: 6.6:1, where a light capsule measured 3.2:1 */
+:is(.g-row[aria-selected="true"], .g-table tbody tr[aria-selected="true"], .g-menu-item:is(:hover, :focus-visible, [data-state="hover"])) .g-badge { background: rgba(0, 0, 0, 0.2); color: #ffffff; }
+:is(.g-glass, .g-bar, .g-strip, .g-toast, .g-chip, .g-pop) .g-badge:not([data-tone]) { background: var(--control-fill); }
+
+/* -------------------------------------------------------- popover panel */
+.g-popover {
+  position: relative; display: flex; flex-direction: column; width: 320px; padding: 10px;
+  border-radius: var(--radius-popover);
+  background: var(--win-material);
+  -webkit-backdrop-filter: var(--win-material-filter); backdrop-filter: var(--win-material-filter);
+  box-shadow: var(--win-material-rim), var(--win-shadow-popover);
+  color: var(--win-text); font: var(--type-text); -webkit-font-smoothing: antialiased;
+}
+.g-popover-head { display: flex; align-items: center; gap: 8px; min-height: 32px; padding: 0 2px 0 8px; }
+.g-popover-title { flex: 1; font: var(--type-title); }
+.g-popover-section + .g-popover-section { margin-top: 6px; padding-top: 6px; box-shadow: inset 0 var(--hairline) 0 var(--win-line); }
+.g-popover-label { padding: 4px 8px 4px; font: var(--type-caption-strong); color: var(--win-text-3); }
+.g-popover-foot { display: flex; align-items: center; gap: 8px; padding: 6px 2px 0 8px; font: var(--type-body); color: var(--win-text-2); }
+/* an action footer: plain capsules with a label and a muted key, as History ⌘Y · Settings ⌘, · Quit ⌘Q */
+.g-popover-actions { display: flex; align-items: center; gap: 2px; margin: 0 -4px; }
+.g-popover-actions .g-muted { letter-spacing: 0.04em; font-weight: 400; }
+
+/* -------------------------------------------------------- context menu */
+.g-menu {
+  position: relative; display: flex; flex-direction: column; min-width: 220px; padding: 4px;
+  border-radius: var(--radius-menu);
+  background: var(--win-material);
+  -webkit-backdrop-filter: var(--win-material-filter); backdrop-filter: var(--win-material-filter);
+  box-shadow: var(--win-material-rim), var(--win-shadow-popover);
+  color: var(--win-text); font: var(--type-text); -webkit-font-smoothing: antialiased;
+}
+.g-menu-item {
+  position: relative; display: flex; align-items: center; gap: 8px; width: 100%;
+  height: var(--row-h); padding: 0 8px; border-radius: var(--radius-field);
+  color: var(--win-text); font: var(--type-text); text-align: left; white-space: nowrap;
+}
+.g-menu-item > g-icon { color: var(--win-text-2); }
+.g-menu-item > .g-menu-check { width: 16px; visibility: hidden; color: var(--win-text); }
+.g-menu-item[aria-checked="true"] > .g-menu-check { visibility: visible; }
+.g-menu-key { margin-left: auto; padding-left: 16px; color: var(--win-text-2); font: var(--type-text); letter-spacing: 0.04em; }
+.g-menu-item > .g-menu-sub { margin-left: auto; color: var(--win-text-2); }
+.g-menu-item:hover, .g-menu-item:focus-visible, .g-menu-item[data-state="hover"], .g-menu-item[aria-expanded="true"] { background: var(--win-selection); color: var(--win-selection-text); outline: 0; }
+.g-menu-item:is(:hover, :focus-visible, [data-state="hover"], [aria-expanded="true"]) > :is(g-icon, .g-menu-key, .g-menu-sub, .g-menu-check) { color: var(--win-selection-text); }
+.g-menu-item[data-variant="destructive"] { color: var(--win-danger); }
+.g-menu-item[data-variant="destructive"] > g-icon { color: var(--win-danger); }
+.g-menu-item[aria-disabled="true"], .g-menu-item:disabled { color: var(--win-text-disabled); background: none; }
+.g-menu-item[aria-disabled="true"] > *, .g-menu-item:disabled > * { color: var(--win-text-disabled) !important; }
+.g-menu-separator { height: var(--hairline); margin: 4px 8px; background: var(--win-line); border: 0; }
+.g-menu-label { padding: 6px 8px 2px; font: var(--type-caption-strong); color: var(--win-text-3); }
+
+/* ------------------------------------------------------- dialog and scrim
+   A confirmation inside a window. The scrim goes inside the g-window and covers all of
+   it, sidebar and toolbar included; the dialog hangs 10 px under the toolbar, centred
+   on the window, as a macOS sheet does. data-attach="titlebar" for a title-only window,
+   "center" for a window without a toolbar. Standalone, a g-dialog is its own card.
+   <div class="g-scrim"><div class="g-dialog" role="alertdialog" aria-modal="true" aria-labelledby="t">
+     <div class="g-dialog-head"><span class="g-dialog-icon">…</span><div><h2 class="g-dialog-title" id="t">…</h2>
+     <p class="g-dialog-text">…</p></div></div>
+     <div class="g-dialog-foot"><button class="g-button">Cancel</button><button class="g-button" data-variant="destructive">Clear</button></div>
+   </div></div>
+   A foot that needs a button on the left puts a g-spacer after it. */
+.g-scrim {
+  position: absolute; inset: 0; z-index: 30; display: flex; justify-content: center; align-items: flex-start;
+  padding: calc(var(--toolbar-h) + 10px) 16px 16px; background: var(--win-scrim); border-radius: inherit;
+}
+.g-scrim[data-attach="titlebar"] { padding-top: calc(var(--titlebar-h) + 10px); }
+.g-scrim[data-attach="center"] { align-items: center; padding-top: 16px; }
+.g-dialog {
+  position: relative; display: flex; flex-direction: column; gap: 16px; width: var(--dialog-w); max-width: 100%; padding: 20px;
+  border-radius: var(--radius-window); background: var(--win-raised); box-shadow: var(--win-rim), var(--win-shadow-popover);
+  color: var(--win-text); font: var(--type-text); -webkit-font-smoothing: antialiased; text-align: left;
+}
+.g-dialog-head { display: flex; gap: 14px; align-items: flex-start; }
+.g-dialog-head > :last-child { flex: 1; min-width: 0; }
+.g-dialog-icon { display: grid; place-items: center; flex: none; width: 40px; height: 40px; border-radius: var(--radius-group); background: var(--win-selection-soft); color: var(--win-iris-text); }
+.g-dialog-icon[data-tone="neutral"] { background: var(--win-fill); color: var(--win-text-2); }
+.g-dialog-icon[data-tone="warn"] { background: var(--win-warn-soft); color: var(--win-warn); }
+.g-dialog-icon[data-tone="danger"] { background: var(--win-danger-soft); color: var(--win-danger); }
+.g-dialog-thumb { position: relative; flex: none; width: 60px; height: 40px; border-radius: 6px; overflow: hidden; background: var(--win-sunken); box-shadow: 0 0 0 0.5px var(--win-line); }
+.g-dialog-title { margin: 0; font: var(--type-heading); color: var(--win-text); }
+.g-dialog-text { margin: 4px 0 0; font: var(--type-text); color: var(--win-text-2); }
+.g-dialog-note { font: var(--type-body); color: var(--win-text-2); }
+.g-dialog-foot { display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin-top: 2px; }
+
+/* =============================================================================
+   Focus: every interactive component shows a 2 px iris ring for the keyboard
+   ============================================================================= */
+:is(.g-btn, .g-button, .g-swatch, .g-option, .g-width, .g-toggle, .g-switch, .g-checkbox, .g-radio, .g-card, .g-link, .g-select > select, .g-seg > button):focus { outline: 0; }
+:is(.g-btn, .g-button, .g-swatch, .g-option, .g-width, .g-toggle, .g-switch, .g-checkbox, .g-radio, .g-card, .g-link):focus-visible,
+:is(.g-btn, .g-button, .g-swatch, .g-option, .g-width, .g-toggle, .g-switch, .g-checkbox, .g-radio, .g-card, .g-link)[data-state="focus"],
+.g-select > select:focus-visible, .g-select[data-state="focus"] > select,
+.g-seg > button:focus-visible, .g-seg > button[data-state="focus"] {
+  outline: 2px solid var(--surface-focus); outline-offset: 1px;
+}
+/* items that sit edge to edge inside a list draw the ring inside */
+:is(.g-nav-item, .g-row, .g-shortcut-clear, .g-pop-item):focus { outline: 0; }
+:is(.g-nav-item, .g-row, .g-shortcut-clear, .g-pop-item):focus-visible,
+:is(.g-nav-item, .g-row, .g-pop-item)[data-state="focus"] { outline: 2px solid var(--surface-focus); outline-offset: -2px; }
+.g-table tbody tr:focus { outline: 0; }
+.g-table tbody tr:focus-visible > td, .g-table tbody tr[data-state="focus"] > td { box-shadow: inset 0 2px 0 var(--surface-focus), inset 0 -2px 0 var(--surface-focus); }
+.g-table tbody tr:focus-visible > td:first-child, .g-table tbody tr[data-state="focus"] > td:first-child { box-shadow: inset 2px 2px 0 var(--surface-focus), inset 0 -2px 0 var(--surface-focus); }
+.g-table tbody tr:focus-visible > td:last-child, .g-table tbody tr[data-state="focus"] > td:last-child { box-shadow: inset -2px 2px 0 var(--surface-focus), inset 0 -2px 0 var(--surface-focus); }
+.g-search[data-state="focus"] { box-shadow: 0 0 0 2px var(--win-focus); background: var(--win-field); }
+
+/* =============================================================================
+   Motion
+   ============================================================================= */
+@media (prefers-reduced-motion: reduce) {
+  :where([class^="g-"], [class*=" g-"]), :where([class^="g-"], [class*=" g-"])::before { transition-duration: 0ms !important; animation-duration: 0ms !important; animation-iteration-count: 1 !important; }
+}

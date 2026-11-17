@@ -1,0 +1,38 @@
+[package]
+name = "glimpsfy-capture"
+description = "Displays, windows and frames: the capture contract of Glimpsfy and its platform backends"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+serde.workspace = true
+thiserror.workspace = true
+png.workspace = true
+# Pure-Rust encoders for Settings › Output › Format. jpeg-encoder 0.7 needs Rust 1.87, above the
+# workspace's 1.85. Its licence adds the IJG notice, which About's acknowledgements must carry.
+jpeg-encoder = "0.6.1"
+# Lossless (VP8L) only: no pure-Rust lossy WebP encoder exists, so WebP ignores the quality.
+image-webp = "0.2.4"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2.workspace = true
+block2.workspace = true
+dispatch2.workspace = true
+objc2-app-kit = { workspace = true, features = ["std", "NSScreen", "NSGraphics"] }
+objc2-foundation = { workspace = true, features = ["std", "NSArray", "NSDictionary", "NSEnumerator", "NSString", "NSValue", "NSError", "NSObject"] }
+objc2-core-foundation = { workspace = true, features = ["std", "CFArray", "CFData", "CFDictionary", "CFString", "CFCGTypes"] }
+objc2-core-graphics = { workspace = true, features = ["std", "CGColorSpace", "CGDataProvider", "CGDirectDisplay", "CGDisplayConfiguration", "CGError", "CGGeometry", "CGImage", "CGWindow", "bitflags", "libc"] }
+objc2-screen-capture-kit = { workspace = true, features = ["std", "SCScreenshotManager", "SCShareableContent", "SCStream", "SCError", "block2", "libc", "objc2-core-foundation", "objc2-core-graphics", "objc2-core-media"] }
+# The recording stream (`stream.rs`, `platform/macos_stream.rs`, screen recording): sample
+# buffers, pixel buffers and the microphone through AVCaptureSession on macOS 14.
+objc2-core-media = { version = "0.3.2", default-features = false, features = ["std", "CMBase", "CMBlockBuffer", "CMFormatDescription", "CMSampleBuffer", "CMSync", "CMTime", "objc2-core-audio-types", "objc2-core-video"] }
+objc2-core-video = { version = "0.3.2", default-features = false, features = ["std", "CVBase", "CVBuffer", "CVImageBuffer", "CVPixelBuffer", "CVReturn", "objc2-core-graphics"] }
+objc2-core-audio-types = { version = "0.3.2", default-features = false, features = ["std", "CoreAudioBaseTypes"] }
+objc2-av-foundation = { version = "0.3.2", default-features = false, features = ["std", "block2", "dispatch2", "objc2-core-media", "objc2-core-audio-types", "AVCaptureAudioDataOutput", "AVCaptureDevice", "AVCaptureInput", "AVCaptureOutputBase", "AVCaptureSession", "AVMediaFormat"] }
+
+[dev-dependencies]
+serde_json.workspace = true

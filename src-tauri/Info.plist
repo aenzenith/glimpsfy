@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- A menu bar app: no Dock icon and no app menu. A dev run sets the same policy in code (lib.rs). -->
+  <key>LSUIElement</key>
+  <true/>
+  <!-- Shown by macOS where it explains the screen recording permission. -->
+  <key>NSScreenCaptureUsageDescription</key>
+  <string>Glimpsfy reads the screen to take the screenshots and recordings you start.</string>
+  <!-- Asked the first time a recording uses the microphone. -->
+  <key>NSMicrophoneUsageDescription</key>
+  <string>Glimpsfy records your voice with the screen when you turn on the microphone for a recording.</string>
+  <!-- Asked the first time a recording shows the webcam bubble. -->
+  <key>NSCameraUsageDescription</key>
+  <string>Glimpsfy shows your camera in the webcam bubble of a recording when you turn it on.</string>
+  <!-- Asked when a recording captures the sound of other apps through a system audio tap. -->
+  <key>NSAudioCaptureUsageDescription</key>
+  <string>Glimpsfy records the sound of your Mac with the screen when you turn on system audio for a recording.</string>
+  <!-- The languages Glimpsfy speaks (src/locales); macOS's own dialogs follow the system's one of these. -->
+  <key>CFBundleLocalizations</key>
+  <array>
+    <string>en</string>
+    <string>tr</string>
+    <string>de</string>
+    <string>es</string>
+    <string>ru</string>
+    <string>ja</string>
+    <string>zh-Hans</string>
+  </array>
+</dict>
+</plist>

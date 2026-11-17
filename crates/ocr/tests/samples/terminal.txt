@@ -1,0 +1,11 @@
+~/projects/glimpsfy $ cargo test -p glimpsfy-ocr
+   Compiling glimpsfy-ocr v0.1.0 (/Users/dev/glimpsfy/crates/ocr)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.21s
+     Running unittests src/lib.rs (target/debug/deps/glimpsfy_ocr-3f2a)
+
+running 3 tests
+test layout::tests::columns_read_left_then_right ... ok
+test models::tests::bad_checksum_is_deleted ... ok
+test network::only_the_download_talks_to_the_network ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored

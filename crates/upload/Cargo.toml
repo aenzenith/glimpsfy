@@ -1,0 +1,33 @@
+[package]
+name = "glimpsfy-upload"
+description = "The upload providers of Glimpsfy: settings schemas, consent, secrets, uploads with progress and deletion"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+# One blocking HTTP client for the whole area: ureq streams a request body from any `Read`, which
+# gives progress and cancellation without an async runtime, and with rustls and the platform
+# verifier it trusts the same certificates as the system (a MinIO behind a company CA works).
+ureq = { version = "3.5.2", default-features = false, features = ["rustls", "platform-verifier"] }
+url = "2.5.8"
+# SigV4 for S3-compatible buckets is signed here instead of through the AWS SDK; see `sigv4.rs`.
+sha2 = "0.10.9"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+# Linear-time regular expressions for the `{regex:…}` syntax of `.sxcu` files: a pattern from a
+# downloaded file cannot hang the app.
+regex-lite = "0.1.9"
+keyring-core = "1.0.1"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+apple-native-keyring-store = { version = "1.0.2", features = ["keychain"] }
+
+[dev-dependencies]
+tempfile.workspace = true

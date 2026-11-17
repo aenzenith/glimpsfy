@@ -1,0 +1,71 @@
+/* The overlay's own composition, ported from design/round-2/overlay/index.html (the o- classes):
+   stacking, tooltip sides, the crosshair, the loupe, the window hover and the bar transitions.
+   Everything else is the kit's. Every colour, radius and duration reads a kit token. */
+
+/* The kit's dim spreads its shadow 4000 px around the hole, which leaves the far side of a
+   display wider than 4000 points (a 5120 × 2160 monitor at 1×) undimmed. 200vmax reaches every
+   corner of any display from a hole anywhere on it. */
+.overlay .g-dim { box-shadow: 0 0 0 200vmax var(--dim); }
+
+/* ------------------------------------------------ stacking inside the overlay */
+.o-abs { position: absolute; }
+.o-bar { position: absolute; z-index: 10; }                 /* tool bar, action bar, strip */
+.o-bar:is(:hover, :focus-within), .o-bar:has(.g-tip[data-state="show"]) { z-index: 12; }
+.o-float { position: absolute; z-index: 11; }               /* size label, chips, hint, toasts */
+
+/* Tooltips of the overlay bars sit 8 px off the bar. Tool tips open on the side away
+   from the options strip; action tips open outward, over the dim. Positioning only. */
+.o-tools[data-tips="above"] .g-tipwrap > .g-tip { bottom: calc(100% + var(--bar-pad) + var(--space-8)); }
+.o-tools[data-tips="below"] .g-tipwrap > .g-tip { bottom: auto; top: calc(100% + var(--bar-pad) + var(--space-8)); }
+.o-actions .g-tipwrap > .g-tip { bottom: auto; top: 50%; transform: translateY(-50%); }
+.o-actions[data-tips="right"] .g-tipwrap > .g-tip { left: calc(100% + var(--bar-pad) + var(--space-8)); }
+.o-actions[data-tips="left"] .g-tipwrap > .g-tip { left: auto; right: calc(100% + var(--bar-pad) + var(--space-8)); }
+
+/* --------------------------------------------------- crosshair and pointers */
+.o-xh { position: absolute; z-index: 4; background: var(--crosshair); pointer-events: none; }
+.o-xh[data-axis="h"] { left: 0; right: 0; height: 1px; box-shadow: 0 1px 0 var(--crosshair-halo), 0 -1px 0 var(--crosshair-halo); }
+.o-xh[data-axis="v"] { top: 0; bottom: 0; width: 1px; box-shadow: 1px 0 0 var(--crosshair-halo), -1px 0 0 var(--crosshair-halo); }
+.o-cross { position: absolute; z-index: 6; width: 0; height: 0; pointer-events: none; }
+.o-cross::before, .o-cross::after { content: ""; position: absolute; background: var(--handle); box-shadow: 0 0 0 1px var(--edge-outer); }
+.o-cross::before { left: -8px; top: -0.5px; width: 17px; height: 1px; }
+.o-cross::after { left: -0.5px; top: -8px; width: 1px; height: 17px; }
+.o-pointer { position: absolute; z-index: 30; width: 22px; height: 26px; pointer-events: none; filter: drop-shadow(0 1px 1.5px var(--crosshair-halo)); }
+.o-pointer path { fill: var(--ink-black); stroke: var(--ink-white); stroke-width: 1.5; stroke-linejoin: round; }
+
+/* ----------------------------------------------------------------- loupe */
+.o-loupe { position: absolute; z-index: 5; width: 148px; padding: var(--space-6); border-radius: var(--radius-card); pointer-events: none; }
+.o-lens { position: relative; display: grid; grid-template-columns: repeat(17, 8px); grid-auto-rows: 8px; width: 136px; height: 136px; overflow: hidden; border-radius: var(--radius-lens); }
+.o-lens > i { display: block; width: 8px; height: 8px; }
+/* the pixel grid: a dark and a light hairline at half strength, so it reads on white and on black pixels */
+.o-lens::before {
+  content: ""; position: absolute; inset: 0; opacity: 0.5;
+  background-image:
+    linear-gradient(to right, var(--divider) 1px, transparent 1px), linear-gradient(to bottom, var(--divider) 1px, transparent 1px),
+    linear-gradient(to right, var(--crosshair-halo) 1px, transparent 1px), linear-gradient(to bottom, var(--crosshair-halo) 1px, transparent 1px);
+  background-size: 8px 8px; background-position: -0.5px -0.5px;
+}
+.o-lens::after { content: ""; position: absolute; inset: 0; border-radius: inherit; box-shadow: inset 0 0 0 1px var(--edge-inner); }
+.o-lens-mid { position: absolute; left: 63px; top: 63px; z-index: 2; width: 10px; height: 10px; border: 1px solid var(--handle); box-shadow: 0 0 0 1px var(--edge-outer); }
+.o-loupe-meta { display: flex; align-items: center; gap: var(--space-6); height: 28px; padding: 0 var(--space-4) 0 5px; font: var(--type-num-small); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.o-loupe-swatch { flex: none; width: 10px; height: 10px; border-radius: 3px; box-shadow: inset 0 0 0 1px var(--edge-top); }
+.o-loupe-xy { margin-left: auto; color: var(--text-muted); }
+
+/* ----------------------------------------------------------- window hover */
+.o-win { position: absolute; pointer-events: none; border-radius: var(--o-radius, 0px); background: var(--window-tint); }
+.o-win::after { content: ""; position: absolute; inset: -2px; border: 2px solid var(--iris); border-radius: calc(var(--o-radius, 0px) + 2px);
+  box-shadow: inset 0 0 0 1px var(--selection-inner), 0 0 24px var(--iris-glow); }
+.o-winchip { display: flex; align-items: center; gap: var(--space-12); padding: 10px var(--space-16) 10px 10px; border-radius: var(--radius-card); white-space: nowrap; }
+.o-app { display: grid; place-items: center; flex: none; width: 36px; height: 36px; border-radius: var(--radius-thumb); box-shadow: inset 0 0 0 var(--hairline) var(--edge-inner); }
+.o-app > svg { width: 26px; height: 26px; }
+.o-winchip-name { font: var(--type-title); }
+.o-winchip-meta { display: flex; align-items: center; gap: var(--space-6); margin-top: 2px; font: var(--type-body); color: var(--text-muted); }
+.o-winchip-size { font: var(--type-num); font-variant-numeric: tabular-nums; color: var(--text); }
+
+/* ------------------------------------------------------------- bars and hint */
+.o-live-bar { transition: opacity var(--dur-base) var(--ease-out), transform var(--dur-base) var(--ease-spring); }
+.o-live-bar[data-shown="false"] { opacity: 0; transform: scale(0.96); pointer-events: none; }
+.o-live-bar[data-moving] { transition: left var(--dur-move) var(--ease-out), top var(--dur-move) var(--ease-out), opacity var(--dur-base) var(--ease-out), transform var(--dur-base) var(--ease-spring); }
+.o-hint-fade { opacity: 0; transition: opacity var(--dur-toast) var(--ease-out); }
+@media (prefers-reduced-motion: reduce) {
+  .o-live-bar, .o-live-bar[data-moving], .o-hint-fade { transition-duration: 0ms; }
+}

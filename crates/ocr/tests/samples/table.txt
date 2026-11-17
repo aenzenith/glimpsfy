@@ -1,0 +1,8 @@
+Quarterly sign-ups by region
+
+Region	Q1	Q2	Change	Owner
+Istanbul	1,240	1,385	+11.7%	Ayşe Kaya
+Ankara	860	912	+6.0%	Mert Şahin
+Berlin	1,032	998	-3.3%	Lena Vogel
+Lisbon	415	507	+22.2%	João Lima
+Toronto	2,210	2,304	+4.3%	Priya Nair

@@ -1,0 +1,35 @@
+[package]
+name = "glimpsfy-record"
+description = "Screen recording for Glimpsfy: the recorder's states, the take's timeline and audio, the MP4 writer and MP4 and GIF export"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+glimpsfy-capture.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+# GIF export (MIT or Apache-2.0); its NeuQuant comes from `color_quant` (MIT). `gifski` and
+# `imagequant` are AGPL/GPL and cannot be linked into this MIT app.
+gif = { version = "0.14.2", default-features = false, features = ["std", "raii_no_panic"] }
+color_quant = "2.0.0"
+# Free disk space (`statfs`) and the no-replace rename (`renamex_np`).
+libc = "0.2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2.workspace = true
+block2.workspace = true
+dispatch2.workspace = true
+objc2-foundation = { workspace = true, features = ["std", "NSArray", "NSDictionary", "NSEnumerator", "NSError", "NSFileManager", "NSObject", "NSString", "NSURL", "NSValue", "NSRunLoop", "NSDate"] }
+objc2-core-foundation = { workspace = true, features = ["std", "CFArray", "CFBase", "CFCGTypes", "CFDictionary", "CFNumber", "CFString"] }
+objc2-core-media = { version = "0.3.2", default-features = false, features = ["std", "CMBase", "CMBlockBuffer", "CMFormatDescription", "CMSampleBuffer", "CMSync", "CMTime", "CMTimeRange", "objc2-core-audio-types", "objc2-core-video"] }
+objc2-core-video = { version = "0.3.2", default-features = false, features = ["std", "CVBase", "CVBuffer", "CVImageBuffer", "CVPixelBuffer", "CVPixelBufferPool", "CVReturn", "objc2-core-graphics"] }
+objc2-core-audio-types = { version = "0.3.2", default-features = false, features = ["std", "CoreAudioBaseTypes"] }
+objc2-av-foundation = { version = "0.3.2", default-features = false, features = ["std", "block2", "objc2-core-media", "objc2-core-video", "objc2-core-audio-types", "objc2-core-foundation", "AVAsset", "AVAssetReader", "AVAssetReaderOutput", "AVAssetTrack", "AVAssetWriter", "AVAssetWriterInput", "AVMetadataItem", "AVMetadataIdentifiers", "AVMediaSelectionGroup", "AVCaptureAudioDataOutput", "AVCaptureDevice", "AVCaptureInput", "AVCaptureOutputBase", "AVCaptureSession", "AVMediaFormat", "AVVideoSettings"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+serde_json.workspace = true
