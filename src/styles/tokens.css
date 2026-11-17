@@ -43,6 +43,7 @@
      give the material depth where there is nothing behind it to blur. */
   --glass-tint: rgba(24, 21, 40, 0.68);         /* bars, strip, toasts, chips */
   --glass-tint-strong: rgba(19, 17, 32, 0.80);  /* tooltips, size label, hint: small text */
+  --glass-tint-native: rgba(24, 21, 40, 0.40);  /* toasts over AppKit's own blur, which already darkens */
   --glass-blur: 28px;
   --glass-saturate: 1.8;
   --glass-brightness: 0.62;                     /* a white backdrop arrives at 158, never 255 */
@@ -139,7 +140,7 @@
   --radius-thumb: 8px;
   --radius-chip: 999px;                         /* size label, tooltip, chips, capsule controls */
   --radius-key: 5px;
-  --toast-w: 380px;
+  --toast-w: 300px;
   --handle-corner: 10px;
   --handle-edge: 18px 6px;
 

@@ -357,30 +357,52 @@ html.no-blur :is(.g-glass, .g-bar, .g-strip, .g-toast, .g-tip, .g-size, .g-chip,
 .g-status[data-status="rec"]::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--rec); }
 
 /* ---------------------------------------------------------------- toast */
+/* One row: a 44 × 32 thumbnail, a short title over one line of detail, and icon buttons whose
+   names show in their tips. A toast that asks for attention (data-tall: a warning or a failure)
+   lets its title and body wrap and puts its main action, as a labelled button, on a row under
+   the text (g-toast-foot). Each toast is its own rounded rectangle; a stack leaves 8 px of
+   whatever is behind it between them. */
 .g-toast {
-  position: relative; display: flex; align-items: center; gap: 12px;
-  width: var(--toast-w); max-width: 100%; padding: 10px; border-radius: var(--radius-card);
+  position: relative; display: grid; grid-template-columns: 44px minmax(0, 1fr) auto; column-gap: 10px; align-items: center;
+  width: var(--toast-w); max-width: 100%; padding: 7px 6px 7px 7px; border-radius: var(--radius-card);
 }
-.g-toast-thumb { position: relative; flex: none; width: 52px; height: 38px; border-radius: var(--radius-thumb); }
+.g-toast[data-tall] { align-items: start; padding-top: 8px; }
+.g-toast-thumb { position: relative; flex: none; width: 44px; height: 32px; border-radius: var(--radius-thumb); }
 .g-toast-thumb > :first-child:not(.g-status) {
   position: absolute; inset: 0; width: 100%; height: 100%; border-radius: inherit; overflow: hidden; object-fit: cover;
   box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.16);
 }
 .g-toast-thumb > .g-status { position: absolute; right: -5px; bottom: -5px; box-shadow: 0 0 0 2px rgba(19, 17, 32, 0.92); }
 .g-toast-thumb > .g-status[data-status="progress"] { right: -7px; bottom: -7px; }
-.g-toast-text { flex: 1; min-width: 0; }
-.g-toast-title { font: var(--type-title); }
+.g-toast-text { min-width: 0; }
+.g-toast-title { font: var(--type-title); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.g-toast[data-tall] .g-toast-title { white-space: normal; }
 .g-toast-body { margin-top: 1px; font: var(--type-body); color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .g-toast-body[data-kind="mono"] { font: 400 11.5px/16px var(--font-mono); }
 .g-toast-body[data-kind="link"] { font: 500 11.5px/16px var(--font-mono); color: var(--iris-text); }
 .g-toast-body[data-kind="wrap"] { white-space: normal; }
-.g-toast-actions { display: flex; align-items: center; gap: 4px; flex: none; }
-.g-toast-actions > .g-btn { color: var(--text-muted); }
-.g-toasts { display: grid; gap: 10px; justify-items: end; }
+.g-toast[data-tall] .g-toast-body + .g-toast-body { margin-top: 3px; }
+.g-toast-actions { display: flex; align-items: center; gap: 2px; flex: none; }
+.g-toast-actions .g-btn { color: var(--text-muted); }
+.g-toast-foot { grid-column: 2 / -1; display: flex; justify-content: flex-end; gap: 6px; margin: 8px 0 1px; }
+.g-toasts { display: grid; gap: 8px; justify-items: end; }
 .g-toast[data-state="enter"] { animation: g-toast-in var(--dur-toast) var(--ease-out) both; }
 .g-toast[data-state="leave"] { animation: g-toast-out var(--dur-base) var(--ease-out) both; }
-@keyframes g-toast-in { from { opacity: 0; transform: translateY(-8px) scale(0.98); } to { opacity: 1; transform: none; } }
+@keyframes g-toast-in { from { opacity: 0; transform: translateY(8px) scale(0.98); } to { opacity: 1; transform: none; } }
 @keyframes g-toast-out { to { opacity: 0; transform: translateX(12px); } }
+
+/* The toast window on macOS: AppKit draws the blur under each toast (an NSVisualEffectView per
+   toast, macos.rs), because a page cannot blur what lies behind its transparent window. The page
+   keeps the tint, the sheen, the edges and the shadow. The app's toast page leaves data-state
+   out and moves each toast itself, frame by frame, so the native blur under it can follow
+   (src/toast/App.vue); the enter and leave keyframes above serve in-window toasts (History). */
+html[data-glass="native"] .g-toast {
+  background: var(--glass-caustic), var(--glass-sheen), var(--glass-tint-native);
+  -webkit-backdrop-filter: none; backdrop-filter: none;
+}
+@media (prefers-reduced-transparency: reduce) {
+  html[data-glass="native"] .g-toast { background: var(--glass-solid-sheen); }
+}
 
 /* ----------------------------------------------------------------- chip */
 .g-chip {
@@ -435,7 +457,8 @@ html.no-blur :is(.g-glass, .g-bar, .g-strip, .g-toast, .g-tip, .g-size, .g-chip,
      <span class="g-tip" role="tooltip">Copy<kbd class="g-kbd">⌘C</kbd></span></span>
    The tip appears 500 ms after hover or keyboard focus and leaves at once.
    data-side="below" hangs it under the button, data-side="right" beside it (a vertical
-   rail); data-align="start" | "end" pins it
+   rail), data-side="left" on its other side (a toast, whose window has no room above or
+   below); data-align="start" | "end" pins it
    to a side when the button sits near a screen or window edge.
    data-state="show" on the tip forces it for a static presentation. */
 .g-tipwrap { position: relative; display: inline-flex; flex: none; }
@@ -445,6 +468,7 @@ html.no-blur :is(.g-glass, .g-bar, .g-strip, .g-toast, .g-tip, .g-size, .g-chip,
 }
 .g-tipwrap[data-side="below"] > .g-tip { bottom: auto; top: calc(100% + 6px); }
 .g-tipwrap[data-side="right"] > .g-tip { bottom: auto; top: 50%; left: calc(100% + 8px); transform: translateY(-50%); }
+.g-tipwrap[data-side="left"] > .g-tip { bottom: auto; top: 50%; left: auto; right: calc(100% + 8px); transform: translateY(-50%); }
 .g-tipwrap[data-align="start"] > .g-tip { left: -2px; transform: none; }
 .g-tipwrap[data-align="end"] > .g-tip { left: auto; right: -2px; transform: none; }
 .g-tipwrap:hover > .g-tip, .g-tipwrap:focus-within > .g-tip { opacity: 1; visibility: visible; transition-delay: 500ms; }

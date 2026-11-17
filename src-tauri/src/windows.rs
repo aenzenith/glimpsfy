@@ -10,7 +10,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use glimpsfy_capture::DisplayId;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, EventTarget, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
 use crate::commands::capture::CaptureId;
@@ -20,8 +20,6 @@ use crate::{events, session, trace, AppState};
 
 pub const OVERLAY_PREFIX: &str = "overlay-";
 pub const TOAST: &str = "toast";
-/// The toast window's width: the 380 px toast and room for its shadow.
-const TOAST_WIDTH: f64 = 412.0;
 
 pub fn overlay_label(display: DisplayId) -> String {
     format!("{OVERLAY_PREFIX}{}", display.0)
@@ -261,6 +259,42 @@ impl Toast {
     }
 }
 
+/// How the toast page wants its window: `width` points wide, with its bottom-right corner
+/// `past_right` points right of and `past_below` points under the bottom-right corner of the
+/// display's visible area, and as tall as that area and `past_below`. The window reaches past the
+/// visible area so the toasts' shadows are not cut at its edge, over the Dock and the screen's
+/// edge, and it keeps one size while toasts come and go, so it never resizes under a moving one;
+/// clicks go through it everywhere but on a toast (`macos::toast_hit`). It stays on screen,
+/// invisible while `shown` is false, so its page keeps drawing at full speed and the first toast
+/// moves as smoothly as the others.
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToastFrame {
+    pub width: f64,
+    pub past_right: f64,
+    pub past_below: f64,
+    pub shown: bool,
+}
+
+/// Where one toast is drawn in the toast window at this frame, measured by the page from the
+/// window's bottom-right corner (the stack's anchor). The core puts the toast's native blur there
+/// (`macos::toast_glass`); the page moves the toasts itself and reports every frame of a move, so
+/// the blur follows.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToastGlass {
+    /// The toast's key in the page, which keeps its blur while it moves.
+    pub key: String,
+    pub right: f64,
+    pub bottom: f64,
+    pub width: f64,
+    pub height: f64,
+    /// The toast's corner radius, which the blur's mask follows.
+    pub radius: f64,
+    /// The toast's opacity, 0 to 1, which its blur takes while it comes and goes.
+    pub alpha: f64,
+}
+
 /// The display the toasts stack on: the one the last capture was taken on.
 static TOAST_DISPLAY: Mutex<Option<DisplayId>> = Mutex::new(None);
 
@@ -278,9 +312,10 @@ pub fn toast_failure(app: &AppHandle, display: Option<DisplayId>, error: &Comman
     toast(app, display, failure);
 }
 
-/// The toast page measured its stack: the window takes that height at the top-right corner of
-/// the capture's display, or goes away at 0.
-pub fn toast_fit(app: &AppHandle, height: f64) {
+/// The toast page drew a frame: the window takes `frame` at the bottom-right corner of the
+/// capture's display, where the stack grows upward from above the Dock, and each toast in
+/// `glass` gets its native blur.
+pub fn toast_fit(app: &AppHandle, frame: ToastFrame, glass: Vec<ToastGlass>) {
     let Some(window) = app.get_webview_window(TOAST) else {
         return;
     };
@@ -288,21 +323,47 @@ pub fn toast_fit(app: &AppHandle, height: f64) {
     {
         let display = *TOAST_DISPLAY.lock().unwrap_or_else(|p| p.into_inner());
         crate::macos::on_main(app, move |mtm| {
-            if height <= 0.0 {
-                crate::macos::order_out(&window, mtm);
-                return;
-            }
             let screens = crate::macos::screens(mtm);
             let screen = display.and_then(|d| screens.iter().find(|s| s.id == d)).or(screens.first());
             if let Some(screen) = screen {
-                crate::macos::place_toast(&window, screen, TOAST_WIDTH, height, mtm);
+                crate::macos::place_toast(&window, screen, frame, mtm);
+                crate::macos::toast_glass(&window, &glass, mtm);
             }
         });
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = app;
-        let _ = if height <= 0.0 { window.hide() } else { window.show() };
+        let _ = (app, glass);
+        let _ = if frame.shown { window.show() } else { window.hide() };
+    }
+}
+
+/// The pointer in the toast window's own space (points from its top-left corner), or `None` while
+/// the window is off screen. The toast's panel never becomes key, and WebKit follows the pointer
+/// only in a key window: the page learns about a click and nothing else, so it asks here where
+/// the pointer is to pause its timers and to light the control under the pointer.
+pub fn toast_pointer(app: &AppHandle) -> Option<glimpsfy_capture::LogicalPoint> {
+    let window = app.get_webview_window(TOAST)?;
+    #[cfg(target_os = "macos")]
+    {
+        let (tx, rx) = std::sync::mpsc::channel();
+        crate::macos::on_main(app, move |mtm| {
+            let _ = tx.send(crate::macos::pointer_in(&window, mtm));
+        });
+        rx.recv_timeout(std::time::Duration::from_millis(250)).ok().flatten()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        if !window.is_visible().unwrap_or(false) {
+            return None;
+        }
+        let pointer = window.cursor_position().ok()?;
+        let origin = window.inner_position().ok()?;
+        let scale = window.scale_factor().ok()?;
+        Some(glimpsfy_capture::LogicalPoint {
+            x: (pointer.x - f64::from(origin.x)) / scale,
+            y: (pointer.y - f64::from(origin.y)) / scale,
+        })
     }
 }
 

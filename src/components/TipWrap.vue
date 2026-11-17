@@ -3,7 +3,7 @@
 // keys, and shows on hover and keyboard focus after the kit's delay.
 import KeyCaps from "./KeyCaps.vue";
 
-defineProps<{ tip: string; caps?: readonly string[]; side?: "above" | "below" | "right"; align?: "start" | "end" }>();
+defineProps<{ tip: string; caps?: readonly string[]; side?: "above" | "below" | "right" | "left"; align?: "start" | "end" }>();
 </script>
 
 <template>

@@ -108,10 +108,18 @@ pub fn window_take_settings_section() -> Option<SettingsSection> {
     PENDING_SECTION.lock().unwrap_or_else(|p| p.into_inner()).take()
 }
 
-/// The toast page measured its stack: the window takes `height` points, or hides at 0.
+/// The toast page drew a frame: the window takes `frame` (invisible while it shows no toast), and
+/// each toast in `glass` gets its native blur where it is drawn.
 #[tauri::command]
-pub fn toast_fit(app: AppHandle, height: f64) {
-    crate::windows::toast_fit(&app, height);
+pub fn toast_fit(app: AppHandle, frame: crate::windows::ToastFrame, glass: Vec<crate::windows::ToastGlass>) {
+    crate::windows::toast_fit(&app, frame, glass);
+}
+
+/// The pointer in the toast window (points from its top-left corner), or `None` while the window
+/// is hidden. The page cannot follow the pointer itself in a panel that never becomes key.
+#[tauri::command]
+pub fn toast_pointer(app: AppHandle) -> Option<glimpsfy_capture::LogicalPoint> {
+    crate::windows::toast_pointer(&app)
 }
 
 #[tauri::command]

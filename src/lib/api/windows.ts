@@ -2,7 +2,7 @@
 // quitting. Mirrors src-tauri/src/commands/windows.rs, the toast payload of
 // src-tauri/src/windows.rs and the pin types of src-tauri/src/pins.rs.
 
-import type { LogicalRect, Selection } from "./capture";
+import type { LogicalPoint, LogicalRect, Selection } from "./capture";
 import type { ErrorCode } from "./core";
 import { call } from "./core";
 import type { EntryId } from "./history";
@@ -45,7 +45,19 @@ export const window_open_settings = (section: SettingsSection) => call<void>("wi
 export const window_take_settings_section = () => call<SettingsSection | null>("window_take_settings_section");
 /** To the settings window: a section was asked for; read it with `window_take_settings_section`. */
 export const SETTINGS_SECTION = "settings://section-requested";
-export const toast_fit = (height: number) => call<void>("toast_fit", { height });
+/** Where one toast is drawn at this frame, from the toast window's bottom-right corner, and how
+ * opaque it is, for its native blur. */
+export type ToastGlass = { key: string; right: number; bottom: number; width: number; height: number; radius: number; alpha: number };
+/** The toast window: `width` points wide, its bottom-right corner `pastRight` points right of and
+ * `pastBelow` points under the visible area's bottom-right corner, so the toasts' shadows have
+ * room past it; it is as tall as the visible area, and clicks go through it but on a toast. It
+ * stays on screen, invisible while `shown` is false, so its page keeps drawing at full speed. */
+export type ToastFrame = { width: number; pastRight: number; pastBelow: number; shown: boolean };
+/** Puts the toast window at `frame` with a native blur under each toast in `glass`. */
+export const toast_fit = (frame: ToastFrame, glass: ToastGlass[]) => call<void>("toast_fit", { frame, glass });
+/** The pointer in the toast window (points from its top-left corner), or `null` while the window
+ * is hidden; the toast's panel never becomes key, so its page cannot follow the pointer itself. */
+export const toast_pointer = () => call<LogicalPoint | null>("toast_pointer");
 export const app_quit = () => call<void>("app_quit");
 /** Writes a page's error or warning to the core's log (dev builds print it). */
 export const app_log = (level: "error" | "warn", message: string) => call<void>("app_log", { level, message });

@@ -308,8 +308,12 @@ pub fn hide_overlay(window: &WebviewWindow, mtm: MainThreadMarker) {
     }
 }
 
-/// The toast: a panel that never takes the keyboard, over full-screen apps too.
+/// The toast: a panel that never takes the keyboard, over full-screen apps too. Its window
+/// reaches past the toasts for their shadows, so a pointer move anywhere sets whether it takes
+/// clicks (`glass::toast_hit`); the monitors stay for good, and do nothing while it is hidden.
 pub fn setup_toast(window: &WebviewWindow, mtm: MainThreadMarker) {
+    use objc2_app_kit::NSEventMask;
+
     make_panel(window, false, mtm);
     if let Some(ns_window) = ns_window(window, mtm) {
         // Above the overlay's level minus one: over every app, under a running capture.
@@ -321,28 +325,220 @@ pub fn setup_toast(window: &WebviewWindow, mtm: MainThreadMarker) {
         );
         ns_window.setHasShadow(false);
     }
+
+    let moves = NSEventMask::MouseMoved | NSEventMask::LeftMouseDragged | NSEventMask::RightMouseDragged;
+    let hit = {
+        let window = window.clone();
+        move || {
+            if let Some(mtm) = MainThreadMarker::new() {
+                if let Some(ns_window) = ns_window(&window, mtm) {
+                    glass::toast_hit(ns_window);
+                }
+            }
+        }
+    };
+    // Moves over other apps, and over Glimpsfy's own windows: the pointer reaches a toast
+    // through either, depending on whether the window lets clicks through just then.
+    let outside = {
+        let hit = hit.clone();
+        block2::RcBlock::new(move |_: std::ptr::NonNull<NSEvent>| hit())
+    };
+    let inside = block2::RcBlock::new(move |event: std::ptr::NonNull<NSEvent>| -> *mut NSEvent {
+        hit();
+        event.as_ptr()
+    });
+    // AppKit keeps the monitors until they are removed, which never happens.
+    std::mem::forget(NSEvent::addGlobalMonitorForEventsMatchingMask_handler(moves, &outside));
+    // SAFETY: the block hands back the event it was given, a valid pointer.
+    std::mem::forget(unsafe { NSEvent::addLocalMonitorForEventsMatchingMask_handler(moves, &inside) });
 }
 
-/// Puts the toast window at the top-right corner of `screen`'s visible area (under the menu bar,
-/// clear of the Dock), `size` points large, and shows it without the keyboard.
-pub fn place_toast(window: &WebviewWindow, screen: &Screen, width: f64, height: f64, mtm: MainThreadMarker) {
+/// Puts the toast window at the bottom-right corner of `screen`'s visible area (above the Dock
+/// when it sits at the bottom), reaching `frame.past_right` and `frame.past_below` past it, as
+/// tall as the visible area, on screen without the keyboard: opaque while it shows toasts, and
+/// invisible and click-through otherwise, so it never leaves the screen and its page never
+/// sleeps. The page calls this on every frame of a move, so what is already right is left alone.
+pub fn place_toast(window: &WebviewWindow, screen: &Screen, frame: crate::windows::ToastFrame, mtm: MainThreadMarker) {
     if let Some(ns_window) = ns_window(window, mtm) {
         let visible = screen.cocoa_visible;
-        let frame = NSRect::new(
+        let rect = NSRect::new(
             objc2_foundation::NSPoint::new(
-                visible.origin.x + visible.size.width - width,
-                visible.origin.y + visible.size.height - height,
+                visible.origin.x + visible.size.width + frame.past_right - frame.width,
+                visible.origin.y - frame.past_below,
             ),
-            objc2_foundation::NSSize::new(width, height),
+            objc2_foundation::NSSize::new(frame.width, visible.size.height + frame.past_below),
         );
-        ns_window.setFrame_display(frame, true);
-        ns_window.orderFrontRegardless();
+        if ns_window.frame() != rect {
+            ns_window.setFrame_display(rect, true);
+        }
+        let alpha = if frame.shown { 1.0 } else { 0.0 };
+        if ns_window.alphaValue() != alpha {
+            ns_window.setAlphaValue(alpha);
+        }
+        if !frame.shown && !ns_window.ignoresMouseEvents() {
+            ns_window.setIgnoresMouseEvents(true);
+        }
+        if !ns_window.isVisible() {
+            ns_window.orderFrontRegardless();
+        }
     }
 }
 
-pub fn order_out(window: &WebviewWindow, mtm: MainThreadMarker) {
-    if let Some(ns_window) = ns_window(window, mtm) {
-        ns_window.orderOut(None);
+/// The pointer in `window`'s own space (points from its top-left corner), or `None` while the
+/// window is off screen or invisible. The page asks often, so the window's click-through is
+/// checked here too.
+pub fn pointer_in(window: &WebviewWindow, mtm: MainThreadMarker) -> Option<LogicalPoint> {
+    let ns_window = ns_window(window, mtm)?;
+    glass::toast_hit(ns_window);
+    if !ns_window.isVisible() || ns_window.alphaValue() == 0.0 {
+        return None;
+    }
+    let point = NSEvent::mouseLocation();
+    let frame = ns_window.frame();
+    Some(LogicalPoint { x: point.x - frame.origin.x, y: frame.origin.y + frame.size.height - point.y })
+}
+
+pub use glass::toast_glass;
+
+/// The toast's native blur. A web page cannot blur what lies behind its transparent window, so
+/// AppKit does it: one behind-window `NSVisualEffectView` under each toast, masked to the
+/// toast's rounded corners and placed under the web view. The desktop shows plain in the gaps
+/// between toasts, and the page draws the tint, the edges and the shadow over the blur.
+mod glass {
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+
+    use objc2::rc::Retained;
+    use objc2::runtime::Bool;
+    use objc2::{MainThreadMarker, MainThreadOnly};
+    use objc2_app_kit::{
+        NSAppearance, NSAppearanceCustomization, NSAppearanceNameDarkAqua, NSAutoresizingMaskOptions, NSBezierPath,
+        NSColor, NSEvent, NSImage, NSImageResizingMode, NSVisualEffectBlendingMode, NSVisualEffectMaterial,
+        NSVisualEffectState, NSVisualEffectView, NSWindow, NSWindowOrderingMode,
+    };
+    use objc2_foundation::{NSEdgeInsets, NSPoint, NSRect, NSSize};
+    use tauri::WebviewWindow;
+
+    use super::ns_window;
+    use crate::windows::ToastGlass;
+
+    thread_local! {
+        /// The blur under each toast, by the toast's key in the page. AppKit views belong to the
+        /// main thread, and so does this map.
+        static VIEWS: RefCell<HashMap<String, Retained<NSVisualEffectView>>> = RefCell::default();
+    }
+
+    /// Puts a blur under each toast in `glass`, where the toast is drawn at this frame and as
+    /// opaque as it is, and takes away the blur of every toast that is no longer listed. The page
+    /// drives every move and fade frame by frame, so nothing here animates on its own and the
+    /// blur cannot drift from the toast it sits under.
+    pub fn toast_glass(window: &WebviewWindow, glass: &[ToastGlass], mtm: MainThreadMarker) {
+        let Some(ns_window) = ns_window(window, mtm) else {
+            return;
+        };
+        let Some(content) = ns_window.contentView() else {
+            return;
+        };
+        let size = content.bounds().size;
+        let flipped = content.isFlipped();
+        VIEWS.with_borrow_mut(|views| {
+            views.retain(|key, view| {
+                let stays = glass.iter().any(|g| &g.key == key);
+                if !stays {
+                    view.removeFromSuperview();
+                }
+                stays
+            });
+            for toast in glass {
+                let y = if flipped { size.height - toast.bottom - toast.height } else { toast.bottom };
+                let frame = NSRect::new(
+                    NSPoint::new(size.width - toast.right - toast.width, y),
+                    NSSize::new(toast.width, toast.height),
+                );
+                let alpha = toast.alpha.clamp(0.0, 1.0);
+                if let Some(view) = views.get(&toast.key) {
+                    if view.frame() != frame {
+                        view.setFrame(frame);
+                    }
+                    if view.alphaValue() != alpha {
+                        view.setAlphaValue(alpha);
+                    }
+                    continue;
+                }
+                let view = blur(frame, toast.radius, flipped, mtm);
+                view.setAlphaValue(alpha);
+                content.addSubview_positioned_relativeTo(&view, NSWindowOrderingMode::Below, None);
+                views.insert(toast.key.clone(), view);
+            }
+        });
+        // A toast moved under a pointer that stays put.
+        toast_hit(ns_window);
+    }
+
+    /// Lets clicks through the toast window everywhere but on a toast that is shown (its blur is
+    /// the toast's shape, where it is drawn): the window reaches past the toasts for their
+    /// shadows, and that margin, over the Dock and other apps, must not catch their clicks.
+    pub fn toast_hit(window: &NSWindow) {
+        // The window waits on screen, invisible, while no toast is shown.
+        if !window.isVisible() || window.alphaValue() == 0.0 {
+            if !window.ignoresMouseEvents() {
+                window.setIgnoresMouseEvents(true);
+            }
+            return;
+        }
+        let Some(content) = window.contentView() else {
+            return;
+        };
+        let point = content.convertPoint_fromView(window.convertPointFromScreen(NSEvent::mouseLocation()), None);
+        let on_toast = VIEWS.with_borrow(|views| {
+            views.values().any(|view| {
+                let frame = view.frame();
+                view.alphaValue() > 0.1
+                    && point.x >= frame.origin.x
+                    && point.x <= frame.origin.x + frame.size.width
+                    && point.y >= frame.origin.y
+                    && point.y <= frame.origin.y + frame.size.height
+            })
+        });
+        if window.ignoresMouseEvents() == on_toast {
+            window.setIgnoresMouseEvents(!on_toast);
+        }
+    }
+
+    fn blur(frame: NSRect, radius: f64, flipped: bool, mtm: MainThreadMarker) -> Retained<NSVisualEffectView> {
+        let view = NSVisualEffectView::initWithFrame(NSVisualEffectView::alloc(mtm), frame);
+        view.setMaterial(NSVisualEffectMaterial::HUDWindow);
+        view.setBlendingMode(NSVisualEffectBlendingMode::BehindWindow);
+        // The toast's panel never becomes key, and an inactive window's material turns flat grey.
+        view.setState(NSVisualEffectState::Active);
+        // Toasts are dark glass in both system themes.
+        // SAFETY: an AppKit constant, valid for the life of the process.
+        if let Some(dark) = NSAppearance::appearanceNamed(unsafe { NSAppearanceNameDarkAqua }) {
+            view.setAppearance(Some(&dark));
+        }
+        view.setMaskImage(Some(&rounded(radius)));
+        // The window grows and shrinks at its top, and each blur keeps its place from the bottom.
+        view.setAutoresizingMask(if flipped {
+            NSAutoresizingMaskOptions::ViewMinYMargin
+        } else {
+            NSAutoresizingMaskOptions::ViewMaxYMargin
+        });
+        view
+    }
+
+    /// A mask with `radius` corners that stretches to any size: its middle row and column grow,
+    /// the corners stay.
+    fn rounded(radius: f64) -> Retained<NSImage> {
+        let side = radius * 2.0 + 1.0;
+        let draw = block2::RcBlock::new(move |rect: NSRect| -> Bool {
+            NSColor::blackColor().set();
+            NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(rect, radius, radius).fill();
+            Bool::YES
+        });
+        let image = NSImage::imageWithSize_flipped_drawingHandler(NSSize::new(side, side), false, &draw);
+        image.setCapInsets(NSEdgeInsets { top: radius, left: radius, bottom: radius, right: radius });
+        image.setResizingMode(NSImageResizingMode::Stretch);
+        image
     }
 }
 

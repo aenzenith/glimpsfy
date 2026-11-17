@@ -166,4 +166,6 @@
 .hv-menu { position: fixed; z-index: 40; }
 .hv-toasts { position: absolute; left: 50%; bottom: 16px; z-index: 50; display: flex; flex-direction: column; gap: 8px; transform: translateX(-50%); pointer-events: none; }
 .hv-toasts > .g-toast { pointer-events: auto; }
+/* The window's own notes have no short titles, so a long one wraps instead of being cut. */
+.hv-toasts .g-toast-title { white-space: normal; }
 .hv-empty { height: 100%; box-sizing: border-box; justify-content: center; }

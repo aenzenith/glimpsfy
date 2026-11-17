@@ -146,6 +146,7 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Syn
         windows::window_open_settings,
         windows::window_take_settings_section,
         windows::toast_fit,
+        windows::toast_pointer,
         windows::app_quit,
         windows::app_log,
         windows::app_copy_text,
