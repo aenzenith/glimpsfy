@@ -880,6 +880,7 @@ const emptyParts = computed(() => {
               :aria-selected="i === sel"
               :tabindex="i === sel ? 0 : -1"
               :aria-label="`${title(entry)}, ${sub(entry)}`"
+              :data-badge="uploads.has(entry.id) || entry.hosted ? '' : undefined"
               @pointerenter="select(i)"
               @pointerdown="thumbDown($event, entry, i)"
               @focus="select(i)"
@@ -889,9 +890,9 @@ const emptyParts = computed(() => {
               <span v-else class="s-thumb-media">
                 <img v-if="thumbUrl(entry)" :src="thumbUrl(entry)!" alt="" draggable="false" />
               </span>
-              <span v-if="entry.kind === 'recording' && entry.durationMs !== null" class="g-tag">
-                <GIcon name="play" :size="12" />{{ duration(entry.durationMs) }}
-              </span>
+              <span v-if="entry.kind === 'recording' && entry.durationMs !== null" class="s-thumb-dur">{{
+                duration(entry.durationMs)
+              }}</span>
               <span v-if="uploads.has(entry.id)" class="g-status" data-status="progress">
                 <ProgressRing :progress="uploadPercent(entry)" :label="sub(entry)" :size="22" />
               </span>
@@ -995,17 +996,24 @@ button.s-thumb { margin: 0; padding: 0; border: 0; font: inherit; color: inherit
 .s-thumb {
   position: relative; display: block; width: 100%; height: 40px; border-radius: var(--radius-thumb);
   background: var(--win-sunken); cursor: grab;
-  transition: box-shadow var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out);
+  transition: box-shadow var(--dur-fast) var(--ease-out);
 }
 .s-thumb-media { position: absolute; inset: 0; border-radius: inherit; overflow: hidden; }
 .s-thumb-media > img { display: block; width: 100%; height: 100%; object-fit: cover; }
 .s-thumb::after { content: ""; position: absolute; inset: 0; border-radius: inherit; box-shadow: inset 0 0 0 0.5px var(--win-line-strong); pointer-events: none; }
-.s-thumb:not([data-empty]):hover { transform: translateY(-1px); box-shadow: var(--win-shadow-lift); }
+/* Passing over a thumbnail picks it, so the pick shows as the ring alone and nothing moves under
+   the pointer. */
 .s-thumb[aria-selected="true"] { box-shadow: 0 0 0 2px var(--iris); }
-.s-thumb[aria-selected="true"]:hover { box-shadow: 0 0 0 2px var(--iris), var(--win-shadow-lift); }
 .s-thumb:focus { outline: 0; }
 .s-thumb:focus-visible { outline: 2px solid var(--surface-focus); outline-offset: 3px; }
-.s-thumb > .g-tag { position: absolute; left: 3px; bottom: -8px; z-index: 1; }
+/* The length sits on the picture itself, so its shadow keeps it readable on a light frame. */
+.s-thumb-dur {
+  position: absolute; right: 4px; bottom: 2px; z-index: 1; pointer-events: none;
+  font: 600 9.5px/12px var(--font-mono); font-variant-numeric: tabular-nums; color: #fff;
+  text-shadow: 0 0 2px rgba(0, 0, 0, 0.9), 0 1px 2px rgba(0, 0, 0, 0.6);
+}
+/* The upload badge hangs over the bottom-right corner; the length steps left of it. */
+.s-thumb[data-badge] > .s-thumb-dur { right: 15px; }
 .s-thumb > .g-status { position: absolute; right: -5px; bottom: -5px; z-index: 1; box-shadow: 0 0 0 2px var(--win-material-solid); }
 .s-thumb > .g-status[data-status="progress"] { right: -7px; bottom: -7px; }
 .s-thumb[data-empty] { background: none; cursor: default; }
