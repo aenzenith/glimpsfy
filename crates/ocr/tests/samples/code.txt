@@ -1,0 +1,13 @@
+def reading_order(blocks, gutter=24):
+    """Sort blocks column by column."""
+    columns = []
+    for block in sorted(blocks, key=lambda b: b.x):
+        for column in columns:
+            if column.overlaps(block, gutter):
+                column.append(block)
+                break
+        else:
+            columns.append(Column([block]))
+
+    # Read each column from top to bottom.
+    return [b for c in columns for b in c.top_to_bottom()]

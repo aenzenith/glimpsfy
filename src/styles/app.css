@@ -1,0 +1,39 @@
+/* The app's own base on top of the kit: page backgrounds per window kind. Colours, sizes and
+   type come from the kit's tokens. */
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font: var(--type-text);
+  -webkit-font-smoothing: antialiased;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* Overlay and toast windows are transparent panels: the page draws only what it shows. */
+html[data-surface="floating"],
+html[data-surface="floating"] body {
+  background: transparent;
+  overflow: hidden;
+  color: var(--text);
+}
+
+/* Ordinary windows follow the system theme (`data-theme` is set by main.ts). */
+html[data-surface="window"] body {
+  background: var(--win-content);
+  color: var(--win-text);
+}
+
+/* The popover's window is transparent: its page draws the themed panel and its rounded corners
+   (app shell). */
+html[data-surface="popover"],
+html[data-surface="popover"] body {
+  background: transparent;
+  overflow: hidden;
+  color: var(--win-text);
+}

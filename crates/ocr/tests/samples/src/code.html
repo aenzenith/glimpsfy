@@ -1,0 +1,16 @@
+<!doctype html><meta charset="utf-8">
+<style>body{margin:0;padding:24px;background:#f6f8fa;color:#24292f;font:13px/1.55 Menlo,monospace}pre{margin:0;font:inherit}.k{color:#cf222e}.s{color:#0a3069}.c{color:#6e7781}.f{color:#8250df}</style>
+<pre><span class="k">def</span> <span class="f">reading_order</span>(blocks, gutter=<span class="s">24</span>):
+    <span class="s">"""Sort blocks column by column."""</span>
+    columns = []
+    <span class="k">for</span> block <span class="k">in</span> sorted(blocks, key=<span class="k">lambda</span> b: b.x):
+        <span class="k">for</span> column <span class="k">in</span> columns:
+            <span class="k">if</span> column.overlaps(block, gutter):
+                column.append(block)
+                <span class="k">break</span>
+        <span class="k">else</span>:
+            columns.append(Column([block]))
+
+    <span class="c"># Read each column from top to bottom.</span>
+    <span class="k">return</span> [b <span class="k">for</span> c <span class="k">in</span> columns <span class="k">for</span> b <span class="k">in</span> c.top_to_bottom()]
+</pre>

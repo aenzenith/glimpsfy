@@ -1,0 +1,49 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Glimpsfy",
+  "version": "0.1.0",
+  "identifier": "com.aenzenith.glimpsfy",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1430",
+    "beforeBuildCommand": "npm run typecheck && npx vite build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "macOSPrivateApi": true,
+    "windows": [],
+    "security": {
+      "csp": "default-src 'self' ipc: http://ipc.localhost; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: glimpsfy-frame: http://glimpsfy-frame.localhost glimpsfy-history: http://glimpsfy-history.localhost glimpsfy-recording: http://glimpsfy-recording.localhost; media-src 'self' glimpsfy-history: http://glimpsfy-history.localhost glimpsfy-recording: http://glimpsfy-recording.localhost; connect-src 'self' ipc: http://ipc.localhost glimpsfy-frame: http://glimpsfy-frame.localhost glimpsfy-recording: http://glimpsfy-recording.localhost; font-src 'self' data:",
+      "devCsp": "default-src 'self' ipc: http://ipc.localhost; script-src 'self' 'unsafe-inline' http://localhost:1430; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: glimpsfy-frame: http://glimpsfy-frame.localhost glimpsfy-history: http://glimpsfy-history.localhost glimpsfy-recording: http://glimpsfy-recording.localhost; media-src 'self' glimpsfy-history: http://glimpsfy-history.localhost glimpsfy-recording: http://glimpsfy-recording.localhost; connect-src 'self' ipc: http://ipc.localhost glimpsfy-frame: http://glimpsfy-frame.localhost glimpsfy-recording: http://glimpsfy-recording.localhost ws://localhost:1430 http://localhost:1430; font-src 'self' data:"
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDRDREQyNTc0QjNBRjZFRjYKUldUMmJxK3pkQ1hkVEx4QXdBM0phK1YvdVppSjB0T2RUOU5WcGNaUFJzcy9yN05DdDUvdEJJNk0K",
+      "endpoints": [
+        "https://github.com/aenzenith/glimpsfy/releases/latest/download/latest.json"
+      ]
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "app",
+      "dmg"
+    ],
+    "category": "Productivity",
+    "shortDescription": "Screenshots, recordings, OCR and sharing from the menu bar",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "macOS": {
+      "minimumSystemVersion": "14.0",
+      "signingIdentity": "Developer ID Application: MUSTAFA SARI (7ACQ67T7A7)",
+      "entitlements": "./Entitlements.plist"
+    }
+  }
+}

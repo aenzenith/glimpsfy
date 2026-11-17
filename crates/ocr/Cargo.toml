@@ -1,0 +1,40 @@
+[package]
+name = "glimpsfy-ocr"
+description = "Text recognition and code detection for Glimpsfy behind one engine trait: Vision, Windows.Media.Ocr and PP-OCR"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[features]
+default = []
+# Lists the PP-OCR engine. Its ONNX Runtime inference is not written yet (see
+# `src/engines/ppocr.rs`), so the feature adds no dependency today and stays off on every
+# platform; the model management in `src/models` works without it. The runtime (`ort`) joins
+# this feature when the inference lands.
+ppocr = []
+
+[dependencies]
+glimpsfy-capture.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+png.workspace = true
+# The model download is the only network traffic this crate may cause (`models/download.rs`).
+ureq = { version = "3.5", default-features = false, features = ["rustls"] }
+sha2 = "0.10.9"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2.workspace = true
+block2.workspace = true
+objc2-foundation = { workspace = true, features = ["std", "NSArray", "NSString", "NSError", "NSIndexSet", "NSDictionary", "NSData", "NSRange", "NSValue", "NSObject", "NSEnumerator", "block2"] }
+objc2-core-foundation = { workspace = true, features = ["std", "CFCGTypes", "CFData", "CFDictionary", "CFString", "CFURL"] }
+objc2-core-graphics = { workspace = true, features = ["std", "CGImage", "CGColorSpace", "CGDataProvider", "CGContext", "CGBitmapContext", "CGGeometry"] }
+objc2-image-io = { version = "0.3.2", default-features = false, features = ["std", "CGImageSource", "objc2-core-graphics"] }
+objc2-vision = { version = "0.3.2", default-features = false, features = ["std", "block2", "objc2-core-foundation", "objc2-core-graphics", "VNRequest", "VNRecognizeTextRequest", "VNDetectBarcodesRequest", "VNObservation", "VNRequestHandler", "VNTypes", "VNGeometry"] }
+objc2-natural-language = { version = "0.3.2", default-features = false, features = ["std", "NLLanguage", "NLLanguageRecognizer"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+serde_json.workspace = true

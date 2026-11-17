@@ -1,0 +1,20 @@
+Reading order in multi-column layouts
+
+By the Glimpsfy team · 4 minute read
+
+A page with two columns is read from
+top to bottom in the left column first,
+and only then in the right column. An
+engine that sorts every line by its
+height alone mixes the two columns.
+
+The layout step finds the gutter between
+the columns and keeps each column whole.
+
+Headings that span both columns come
+before the columns, and a footer that
+spans them comes after both of them.
+
+Tables are different: their cells are short,
+so a row is read from left to right and
+the rows follow each other downwards.

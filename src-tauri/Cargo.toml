@@ -1,0 +1,62 @@
+[package]
+name = "glimpsfy"
+description = "Screenshots, recordings, OCR and sharing from the menu bar"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lib]
+# The `_lib` suffix keeps the library's name apart from the binary's (cargo#8519 on Windows).
+name = "glimpsfy_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+glimpsfy-capture.workspace = true
+glimpsfy-record.workspace = true
+glimpsfy-ocr.workspace = true
+glimpsfy-upload.workspace = true
+glimpsfy-history.workspace = true
+glimpsfy-annotate.workspace = true
+
+tauri = { version = "2", features = ["image-png", "macos-private-api", "tray-icon"] }
+tauri-plugin-global-shortcut = "2.4.0"
+tauri-plugin-single-instance = "2.5.2"
+tauri-plugin-opener = "2"
+serde.workspace = true
+serde_json = { workspace = true, features = ["preserve_order"] }
+thiserror.workspace = true
+dirs = "7"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+# The folder and file pickers of Settings and the pins (app shell).
+tauri-plugin-dialog = "2.8.1"
+# Start at login outside macOS (app shell, `commands/settings.rs`).
+tauri-plugin-autostart = "2.7.0"
+# Glimpsfy's own updates from the GitHub releases (app shell, `update.rs`).
+tauri-plugin-updater = { version = "2.13.1", default-features = false, features = ["native-tls"] }
+# Reads the colour profile and resolution of a PNG the editor opens (annotation,
+# `commands/render.rs`); the capture crate already builds it.
+png.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2.workspace = true
+block2.workspace = true
+objc2-foundation = { workspace = true, features = ["std", "NSArray", "NSData", "NSDictionary", "NSEnumerator", "NSGeometry", "NSString", "NSValue", "NSURL", "NSLocale"] }
+objc2-core-foundation = { workspace = true, features = ["std", "CFCGTypes"] }
+objc2-core-graphics = { workspace = true, features = ["std", "CGDirectDisplay", "CGDisplayConfiguration", "CGError", "CGWindow", "bitflags"] }
+objc2-app-kit = { workspace = true, features = ["std", "NSApplication", "NSResponder", "NSWindow", "NSPanel", "NSScreen", "NSView", "NSPasteboard", "NSPasteboardItem", "NSImage", "NSGraphics", "NSRunningApplication", "NSWorkspace", "NSEvent", "objc2-core-foundation", "NSStatusItem", "NSStatusBarButton", "NSButton", "NSControl", "NSDragging", "NSDraggingItem", "NSDraggingSession", "block2"] }
+# Start at login writes its own launch agent on macOS (app shell, `commands/settings.rs`).
+auto-launch = "0.6.0"
+# Whether the app's own place can be replaced by an update without a password (`update.rs`).
+libc = "0.2"
+
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+tauri-plugin-clipboard-manager = "2.4.1"
+
+[dev-dependencies]
+tempfile.workspace = true

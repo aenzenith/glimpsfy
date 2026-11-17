@@ -1,0 +1,187 @@
+//! What leaves the machine: one rule, walked over every built-in provider.
+//!
+//! Before the user confirms a provider's destination, no command makes a request: not an
+//! upload, not a test, not a deletion. After the confirmation, requests go to that destination's
+//! host and to no other, even when the host's answer names another one (a link, a deletion link,
+//! a redirect). Each public host is moved to a local test server; a second local server, the
+//! canary, stands for every other host on the Internet and must never hear a thing.
+
+mod support;
+
+use std::sync::Arc;
+
+use glimpsfy_upload::engine::Stored;
+use glimpsfy_upload::http::HttpClient;
+use glimpsfy_upload::secrets::SecretStore;
+use glimpsfy_upload::{providers, DeleteOutcome, DeletionHandle, ProviderId, UploadData, UploadError, Uploader};
+use serde_json::{json, Value};
+use support::{Reply, TestServer};
+
+struct Fixture {
+    server: TestServer,
+    canary: TestServer,
+    uploader: Uploader,
+}
+
+fn fixture() -> Fixture {
+    let canary = TestServer::canary();
+    let elsewhere = canary.origin();
+    let server = TestServer::start(move |request| {
+        let path = request.target.split('?').next().unwrap_or("");
+        match (request.method.as_str(), path) {
+            ("POST", "/user/api.php") => Reply::text(200, &format!("{elsewhere}/catbox.png")),
+            ("POST", "/resources/internals/api.php") => Reply::text(200, &format!("{elsewhere}/litterbox.png")),
+            ("POST", "/") => Reply::text(200, &format!("{elsewhere}/zero.png\n")).header("x-token", "zero-token"),
+            ("POST", "/1/upload") => Reply::json(
+                200,
+                json!({ "success": true, "status": 200,
+                        "data": { "url": format!("{elsewhere}/imgbb.png"), "delete_url": format!("{elsewhere}/imgbb-delete") } }),
+            ),
+            ("PUT", p) if p.starts_with("/bucket/") => Reply::text(200, ""),
+            ("DELETE", p) if p.starts_with("/bucket/") => Reply::text(204, ""),
+            ("POST", "/custom") => Reply::json(
+                200,
+                json!({ "url": format!("{elsewhere}/custom.png"), "del": format!("{elsewhere}/custom-delete") }),
+            ),
+            ("POST", "/redirect") => Reply::text(302, "").header("location", &format!("{elsewhere}/moved")),
+            ("GET", "/") => Reply::text(200, "front page"),
+            _ => Reply::text(404, "no such path"),
+        }
+    });
+    let store = keyring_core::mock::Store::new().expect("the mock keychain");
+    let uploader = Uploader::new(
+        glimpsfy_upload::builtin_providers_at(&server.url),
+        SecretStore::with_store(store),
+        HttpClient::for_tests(),
+    );
+    uploader.set_secret(&id(providers::IMGBB), "apiKey", "imgbb-key-0001").expect("a stored key");
+    uploader.set_secret(&id(providers::S3), "secretAccessKey", "s3-secret-0001").expect("a stored secret");
+    uploader
+        .set_secret(&id(providers::CUSTOM), "headers:Authorization", "Bearer custom-0001")
+        .expect("a stored header");
+    Fixture { server, canary, uploader }
+}
+
+fn id(name: &str) -> ProviderId {
+    ProviderId::new(name)
+}
+
+/// Each provider's settings, pointed at the test server.
+fn values(server: &TestServer, provider: &str) -> Value {
+    let origin = server.origin();
+    match provider {
+        providers::LITTERBOX => json!({ "time": "1h" }),
+        providers::ZERO_X_ZERO => json!({ "secret": true }),
+        providers::IMGBB => json!({ "expiration": "0" }),
+        providers::S3 => json!({
+            "endpoint": origin, "region": "us-east-1", "bucket": "bucket",
+            "addressing": "path", "accessKeyId": "AKIDTEST"
+        }),
+        providers::CUSTOM => json!({
+            "requestUrl": format!("{origin}/custom"), "method": "POST", "body": "multipart",
+            "fileFormName": "file", "headers": ["Authorization"],
+            "urlTemplate": "{json:url}", "deletionUrlTemplate": "{json:del}"
+        }),
+        _ => json!({}),
+    }
+}
+
+/// A deletion handle of the kind each provider hands out.
+fn handle(server: &TestServer, provider: &str) -> DeletionHandle {
+    match provider {
+        providers::ZERO_X_ZERO => {
+            DeletionHandle::Token { token: "zero-token".into(), url: Some(format!("{}/zero.png", server.origin())) }
+        }
+        providers::S3 => {
+            DeletionHandle::ObjectKey { key: "a/b.png".into(), endpoint: server.origin(), bucket: "bucket".into() }
+        }
+        _ => DeletionHandle::Url { url: format!("{}/delete", server.origin()) },
+    }
+}
+
+fn png() -> UploadData {
+    UploadData::Bytes(Arc::from(&b"\x89PNG\r\n\x1a\nnot really an image, but bytes all the same"[..]))
+}
+
+#[test]
+fn no_request_leaves_before_the_user_confirms_the_destination() {
+    let f = fixture();
+    for provider in providers::BUILTIN {
+        let values = values(&f.server, provider);
+        let pid = id(provider);
+        // Nothing confirmed; then consent for the same provider at another address, which must
+        // not count for this one.
+        let other = [format!("{provider}@elsewhere.example"), format!("{provider}@127.0.0.1:1/bucket")];
+        for confirmed in [&[][..], &other[..]] {
+            let stored = Stored { values: Some(&values), confirmed };
+            let begun = f.uploader.begin(&pid, stored, png(), "shot.png", "image/png");
+            assert!(matches!(begun, Err(UploadError::NotConfirmed { .. })), "{provider} began an upload: {begun:?}");
+            let tested = f.uploader.test(&pid, stored);
+            assert!(matches!(tested, Err(UploadError::NotConfirmed { .. })), "{provider} ran a test: {tested:?}");
+            match f.uploader.delete(&pid, stored, &handle(&f.server, provider)) {
+                Err(UploadError::NotConfirmed { .. }) => {}
+                // A deletion page is handed to the browser; Glimpsfy itself requests nothing.
+                Ok(DeleteOutcome::OpenPage { .. }) => {}
+                other => panic!("{provider} deleted without consent: {other:?}"),
+            }
+        }
+    }
+    assert!(f.server.requests().is_empty(), "the host heard {:?}", f.server.requests());
+    assert!(f.canary.requests().is_empty(), "another host heard {:?}", f.canary.requests());
+}
+
+#[test]
+fn confirmed_requests_reach_the_chosen_host_and_no_other() {
+    let f = fixture();
+    let host =
+        f.server.url.host_str().map(|h| format!("{h}:{}", f.server.url.port().unwrap_or(80))).unwrap_or_default();
+    for provider in providers::BUILTIN {
+        let values = values(&f.server, provider);
+        let pid = id(provider);
+        let key = f.uploader.consent_key(&pid, Some(&values)).expect("a consent key");
+        let confirmed = [key];
+        let stored = Stored { values: Some(&values), confirmed: &confirmed };
+        let before = f.server.requests().len();
+
+        let pending = f.uploader.begin(&pid, stored, png(), "shot.png", "image/png").expect("an admitted upload");
+        let result = f.uploader.run(pending, &|_| {}).unwrap_or_else(|e| panic!("{provider} failed: {e}"));
+        assert!(f.server.requests().len() > before, "{provider} uploaded nowhere");
+
+        f.uploader.test(&pid, stored).unwrap_or_else(|e| panic!("{provider} test failed: {e}"));
+
+        // The link and the deletion link point at the canary; deleting must not follow them there.
+        if let Some(deletion) = &result.deletion {
+            match f.uploader.delete(&pid, stored, deletion) {
+                Ok(_) | Err(UploadError::HostNotAllowed { .. }) => {}
+                Err(other) => panic!("{provider} delete failed oddly: {other}"),
+            }
+        }
+    }
+
+    // A redirect is not followed either.
+    let values = json!({
+        "requestUrl": format!("{}/redirect", f.server.origin()), "method": "POST", "body": "binary",
+        "urlTemplate": "{json:url}"
+    });
+    let pid = id(providers::CUSTOM);
+    let confirmed = [f.uploader.consent_key(&pid, Some(&values)).expect("a consent key")];
+    let stored = Stored { values: Some(&values), confirmed: &confirmed };
+    let pending = f.uploader.begin(&pid, stored, png(), "shot.png", "image/png").expect("an admitted upload");
+    assert!(f.uploader.run(pending, &|_| {}).is_err(), "a redirect without a link counted as an upload");
+
+    let requests = f.server.requests();
+    assert!(!requests.is_empty());
+    for request in &requests {
+        assert_eq!(
+            request.header("host"),
+            Some(host.as_str()),
+            "{} {} went to another host",
+            request.method,
+            request.target
+        );
+        let agent = request.header("user-agent").unwrap_or("");
+        assert!(agent.starts_with("Glimpsfy/") && !agent.contains(' '), "the user agent says more: {agent}");
+        assert!(request.header("cookie").is_none() && request.header("referer").is_none());
+    }
+    assert!(f.canary.requests().is_empty(), "another host heard {:?}", f.canary.requests());
+}

@@ -1,0 +1,13 @@
+<!doctype html><meta charset="utf-8">
+<style>body{margin:0;padding:28px 32px;background:#fbfaf7;color:#222;font:15px/1.5 Georgia,serif;white-space:nowrap}
+h1{font:600 24px/1.2 -apple-system,sans-serif;margin:0 0 6px}.by{font:13px -apple-system,sans-serif;color:#666;margin:0 0 18px}
+.cols{display:flex;gap:30px}.cols>div{width:330px}p{margin:0 0 12px}</style>
+<h1>Reading order in multi-column layouts</h1>
+<div class="by">By the Glimpsfy team · 4 minute read</div>
+<div class="cols"><div>
+<p>A page with two columns is read from<br>top to bottom in the left column first,<br>and only then in the right column. An<br>engine that sorts every line by its<br>height alone mixes the two columns.</p>
+<p>The layout step finds the gutter between<br>the columns and keeps each column whole.</p>
+</div><div>
+<p>Headings that span both columns come<br>before the columns, and a footer that<br>spans them comes after both of them.</p>
+<p>Tables are different: their cells are short,<br>so a row is read from left to right and<br>the rows follow each other downwards.</p>
+</div></div>
