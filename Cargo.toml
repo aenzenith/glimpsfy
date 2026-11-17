@@ -1,0 +1,66 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/capture",
+    "crates/record",
+    "crates/ocr",
+    "crates/upload",
+    "crates/history",
+    "crates/annotate",
+    "src-tauri",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["Mustafa Sarı"]
+repository = "https://github.com/aenzenith/glimpsfy"
+rust-version = "1.85"
+
+[workspace.dependencies]
+glimpsfy-capture = { path = "crates/capture" }
+glimpsfy-record = { path = "crates/record" }
+glimpsfy-ocr = { path = "crates/ocr" }
+glimpsfy-upload = { path = "crates/upload" }
+glimpsfy-history = { path = "crates/history" }
+glimpsfy-annotate = { path = "crates/annotate" }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+png = "0.18"
+tempfile = "3"
+
+# macOS bindings. Every objc2 framework crate of the 0.3 line pairs with objc2 0.6, which is
+# also what Tauri 2's tao and wry use, so one copy of the runtime is linked.
+objc2 = "0.6.5"
+block2 = "0.6.2"
+dispatch2 = "0.3.1"
+objc2-foundation = { version = "0.3.2", default-features = false }
+objc2-core-foundation = { version = "0.3.2", default-features = false }
+objc2-core-graphics = { version = "0.3.2", default-features = false }
+objc2-app-kit = { version = "0.3.2", default-features = false }
+objc2-screen-capture-kit = { version = "0.3.2", default-features = false }
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true
+
+# The capture path copies and swizzles full-display frames: even a dev build runs it optimised,
+# so the latency measured in `npm run tauri dev` is close to what a release build does.
+[profile.dev.package.glimpsfy-capture]
+opt-level = 3
+[profile.dev.package.png]
+opt-level = 3
+[profile.dev.package.fdeflate]
+opt-level = 3
+[profile.dev.package.miniz_oxide]
+opt-level = 3
+[profile.dev.package.crc32fast]
+opt-level = 3
+[profile.dev.package.adler2]
+opt-level = 3

@@ -1,0 +1,31 @@
+[package]
+name = "glimpsfy-history"
+description = "The capture history of Glimpsfy: entries, queries, search, deletion and retention"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+glimpsfy-upload.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+png.workspace = true
+# The bundled SQLite is built with FTS5, so search does not depend on the system's SQLite.
+rusqlite = { version = "0.39", features = ["bundled", "functions", "collation"] }
+# NFKD decomposition for the search folding (`fold.rs`).
+unicode-normalization = "0.1.24"
+# Thumbnails of opaque captures are JPEG: a quarter of the PNG's size at the same look.
+jpeg-encoder = "0.6.1"
+
+# Moving a user's file to the Trash goes through NSFileManager, which needs no Finder automation
+# permission.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2.workspace = true
+objc2-foundation = { workspace = true, features = ["std", "NSError", "NSFileManager", "NSString", "NSURL"] }
+
+[dev-dependencies]
+tempfile.workspace = true

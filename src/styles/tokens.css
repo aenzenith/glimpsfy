@@ -1,0 +1,384 @@
+/* Glimpsfy tokens, copied from design/kit/glass.css (lines 1-381). The kit is the source of
+   truth: change the kit first, then copy the change here. */
+
+/* =============================================================================
+   Glimpsfy kit · glass.css
+   Tokens and component classes for every Glimpsfy surface.
+
+   Two layers share one language:
+   - The floating layer is always dark glass, because it sits on unknown content:
+     bars, strips, tooltips, toasts, chips, the size label, the countdown.
+   - The window layer follows the system theme: history, editor, settings,
+     first run and the menu bar popover. Put data-theme="light" or
+     data-theme="dark" on any container; :root defaults to light.
+
+   Rules for this file
+   - Class names start with g-. State lives in aria-* where one exists
+     (aria-pressed, aria-checked, aria-selected, aria-current, aria-disabled,
+     aria-invalid, aria-orientation) and in data-* otherwise
+     (data-variant, data-size, data-tone, data-status, data-state).
+   - data-state="hover" | "pressed" | "focus" forces a state for presentation,
+     so a static page can show every state side by side.
+   - Contrast ratios below are WCAG 2 ratios. Glass ratios were read from
+     rendered pixels (headless Chrome, 2x) of the glass over each backdrop, at
+     the brightest row where text can sit (10 % from the top edge, under the
+     sheen). Window ratios are computed against the worst ground of each theme,
+     including the sidebar material over a black or white desktop.
+   - Colour rules. Iris marks the selection, the active tool and the primary
+     action. Red belongs to recording only: the record button, the recording
+     dot, the red frame and the menu bar glyph while a recording runs. On glass
+     a failure and a destructive action (Discard recording) use the amber
+     --warn family. In windows a destructive action is red text (--win-danger)
+     on an ordinary button and never a red fill.
+   ============================================================================= */
+
+/* The hidden attribute always wins over the display rules of kit classes. */
+[hidden] { display: none !important; }
+
+:root {
+  /* ---------------------------------------------------------------- material
+     Smoked glass with a faint iris cast. Over pure white the backdrop arrives
+     at 158 (brightness 0.62), the tint brings it to a violet slate rgb(67 65 78),
+     and the rim light, the inner edge glow and the iris caustic at the bottom
+     give the material depth where there is nothing behind it to blur. */
+  --glass-tint: rgba(24, 21, 40, 0.68);         /* bars, strip, toasts, chips */
+  --glass-tint-strong: rgba(19, 17, 32, 0.80);  /* tooltips, size label, hint: small text */
+  --glass-blur: 28px;
+  --glass-saturate: 1.8;
+  --glass-brightness: 0.62;                     /* a white backdrop arrives at 158, never 255 */
+  --glass-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate)) brightness(var(--glass-brightness));
+  --glass-sheen: linear-gradient(180deg, rgba(255, 255, 255, 0.07) 0%, rgba(255, 255, 255, 0) 45%);
+  --glass-caustic: radial-gradient(110% 75% at 50% 135%, rgba(124, 108, 255, 0.20), rgba(124, 108, 255, 0) 72%);
+  --glass-solid: #1e1c28;                       /* fallback without backdrop-filter */
+  --glass-solid-sheen: linear-gradient(180deg, #272533 0%, #1e1c28 46%);
+
+  /* ------------------------------------------------------------------- edges
+     Every floating element carries a double hairline and a rim light: the
+     dark outer ring draws the edge on white, the light inner ring on black. */
+  --edge-inner: rgba(255, 255, 255, 0.12);      /* inner ring: shows on black */
+  --edge-top: rgba(255, 255, 255, 0.28);        /* rim light along the top */
+  --edge-bottom: rgba(255, 255, 255, 0.05);     /* faint lower rim */
+  --edge-glow: rgba(255, 255, 255, 0.045);      /* inner edge glow, reads as thickness */
+  --edge-outer: rgba(0, 0, 0, 0.55);            /* outer ring: shows on white */
+  --hairline: 1px;                              /* 0.5px on a 2x display, see the media query below */
+  --edge: inset 0 0 0 var(--hairline) var(--edge-inner),
+          inset 0 1px 0 0 var(--edge-top),
+          inset 0 -1px 0 0 var(--edge-bottom),
+          inset 0 0 12px 0 var(--edge-glow),
+          0 0 0 var(--hairline) var(--edge-outer);
+
+  /* ----------------------------------------------------------------- overlay */
+  --dim: rgba(8, 8, 12, 0.48);                  /* frozen screen outside the selection */
+  --crosshair: rgba(255, 255, 255, 0.82);
+  --crosshair-halo: rgba(0, 0, 0, 0.30);
+  --selection-inner: rgba(255, 255, 255, 0.55); /* hairline inside the iris edge */
+  --window-tint: rgba(108, 92, 246, 0.08);      /* hovered window wash */
+  --ocr-veil: rgba(12, 10, 30, 0.16);
+  --ocr-line: rgba(108, 92, 246, 0.85);
+
+  /* ------------------------------------------------------------ text on glass
+     Measured at the brightest text row; the second figure is mid-height. */
+  --text: #f4f4f6;                              /* 7.7:1 over white (9.1:1 mid) · 17.4:1 over black */
+  --text-muted: #cfcfd8;                        /* 4.8:1 at the brightest strip row over white · 12.3:1 over black;
+                                                   #c3c3cd fell to 4.25:1 beside a strip's edge glow */
+  --text-faint: rgba(244, 244, 246, 0.34);      /* disabled glyphs only, never text that must be read */
+  --text-on-iris: #ffffff;                      /* 4.67:1 on --iris */
+
+  /* ------------------------------------------------- accent: Iris, Glimpsfy's own */
+  --iris: #6c5cf6;                              /* selection, active tool; 4.67:1 to white, 4.50:1 to black */
+  --iris-hover: #6252ec;                        /* white on it 5.33:1 */
+  --iris-press: #5848e0;                        /* white on it 6.14:1 */
+  --iris-text: #c1b9ff;                         /* iris as text on glass: 4.7:1 over white (5.5:1 mid) · 10.6:1 over black */
+  --iris-soft: rgba(108, 92, 246, 0.26);        /* selected text, palette hover */
+  --iris-glow: rgba(108, 92, 246, 0.45);
+
+  /* -------------------------------------------------------- controls on glass */
+  --control-hover: rgba(255, 255, 255, 0.10);
+  --control-press: rgba(255, 255, 255, 0.16);
+  --control-fill: rgba(255, 255, 255, 0.12);    /* capsule buttons, key caps */
+  --control-fill-press: rgba(255, 255, 255, 0.22);
+  --track: rgba(255, 255, 255, 0.16);           /* meter, ring and switch tracks on glass */
+  --divider: rgba(255, 255, 255, 0.12);
+  --handle: #ffffff;
+
+  /* ------------------------------------------------------------------- state */
+  --rec: #ff5a50;                               /* recording only: dot, glyph, frame; 3.2:1 on glass over white
+                                                   (#ff453a measured 2.88:1, under the 3:1 non-text floor) */
+  --rec-fill: #dd3328;                          /* the record button: white label 4.59:1 */
+  --rec-fill-hover: #cb2c22;                    /* white label 5.36:1 */
+  --ok: #5fd68e;
+  --warn: #ffb340;                              /* amber: every failure on glass, and every destructive action
+                                                   on glass (Discard recording), because red on glass means recording */
+  --on-status: #10131a;                         /* glyph on an ok or warn badge: 10.2:1 */
+
+  /* --------------------------------- ink: the annotation palette (content, not chrome) */
+  --ink-red: #ff3b30;
+  --ink-orange: #ff9500;
+  --ink-yellow: #ffd60a;
+  --ink-green: #34c759;
+  --ink-cyan: #32ade6;
+  --ink-blue: #0a84ff;
+  --ink-white: #ffffff;
+  --ink-black: #1c1c1e;
+
+  /* ------------------------------------------------------------------- shape
+     Radii are concentric: outer radius − padding = inner radius. The window
+     layer reuses the same numbers, so both layers read as one family:
+     capsule · 18 · 12 · 8 · 5. */
+  --bar-h: 40px;
+  --bar-pad: 4px;
+  --button: 32px;                               /* round icon button: bars and window toolbars */
+  --button-small: 28px;                         /* toast close, strip options, card actions */
+  --strip-h: 36px;
+  --gap-selection: 8px;                         /* selection to bar, bar to strip */
+  --radius-bar: 20px;
+  --radius-button: 16px;
+  --radius-strip: 18px;
+  --radius-card: 18px;                          /* toasts, loupe, popover */
+  --radius-lens: 12px;                          /* 18 − 6 */
+  --radius-thumb: 8px;
+  --radius-chip: 999px;                         /* size label, tooltip, chips, capsule controls */
+  --radius-key: 5px;
+  --toast-w: 380px;
+  --handle-corner: 10px;
+  --handle-edge: 18px 6px;
+
+  /* window layer, same family */
+  --radius-window: 12px;                        /* = --radius-lens */
+  --radius-menu: 12px;                          /* context menu: 12 − 4 padding = 8 items */
+  --radius-popover: 18px;                       /* = --radius-card: 18 − 10 padding = 8 rows */
+  --radius-group: 12px;                         /* settings groups, thumbnail cards */
+  --radius-field: 8px;                          /* = --radius-thumb: fields, rows, menu items */
+  --radius-check: 5px;                          /* = --radius-key: checkbox */
+  --control-h: 28px;                            /* every window control, and the minimum hit target */
+  --row-h: 28px;                                /* sidebar items, menu items */
+  --toolbar-h: 52px;                            /* unified title and toolbar */
+  --titlebar-h: 36px;                           /* title-only windows */
+  --statusbar-h: 28px;                          /* 36px with data-size="large" */
+  /* widths a page may set on the element itself (style="--sidebar-w:188px"), never at :root */
+  --sidebar-w: 220px;
+  --search-w: 220px;
+  --dialog-w: 440px;
+  --pop-w: 296px;                               /* glass popover and menu */
+
+  /* spacing: 4 px steps, with 2 and 6 for optical corrections */
+  --space-2: 2px;
+  --space-4: 4px;
+  --space-6: 6px;
+  --space-8: 8px;
+  --space-12: 12px;
+  --space-16: 16px;
+  --space-20: 20px;
+  --space-24: 24px;
+  --space-32: 32px;
+  --space-40: 40px;
+
+  /* ------------------------------------------------------------------- depth */
+  --shadow-float: 0 12px 32px rgba(0, 0, 0, 0.34), 0 2px 8px rgba(0, 0, 0, 0.22);
+  --shadow-small: 0 4px 14px rgba(0, 0, 0, 0.30), 0 1px 3px rgba(0, 0, 0, 0.20);
+  --shadow-handle: 0 1px 3px rgba(0, 0, 0, 0.45);
+  --shadow-active: inset 0 1px 0 rgba(255, 255, 255, 0.28), 0 2px 8px rgba(108, 92, 246, 0.45);
+  --shadow-rec: inset 0 1px 0 rgba(255, 255, 255, 0.24), 0 2px 8px rgba(221, 51, 40, 0.40);
+
+  /* -------------------------------------------------------------------- type
+     One scale for both layers. The system stack resolves to SF Pro on macOS,
+     Segoe UI Variable on Windows and Cantarell or Ubuntu on Linux. */
+  --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, "Segoe UI Variable Text", "Segoe UI", Cantarell, Ubuntu, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "Cascadia Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  --type-display: 600 20px/26px var(--font);    /* first-run headline */
+  --type-heading: 600 15px/20px var(--font);    /* window title, popover header, empty state */
+  --type-title: 600 13px/18px var(--font);      /* toast title, group header, list title */
+  --type-text: 400 13px/18px var(--font);       /* window body, fields, rows, menu items */
+  --type-button: 500 13px/18px var(--font);     /* window push buttons */
+  --type-body: 400 12px/16px var(--font);       /* toast body, help text, row subtitle */
+  --type-label: 500 12px/16px var(--font);      /* tooltip, glass buttons, segments */
+  --type-caption: 400 11px/14px var(--font);    /* meta under a thumbnail */
+  --type-caption-strong: 600 11px/14px var(--font); /* sidebar section, badge, table header */
+  --type-overline: 500 10px/12px var(--font);   /* small caps label in a chip: uppercase, 0.04em */
+  --type-num: 500 12px/16px var(--font-mono);   /* size label */
+  --type-num-small: 500 11px/14px var(--font-mono); /* key caps, loupe */
+  --type-timecode: 600 13px/18px var(--font-mono);  /* elapsed time in the control bar */
+  --type-countdown: 600 56px/1 var(--font);     /* countdown numeral */
+  --type-annotation: 600 14px/18px var(--font); /* text the user draws */
+
+  /* ------------------------------------------------------------------ motion */
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-spring: cubic-bezier(0.34, 1.36, 0.64, 1);
+  --dur-fast: 120ms;                            /* hover, press */
+  --dur-base: 180ms;                            /* bars appear, tooltips */
+  --dur-move: 220ms;                            /* bars reposition at an edge */
+  --dur-toast: 260ms;
+
+  /* The five --canvas-* tokens of the prototype describe the presentation
+     page, not the app, so they live in canvas.css. */
+}
+
+/* a 1 px ring on a 2x display is two device pixels; the edge should be one */
+@media (min-resolution: 2dppx) {
+  :root { --hairline: 0.5px; }
+}
+
+/* Platform hook. Windows 11 draws windows, flyouts and menus with an 8 px corner,
+   so data-platform="windows" on a window or any ancestor switches the window layer
+   to it. The floating glass keeps its own radii on every platform. */
+[data-platform="windows"] {
+  --radius-window: 8px;
+  --radius-popover: 8px;
+  --radius-menu: 8px;
+}
+
+/* =============================================================================
+   Window layer: light and dark themes
+   ============================================================================= */
+:root,
+[data-theme="light"] {
+  color-scheme: light;
+  /* grounds */
+  --win-ground: #f3f3f6;                        /* title-only bars, window behind panels */
+  --win-toolbar: #ffffff;                       /* unified toolbar blends with the content */
+  --win-content: #ffffff;
+  --win-raised: #ffffff;                        /* cards and fields that sit on the ground */
+  --win-sunken: #f0f0f4;                        /* thumbnail wells, image placeholders */
+  --win-group: rgba(0, 0, 0, 0.028);            /* settings groups */
+  --win-group-edge: rgba(0, 0, 0, 0.06);
+  /* translucent material: sidebar, popover, context menu.
+     A black desktop arrives at rgb(223 223 227), a white one at rgb(243 243 247),
+     because contrast(0.5) and brightness(1.3) lift the floor before the tint. */
+  --win-material: rgba(242, 242, 247, 0.88);
+  --win-material-filter: blur(30px) saturate(1.8) contrast(0.5) brightness(1.3);
+  --win-material-solid: #ececf1;
+  --win-material-rim: inset 0 0 0 0.5px rgba(255, 255, 255, 0.55);
+  /* lines */
+  --win-line: rgba(0, 0, 0, 0.09);              /* separators */
+  --win-line-strong: rgba(0, 0, 0, 0.26);       /* checkbox and radio edges */
+  /* text levels: ratios on white · on the ground · on the sidebar over black */
+  --win-text: #1d1d21;                          /* 16.8 · 15.2 · 12.6 */
+  --win-text-2: #50505b;                        /* 8.0 · 7.2 · 6.0 */
+  --win-text-3: #62626d;                        /* 6.0 · 5.4 · 4.5; never on a selection */
+  --win-text-disabled: rgba(29, 29, 33, 0.32);  /* disabled controls only */
+  --win-iris-text: #4e3ed6;                     /* iris as text and icons: 7.0 · 6.4 · 5.3 · 4.5 on a selected sidebar row */
+  /* selection, hover, focus */
+  --win-selection: #6c5cf6;                     /* selected rows, menu highlight; white text 4.67:1 */
+  --win-selection-text: #ffffff;
+  --win-selection-soft: rgba(108, 92, 246, 0.14); /* current sidebar item, selected card */
+  --win-hover: rgba(0, 0, 0, 0.05);
+  --win-press: rgba(0, 0, 0, 0.09);
+  --win-focus: #5a4ae6;                         /* focus ring: at least 3.2:1 on every light ground */
+  /* controls */
+  --win-fill: rgba(0, 0, 0, 0.055);             /* search field, segmented track, key caps */
+  --win-field: #ffffff;
+  --win-field-edge: rgba(0, 0, 0, 0.20);
+  --win-button: #ffffff;
+  --win-button-hover: #f7f7f9;
+  --win-button-press: #ebebef;
+  --win-button-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.18), 0 0.5px 1.5px rgba(0, 0, 0, 0.12);
+  --win-raised-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.12), 0 1px 2px rgba(0, 0, 0, 0.12); /* segment thumb */
+  --win-track: rgba(0, 0, 0, 0.14);             /* switch off, slider rail */
+  --win-thumb-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.16), 0 1px 3px rgba(0, 0, 0, 0.22);
+  /* status, text on its own soft fill holds 4.5:1 */
+  --win-ok: #1a7038;
+  --win-ok-soft: #e1f3e6;
+  --win-warn: #7e4c00;
+  --win-warn-soft: #fcedd3;
+  --win-danger: #b8152a;                        /* destructive text in windows: red text, never a red fill.
+                                                   On glass the destructive tone is amber (--warn). 6.6:1 on a button */
+  --win-danger-soft: #fbe6e8;
+  --win-media-rim: rgba(0, 0, 0, 0.12);         /* hairline inside a thumbnail, over the image */
+  --win-scrim: rgba(0, 0, 0, 0.06);             /* behind a dialog inside a window */
+  /* depth */
+  --win-shadow-window: 0 0 0 0.5px rgba(0, 0, 0, 0.22), 0 22px 54px rgba(40, 40, 70, 0.16), 0 4px 12px rgba(40, 40, 70, 0.08);
+  --win-rim: inset 0 0 0 0.5px rgba(255, 255, 255, 0);
+  --win-shadow-popover: 0 0 0 0.5px rgba(0, 0, 0, 0.12), 0 14px 36px rgba(30, 30, 60, 0.18), 0 2px 8px rgba(30, 30, 60, 0.08);
+  --win-shadow-lift: 0 0 0 0.5px rgba(0, 0, 0, 0.08), 0 8px 22px rgba(30, 30, 60, 0.12), 0 1px 3px rgba(30, 30, 60, 0.08);
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+  --win-ground: #242429;
+  --win-toolbar: #1c1c21;
+  --win-content: #1c1c21;
+  --win-raised: #2b2b31;
+  --win-sunken: #26262c;
+  --win-group: rgba(255, 255, 255, 0.04);
+  --win-group-edge: rgba(255, 255, 255, 0.06);
+  /* A white desktop arrives at rgb(49 48 57), a black one at rgb(29 27 37). */
+  --win-material: rgba(36, 34, 46, 0.80);
+  --win-material-filter: blur(30px) saturate(1.8) brightness(0.4);
+  --win-material-solid: #232130;
+  --win-material-rim: inset 0 0 0 0.5px rgba(255, 255, 255, 0.12);
+  --win-line: rgba(255, 255, 255, 0.08);
+  --win-line-strong: rgba(255, 255, 255, 0.24);
+  /* ratios on the content · on a raised card · on the sidebar over white */
+  --win-text: #f2f2f5;                          /* 15.2 · 12.6 · 11.7 */
+  --win-text-2: #ababb6;                        /* 7.5 · 6.2 · 5.7 */
+  --win-text-3: #9a9aa5;                        /* 6.1 · 5.1 · 4.7; never on a selection */
+  --win-text-disabled: rgba(242, 242, 245, 0.30);
+  --win-iris-text: #b0a7ff;                     /* 7.9 · 6.6 · 6.1 · 4.8 on a selected sidebar row */
+  --win-selection: #6c5cf6;
+  --win-selection-text: #ffffff;
+  --win-selection-soft: rgba(108, 92, 246, 0.24);
+  --win-hover: rgba(255, 255, 255, 0.06);
+  --win-press: rgba(255, 255, 255, 0.10);
+  --win-focus: #9a8fff;                         /* at least 3.4:1 on every dark ground */
+  --win-fill: rgba(255, 255, 255, 0.08);
+  --win-field: rgba(255, 255, 255, 0.05);
+  --win-field-edge: rgba(255, 255, 255, 0.14);
+  --win-button: rgba(255, 255, 255, 0.12);
+  --win-button-hover: rgba(255, 255, 255, 0.16);
+  --win-button-press: rgba(255, 255, 255, 0.22);
+  --win-button-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.10), 0 0 0 0.5px rgba(0, 0, 0, 0.40), 0 1px 2px rgba(0, 0, 0, 0.25);
+  --win-raised-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.10), 0 1px 2px rgba(0, 0, 0, 0.35);
+  --win-track: rgba(255, 255, 255, 0.18);
+  --win-thumb-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.30), 0 1px 3px rgba(0, 0, 0, 0.40);
+  --win-ok: #5fd68e;
+  --win-ok-soft: rgba(95, 214, 142, 0.14);
+  --win-warn: #ffb340;
+  --win-warn-soft: rgba(255, 179, 64, 0.14);
+  --win-danger: #ff9d94;                        /* 4.8:1 on a button on a raised sheet (#ff8a80 measured 4.2:1) */
+  --win-danger-soft: rgba(255, 157, 148, 0.14);
+  --win-media-rim: rgba(255, 255, 255, 0.18);   /* a dark capture keeps its edge on a dark card */
+  --win-scrim: rgba(0, 0, 0, 0.24);
+  --win-shadow-window: 0 0 0 0.5px rgba(0, 0, 0, 0.70), 0 22px 54px rgba(0, 0, 0, 0.50), 0 4px 12px rgba(0, 0, 0, 0.28);
+  --win-rim: inset 0 0 0 0.5px rgba(255, 255, 255, 0.12);
+  --win-shadow-popover: 0 0 0 0.5px rgba(0, 0, 0, 0.60), 0 14px 36px rgba(0, 0, 0, 0.45), 0 2px 8px rgba(0, 0, 0, 0.25);
+  --win-shadow-lift: 0 0 0 0.5px rgba(0, 0, 0, 0.5), 0 8px 22px rgba(0, 0, 0, 0.40), 0 1px 3px rgba(0, 0, 0, 0.30);
+}
+
+/* Surface roles. Shared components (round button, capsule button, segmented
+   control, switch, slider, key cap, badge, ring) read only these, so the same
+   markup is correct on glass and in either window theme. The window mapping
+   is repeated on every [data-theme] element so a nested theme resolves its own. */
+:root,
+[data-theme] {
+  --surface-text: var(--win-text);
+  --surface-text-muted: var(--win-text-2);
+  --surface-text-faint: var(--win-text-disabled);
+  --surface-hover: var(--win-hover);
+  --surface-press: var(--win-press);
+  --surface-fill: var(--win-fill);
+  --surface-on: var(--win-button);              /* selected segment */
+  --surface-on-shadow: var(--win-raised-shadow);
+  --surface-button: var(--win-button);
+  --surface-button-hover: var(--win-button-hover);
+  --surface-button-press: var(--win-button-press);
+  --surface-button-shadow: var(--win-button-shadow);
+  --surface-line: var(--win-line);
+  --surface-track: var(--win-track);
+  --surface-focus: var(--win-focus);
+  --surface-iris-text: var(--win-iris-text);
+  --surface-kbd: var(--win-button);
+  --surface-kbd-shadow: 0 0 0 0.5px var(--win-line-strong), 0 0.5px 0 0.5px var(--win-line-strong);
+  --tone-ok: var(--win-ok);
+  --tone-ok-soft: var(--win-ok-soft);
+  --tone-warn: var(--win-warn);
+  --tone-warn-soft: var(--win-warn-soft);
+  --tone-danger: var(--win-danger);
+  --tone-danger-soft: var(--win-danger-soft);
+  --tone-iris: var(--win-iris-text);
+  --tone-iris-soft: var(--win-selection-soft);
+}
+[data-theme] {
+  color: var(--win-text);
+  font: var(--type-text);
+}
+

@@ -1,0 +1,7 @@
+Glimpsfy, seçtiğiniz alanın içindeki yazıyı tanır ve tek adımda panoya kopyalar.
+Tanıma işlemi bu bilgisayarda çalışır; hiçbir görüntü makineden dışarı çıkmaz.
+
+Şirketin İstanbul'daki ofisinde çalışan Ayşe Öztürk, ılık bir sonbahar günü
+Çağlayan'daki toplantıya gitti. Üç gün sonra Iğdır'dan dönen Ömer ile görüşüp
+yeni sürümün ayrıntılarını konuştular: ışık, gözlük, şüphe, çiğdem, ünlü, İzmir.
+Büyük harflerle yazıldığında da okunmalı: ÇAĞRI, IŞIK, İĞNE, ÖĞÜT, ŞÜPHE, ÜZÜM.

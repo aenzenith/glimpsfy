@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "editor",
+  "description": "The editor window only: it asks about unsaved changes when it is closed and then closes itself, which `onCloseRequested` does with destroy",
+  "windows": ["editor"],
+  "permissions": ["core:window:allow-destroy"]
+}

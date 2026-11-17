@@ -1,0 +1,4 @@
+# The stable channel with the two components CI runs; rustup installs them on first use.
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy"]

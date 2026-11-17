@@ -1,0 +1,4 @@
+# Stable options only, so `cargo fmt --check` gives the same answer locally and in CI.
+edition = "2021"
+max_width = 120
+use_small_heuristics = "Max"

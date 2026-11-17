@@ -1,0 +1,272 @@
+{
+  "version": {
+    "major": 1,
+    "minor": 1
+  },
+  "image": {
+    "width": 2880,
+    "height": 1800
+  },
+  "scale": 2.0,
+  "objects": [
+    {
+      "id": "crop-1",
+      "hidden": false,
+      "locked": false,
+      "kind": "crop",
+      "rect": {
+        "x": 120.0,
+        "y": 96.0,
+        "width": 1600.0,
+        "height": 1000.0
+      }
+    },
+    {
+      "id": "blur-1",
+      "hidden": false,
+      "locked": false,
+      "kind": "blur",
+      "rect": {
+        "x": 300.0,
+        "y": 410.5,
+        "width": 420.0,
+        "height": 64.0
+      },
+      "strength": "medium"
+    },
+    {
+      "id": "pixelate-1",
+      "hidden": false,
+      "locked": false,
+      "kind": "pixelate",
+      "rect": {
+        "x": 800.0,
+        "y": 410.0,
+        "width": 360.0,
+        "height": 64.0
+      },
+      "cell": "coarse"
+    },
+    {
+      "id": "rect-1",
+      "hidden": false,
+      "locked": true,
+      "kind": "rectangle",
+      "rect": {
+        "x": 200.0,
+        "y": 200.0,
+        "width": 640.0,
+        "height": 320.0
+      },
+      "stroke": {
+        "color": {
+          "kind": "ink",
+          "name": "red"
+        },
+        "width": 8.0
+      },
+      "fill": null
+    },
+    {
+      "id": "ellipse-1",
+      "hidden": false,
+      "locked": false,
+      "kind": "ellipse",
+      "rect": {
+        "x": 900.0,
+        "y": 180.0,
+        "width": 300.0,
+        "height": 200.0
+      },
+      "stroke": {
+        "color": {
+          "kind": "hex",
+          "value": "#0A84FF"
+        },
+        "width": 4.0
+      },
+      "fill": {
+        "kind": "hex",
+        "value": "#0a84ff33"
+      }
+    },
+    {
+      "id": "arrow-1",
+      "hidden": false,
+      "locked": false,
+      "kind": "arrow",
+      "from": {
+        "x": 1400.5,
+        "y": 700.25
+      },
+      "to": {
+        "x": 1180.0,
+        "y": 520.0
+      },
+      "stroke": {
+        "color": {
+          "kind": "ink",
+          "name": "orange"
+        },
+        "width": 8.0
+      }
+    },
+    {
+      "id": "line-1",
+      "hidden": false,
+      "locked": false,
+      "kind": "line",
+      "from": {
+        "x": 240.0,
+        "y": 900.0
+      },
+      "to": {
+        "x": 1000.0,
+        "y": 900.0
+      },
+      "stroke": {
+        "color": {
+          "kind": "ink",
+          "name": "black"
+        },
+        "width": 4.0
+      }
+    },
+    {
+      "id": "pen-1",
+      "hidden": false,
+      "locked": false,
+      "kind": "pen",
+      "points": [
+        {
+          "x": 1300.0,
+          "y": 300.0
+        },
+        {
+          "x": 1310.5,
+          "y": 296.0
+        },
+        {
+          "x": 1324.0,
+          "y": 301.75
+        },
+        {
+          "x": 1340.0,
+          "y": 320.0
+        }
+      ],
+      "stroke": {
+        "color": {
+          "kind": "ink",
+          "name": "green"
+        },
+        "width": 12.0
+      }
+    },
+    {
+      "id": "highlighter-1",
+      "hidden": false,
+      "locked": false,
+      "kind": "highlighter",
+      "points": [
+        {
+          "x": 260.0,
+          "y": 610.0
+        },
+        {
+          "x": 780.0,
+          "y": 612.0
+        }
+      ],
+      "color": {
+        "kind": "ink",
+        "name": "yellow"
+      },
+      "width": 14.0
+    },
+    {
+      "id": "text-1",
+      "hidden": false,
+      "locked": false,
+      "kind": "text",
+      "origin": {
+        "x": 1250.0,
+        "y": 760.0
+      },
+      "text": "Şu düğmeye bas\nthen press Save",
+      "fontSize": 28.0,
+      "color": {
+        "kind": "ink",
+        "name": "white"
+      },
+      "background": {
+        "kind": "ink",
+        "name": "black"
+      },
+      "maxWidth": 420.0
+    },
+    {
+      "id": "text-2",
+      "hidden": false,
+      "locked": false,
+      "kind": "text",
+      "origin": {
+        "x": 260.0,
+        "y": 980.0
+      },
+      "text": "plain text",
+      "fontSize": 22.0,
+      "color": {
+        "kind": "ink",
+        "name": "cyan"
+      },
+      "background": null,
+      "maxWidth": null
+    },
+    {
+      "id": "step-1",
+      "hidden": false,
+      "locked": false,
+      "kind": "step",
+      "center": {
+        "x": 220.0,
+        "y": 220.0
+      },
+      "number": 1,
+      "color": {
+        "kind": "ink",
+        "name": "blue"
+      },
+      "diameter": 44.0
+    },
+    {
+      "id": "step-2",
+      "hidden": true,
+      "locked": false,
+      "kind": "step",
+      "center": {
+        "x": 1180.0,
+        "y": 520.0
+      },
+      "number": 2,
+      "color": {
+        "kind": "ink",
+        "name": "red"
+      },
+      "diameter": 44.0
+    },
+    {
+      "id": "spotlight-1",
+      "hidden": false,
+      "locked": false,
+      "kind": "spotlight",
+      "rect": {
+        "x": 1240.0,
+        "y": 740.0,
+        "width": 460.0,
+        "height": 160.0
+      },
+      "dim": "dark"
+    }
+  ]
+}
