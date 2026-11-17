@@ -434,7 +434,8 @@ html.no-blur :is(.g-glass, .g-bar, .g-strip, .g-toast, .g-tip, .g-size, .g-chip,
    <span class="g-tipwrap"><button class="g-btn" aria-label="Copy">…</button>
      <span class="g-tip" role="tooltip">Copy<kbd class="g-kbd">⌘C</kbd></span></span>
    The tip appears 500 ms after hover or keyboard focus and leaves at once.
-   data-side="below" hangs it under the button; data-align="start" | "end" pins it
+   data-side="below" hangs it under the button, data-side="right" beside it (a vertical
+   rail); data-align="start" | "end" pins it
    to a side when the button sits near a screen or window edge.
    data-state="show" on the tip forces it for a static presentation. */
 .g-tipwrap { position: relative; display: inline-flex; flex: none; }
@@ -443,6 +444,7 @@ html.no-blur :is(.g-glass, .g-bar, .g-strip, .g-toast, .g-tip, .g-size, .g-chip,
   opacity: 0; visibility: hidden; transition: opacity var(--dur-base) var(--ease-out), visibility 0s linear var(--dur-base);
 }
 .g-tipwrap[data-side="below"] > .g-tip { bottom: auto; top: calc(100% + 6px); }
+.g-tipwrap[data-side="right"] > .g-tip { bottom: auto; top: 50%; left: calc(100% + 8px); transform: translateY(-50%); }
 .g-tipwrap[data-align="start"] > .g-tip { left: -2px; transform: none; }
 .g-tipwrap[data-align="end"] > .g-tip { left: auto; right: -2px; transform: none; }
 .g-tipwrap:hover > .g-tip, .g-tipwrap:focus-within > .g-tip { opacity: 1; visibility: visible; transition-delay: 500ms; }

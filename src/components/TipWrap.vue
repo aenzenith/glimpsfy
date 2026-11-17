@@ -3,11 +3,11 @@
 // keys, and shows on hover and keyboard focus after the kit's delay.
 import KeyCaps from "./KeyCaps.vue";
 
-defineProps<{ tip: string; caps?: readonly string[]; side?: "above" | "below"; align?: "start" | "end" }>();
+defineProps<{ tip: string; caps?: readonly string[]; side?: "above" | "below" | "right"; align?: "start" | "end" }>();
 </script>
 
 <template>
-  <span class="g-tipwrap" :data-side="side === 'below' ? 'below' : undefined" :data-align="align">
+  <span class="g-tipwrap" :data-side="side === 'above' ? undefined : side" :data-align="align">
     <slot />
     <span class="g-tip" role="tooltip">{{ tip }}<KeyCaps v-if="caps?.length" :caps="caps" /></span>
   </span>

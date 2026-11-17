@@ -1,7 +1,8 @@
 <script setup lang="ts">
 // The controls of the options strip for one tool (DESIGN.md "Annotation bars"): the eight inks
 // (six for the highlighter) and three widths, the text sizes and the background, or the tool's
-// levels and ratios. The page supplies the `g-strip` around them and places it. A choice is
+// levels and ratios. The page supplies the container around them: the overlay's `g-strip`, the
+// editor's options strip. A choice is
 // remembered for the tool and, when an object of that tool is selected, applied to it.
 import { computed } from "vue";
 

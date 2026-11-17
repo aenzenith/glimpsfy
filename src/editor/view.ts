@@ -16,8 +16,8 @@ export const MAX_ZOOM = 1600;
 /** From this zoom on, the pixel grid shows and the status bar reads the pixel under the pointer. */
 export const GRID_ZOOM = 400;
 
-/** The canvas: its size, and the room the floating bars take at its top. */
-export type Room = { width: number; height: number; top: number };
+/** The canvas: its size, and the room fit leaves at its top and under the image for the options. */
+export type Room = { width: number; height: number; top: number; bottom: number };
 
 const MARGIN = 24;
 /** Fit width leaves this much on each side, for the overview of a tall capture. */
@@ -28,7 +28,7 @@ export const kOf = (percent: number, scale: number) => percent / 100 / scale;
 
 /** The whole of `area` in the room, never above 100 %. */
 export function fit(area: PixelRect, room: Room, scale: number): View {
-  const k = Math.min((room.width - 2 * MARGIN) / area.width, (room.height - room.top - MARGIN) / area.height, kOf(100, scale));
+  const k = Math.min((room.width - 2 * MARGIN) / area.width, (room.height - room.top - room.bottom) / area.height, kOf(100, scale));
   return centred(area, room, Math.max(kOf(MIN_ZOOM, scale), k));
 }
 
@@ -43,7 +43,7 @@ export function centred(area: PixelRect, room: Room, k: number): View {
   return {
     k,
     ox: (room.width - area.width * k) / 2 - area.x * k,
-    oy: room.top + (room.height - room.top - MARGIN - area.height * k) / 2 - area.y * k,
+    oy: room.top + (room.height - room.top - room.bottom - area.height * k) / 2 - area.y * k,
   };
 }
 
@@ -52,7 +52,7 @@ export function centred(area: PixelRect, room: Room, k: number): View {
 export function opening(area: PixelRect, room: Room, scale: number): { view: View; mode: ZoomMode } {
   const points = { width: area.width / scale, height: area.height / scale };
   if (area.height / area.width > 3) return { view: fitWidth(area, room, scale), mode: "width" };
-  if (points.width * 2 < 492 && points.height * 2 < room.height - room.top - MARGIN) {
+  if (points.width * 2 < 492 && points.height * 2 < room.height - room.top - room.bottom) {
     return { view: centred(area, room, kOf(200, scale)), mode: "custom" };
   }
   return { view: fit(area, room, scale), mode: "fit" };

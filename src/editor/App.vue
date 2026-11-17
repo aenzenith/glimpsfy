@@ -1,9 +1,10 @@
 <script setup lang="ts">
 // The editor window (DESIGN.md "Editor window", windows ab7–ab11): one image, a capture the
 // overlay handed over with its drawings, a history entry or a file dropped on the window, with
-// the overlay's tools on a floating glass bar. The window toolbar holds the outputs, which send the
-// rendered image to the same commands the overlay uses; the status bar holds the facts and the
-// zoom. Closing with unsaved changes asks once.
+// the overlay's tools in a vertical rail on the left and the active tool's or the selected
+// object's options in a glass strip that floats at the bottom of the canvas. The
+// window toolbar holds the outputs, which send the rendered image to the same commands the overlay
+// uses; the status bar holds the facts and the zoom. Closing with unsaved changes asks once.
 //
 // The core keeps the image and hands its bytes over as a raw binary response (`editor_image`),
 // never as base64. The page decodes them into a canvas in the image's colour space, and the
@@ -14,12 +15,11 @@ import { computed, nextTick, onMounted, onUnmounted, provide, reactive, ref, sha
 
 import GIcon from "../components/GIcon.vue";
 import TipWrap from "../components/TipWrap.vue";
-import ObjectBar from "../annotate/ObjectBar.vue";
 import OptionsStrip from "../annotate/OptionsStrip.vue";
 import RedactionNotice from "../annotate/RedactionNotice.vue";
 import Surface from "../annotate/Surface.vue";
 import { context2d, exportArea, redactedPixels, renderExport, scratchCanvas, type ImageSource } from "../annotate/compose";
-import { AnnotationEngine } from "../annotate/engine";
+import { AnnotationEngine, TOOL_OF } from "../annotate/engine";
 import { defaultPrefs, flushPrefs, loadPrefs, savePrefs, type ToolId as AnnotateTool } from "../annotate/prefs";
 import type { Bytes, PixelRect } from "../annotate/redact";
 import { TEXT_LAYER, textLayerComponent, type View } from "../annotate/textLayer";
@@ -51,6 +51,9 @@ import { GRID_ZOOM, MAX_ZOOM, MIN_ZOOM, ZOOM_MENU, clampPan, fit, fitWidth, kOf,
 
 /** A handle's hit radius in screen points, as in the overlay. */
 const HANDLE_HIT = 14;
+/** Fit leaves this much under the image, shown or not, so the options strip never moves or
+ * covers it: the strip, 12 px under it and 12 px over it. */
+const OPTIONS_ROOM = 60;
 
 function emptyDocument(width: number, height: number, scale: number): AnnotationDocument {
   return { version: CURRENT_VERSION, image: { width, height }, scale, objects: [] };
@@ -72,12 +75,15 @@ const loading = ref(false);
 const busy = ref(false);
 
 const canvasEl = ref<HTMLElement | null>(null);
-const barEl = ref<HTMLElement | null>(null);
-const stripEl = ref<HTMLElement | null>(null);
-const room = reactive<Room>({ width: 0, height: 0, top: 64 });
+const railEl = ref<HTMLElement | null>(null);
+const optionsEl = ref<HTMLElement | null>(null);
+/** A window too short for the rail, or a canvas too narrow for the options, scrolls it; otherwise
+ * their tooltips may reach past their edge. */
+const railScrolls = ref(false);
+const optionsScroll = ref(false);
+const room = reactive<Room>({ width: 0, height: 0, top: 24, bottom: OPTIONS_ROOM });
 const view = ref<View>({ k: 1, ox: 0, oy: 0 });
 const zoomMode = ref<ZoomMode>("fit");
-const stripLeft = ref(0);
 const objectsOpen = ref(false);
 const textLayerVisible = ref(false);
 const message = ref<string | null>(null);
@@ -107,8 +113,15 @@ const area = computed<PixelRect | null>(() => {
   const { width, height } = engine.doc.image;
   return cropMode.value ? { x: 0, y: 0, width, height } : exportArea(engine.doc);
 });
-/** A selected object replaces the strip with its own bar. */
-const stripTool = computed<AnnotateTool | null>(() => (rev.value, engine.selectedId ? null : engine.tool));
+/** What the options strip shows: the selected object's tool, whose choices then restyle that
+ * object, else the chosen tool. Crop mode keeps the crop's ratios. */
+const pick = computed<{ tool: AnnotateTool; object: boolean } | null>(() => {
+  void rev.value;
+  if (!source.value) return null;
+  const object = cropMode.value ? null : engine.selected();
+  if (object) return { tool: TOOL_OF[object.kind], object: true };
+  return engine.tool ? { tool: engine.tool, object: false } : null;
+});
 const percent = computed(() => percentOf(view.value.k, scale.value));
 const pct = (n: number) => t("editor.percent", { n: Math.round(n) });
 const zoomLabel = computed(() => {
@@ -165,17 +178,6 @@ const cropBox = computed(() => {
   const c = engine.crop();
   return cropMode.value && c ? { screen: screen(c), width: Math.round(c.width), height: Math.round(c.height) } : null;
 });
-const objectBarAt = computed(() => {
-  void rev.value;
-  const id = engine.selectedId;
-  if (!id || engine.busy() || engine.editingId || cropMode.value) return null;
-  const r = engine.frame(id);
-  if (!r) return null;
-  const s = screen(r);
-  const above = s.y - 8 - 40 >= room.top;
-  return { left: px(s.x + s.w / 2), top: px(above ? s.y - 8 : s.y + s.h + 8), transform: above ? "translate(-50%, -100%)" : "translateX(-50%)" };
-});
-
 // The text recognition layer reads the image through this (src/annotate/textLayer.ts).
 provide(TEXT_LAYER, {
   area,
@@ -439,7 +441,27 @@ function measure(): void {
   if (!el) return;
   room.width = el.clientWidth;
   room.height = el.clientHeight;
+  const rail = railEl.value;
+  railScrolls.value = rail !== null && rail.scrollHeight > rail.clientHeight + 1;
 }
+
+function measureOptions(): void {
+  const strip = optionsEl.value;
+  optionsScroll.value = strip !== null && strip.scrollWidth > strip.clientWidth + 1;
+}
+
+// The strip comes and goes with the choice; it is measured when it changes size and when its
+// tool changes, which can grow its content past a width it already holds at its limit.
+const optionsResize = new ResizeObserver(measureOptions);
+watch(
+  optionsEl,
+  (now, before) => {
+    if (before) optionsResize.unobserve(before);
+    if (now) optionsResize.observe(now);
+  },
+  { flush: "post" },
+);
+watch(pick, measureOptions, { flush: "post" });
 
 function openingView(): void {
   if (!area.value) return;
@@ -468,28 +490,13 @@ function onZoomMenu(e: Event): void {
   else if (value !== "current") zoomTo(Number(value));
 }
 
-// A new crop, a cancelled crop, a new strip and a resized window each refit a fitted view.
+// A new crop, a cancelled crop and a resized window each refit a fitted view.
 watch(
   () => (area.value ? `${area.value.x},${area.value.y},${area.value.width},${area.value.height}` : ""),
   (now, before) => {
     if (now && before && now !== before) applyFit(zoomMode.value === "width" ? "width" : "fit");
   },
 );
-watch(stripTool, async (next) => {
-  room.top = next ? 104 : 64;
-  await placeStrip();
-});
-
-async function placeStrip(): Promise<void> {
-  await nextTick();
-  const bar = barEl.value;
-  const strip = stripEl.value;
-  if (!bar || !strip) return;
-  const barBox = bar.getBoundingClientRect();
-  const active = bar.querySelector<HTMLElement>('.g-btn[aria-pressed="true"]');
-  const centre = active ? active.getBoundingClientRect().left + active.offsetWidth / 2 - barBox.left : barBox.width / 2;
-  stripLeft.value = Math.max(0, Math.min(barBox.width - strip.offsetWidth, centre - strip.offsetWidth / 2));
-}
 
 // ---------------------------------------------------------------------------- the pointer
 
@@ -597,6 +604,11 @@ function chooseTool(id: ToolId): void {
     engine.setCrop({ x: 0, y: 0, width, height }, false);
   }
   engine.setTool(next);
+}
+
+/** Bring forward and Send backward for the selected object, from the options strip. */
+function arrange(by: 1 | -1): void {
+  if (engine.selectedId) engine.shift(engine.selectedId, by);
 }
 
 const undoable = computed(() => (rev.value, engine.canUndo()));
@@ -734,6 +746,7 @@ onUnmounted(() => {
   window.removeEventListener("keydown", onKeyDown);
   window.removeEventListener("keyup", onKeyUp);
   resize?.disconnect();
+  optionsResize.disconnect();
   stops.forEach((stop) => stop());
 });
 </script>
@@ -776,6 +789,30 @@ onUnmounted(() => {
 
     <div class="e-main">
       <div
+        ref="railEl"
+        class="e-rail"
+        role="toolbar"
+        aria-orientation="vertical"
+        :aria-label="t('overlay.tools')"
+        :data-scrolls="railScrolls || undefined"
+      >
+        <template v-for="(item, i) in TOOLS" :key="item ? item.id : `d${i}`">
+          <span v-if="!item" class="g-divider" role="separator" />
+          <TipWrap v-else :tip="t(item.label)" :caps="caps(item.key)" side="right">
+            <button
+              type="button"
+              class="g-btn"
+              :aria-label="t(item.label)"
+              :aria-pressed="item.momentary ? undefined : tool === item.id"
+              :disabled="!source || (item.id === 'undo' && !undoable) || (item.id === 'redo' && !redoable)"
+              @click="chooseTool(item.id)"
+            >
+              <GIcon :name="item.id" />
+            </button>
+          </TipWrap>
+        </template>
+      </div>
+      <div
         ref="canvasEl"
         class="e-canvas"
         :aria-label="t('editor.canvas')"
@@ -811,37 +848,42 @@ onUnmounted(() => {
           <component :is="textLayerComponent" />
         </div>
 
-        <div v-if="objectBarAt" class="e-objectbar" :style="objectBarAt">
-          <ObjectBar :engine="engine" />
-        </div>
+        <RedactionNotice
+          v-if="source && noticeShown && !engine.prefs.redactionNoticeSeen"
+          class="e-notice"
+          @pointerdown.stop
+          @dismiss="engine.dismissRedactionNotice(); noticeShown = false"
+        />
 
-        <div v-if="source" class="e-topbars" @pointerdown.stop>
-          <div ref="barEl" class="g-bar e-toolbar" role="toolbar" :aria-label="t('overlay.tools')">
-            <template v-for="(item, i) in TOOLS" :key="item ? item.id : `d${i}`">
-              <span v-if="!item" class="g-divider" role="separator" />
-              <TipWrap v-else :tip="t(item.label)" :caps="caps(item.key)">
-                <button
-                  type="button"
-                  class="g-btn"
-                  :aria-label="t(item.label)"
-                  :aria-pressed="item.momentary ? undefined : tool === item.id"
-                  :disabled="(item.id === 'undo' && !undoable) || (item.id === 'redo' && !redoable)"
-                  @click="chooseTool(item.id)"
-                >
-                  <GIcon :name="item.id" />
-                </button>
-              </TipWrap>
-            </template>
-          </div>
-          <div v-if="stripTool" ref="stripEl" class="g-strip e-strip" role="toolbar" :aria-label="t('overlay.options')" :style="{ left: px(stripLeft) }">
-            <OptionsStrip :engine="engine" :tool="stripTool" />
-          </div>
-          <RedactionNotice
-            v-if="noticeShown && !engine.prefs.redactionNoticeSeen"
-            class="e-notice"
-            :style="{ top: stripTool ? '92px' : '52px' }"
-            @dismiss="engine.dismissRedactionNotice(); noticeShown = false"
-          />
+        <!-- `mousedown.prevent` keeps the focus in a text that is being typed. -->
+        <div
+          v-if="pick"
+          ref="optionsEl"
+          class="e-options"
+          role="toolbar"
+          :aria-label="t('overlay.options')"
+          :data-scrolls="optionsScroll || undefined"
+          @pointerdown.stop
+          @mousedown.prevent
+        >
+          <span class="e-options-tool">
+            <GIcon :name="pick.tool" :size="16" />
+            <span class="e-options-name">{{ t(`tool.${pick.tool}` as Key) }}</span>
+          </span>
+          <span class="g-divider" role="separator" />
+          <OptionsStrip :engine="engine" :tool="pick.tool" />
+          <template v-if="pick.object">
+            <span class="g-divider" role="separator" />
+            <TipWrap :tip="t('annotate.bringForward')" :caps="['⌘', ']']">
+              <button type="button" class="g-btn" data-size="small" :aria-label="t('annotate.bringForward')" @click="arrange(1)"><GIcon name="bring-forward" :size="16" /></button>
+            </TipWrap>
+            <TipWrap :tip="t('annotate.sendBackward')" :caps="['⌘', '[']">
+              <button type="button" class="g-btn" data-size="small" :aria-label="t('annotate.sendBackward')" @click="arrange(-1)"><GIcon name="send-backward" :size="16" /></button>
+            </TipWrap>
+            <TipWrap :tip="t('annotate.delete')" :caps="['⌫']">
+              <button type="button" class="g-btn" data-size="small" :aria-label="t('annotate.delete')" @click="engine.deleteSelected()"><GIcon name="trash" :size="16" /></button>
+            </TipWrap>
+          </template>
         </div>
 
         <div v-if="!source && !loading && dropName === null" class="g-empty e-empty">
@@ -952,6 +994,7 @@ onUnmounted(() => {
   overflow: hidden;
   background: var(--win-sunken);
   touch-action: none;
+  container-type: inline-size;
 }
 /* The image lifts off the canvas by a hairline shadow. */
 .e-lift {
@@ -981,7 +1024,7 @@ onUnmounted(() => {
   position: absolute;
   z-index: 7;
   left: 50%;
-  bottom: 16px;
+  bottom: 60px;
   transform: translateX(-50%);
 }
 .e-textlayer {
@@ -990,29 +1033,77 @@ onUnmounted(() => {
   z-index: 8;
   pointer-events: none;
 }
-.e-objectbar {
-  position: absolute;
-  z-index: 9;
+/* The tools sit in the window's own chrome, not on glass: a rail as tall as the canvas, with the
+   room under the last tool left empty. No z-index, so its tooltips rise over the canvas. */
+.e-rail {
+  position: relative;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  width: 48px;
+  padding: 8px 0;
+  background: var(--win-toolbar);
+  box-shadow: inset calc(-1 * var(--hairline)) 0 0 var(--win-line);
 }
-.e-objectbar > :deep(.g-bar) {
-  position: static;
+.e-rail[data-scrolls] {
+  overflow-y: auto;
 }
-.e-topbars {
+.e-rail > .g-divider {
+  width: 20px;
+  height: var(--hairline);
+  margin: 5px 0;
+}
+/* The options strip is a pill in the rail's chrome: the toolbar's background and the rail's
+   hairline all round, no glass, so the window's surface roles style its controls. Without a `g-`
+   class the kit's border-box reset does not reach it, so it sets its own; its shadow is softer
+   than the kit's small one, as the strip sits on the window, not over the desktop. */
+.e-options {
   position: absolute;
-  top: 12px;
   left: 50%;
+  bottom: 12px;
   z-index: 12;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  max-width: calc(100% - 24px);
+  height: var(--strip-h);
+  padding: 4px;
+  border-radius: 999px;
+  background: var(--win-toolbar);
+  box-shadow: inset 0 0 0 var(--hairline) var(--win-line), 0 2px 6px rgba(0, 0, 0, 0.16), 0 1px 2px rgba(0, 0, 0, 0.10);
   transform: translateX(-50%);
 }
-.e-toolbar {
-  position: relative;
+.e-options > .g-divider {
+  height: 16px;
 }
-.e-strip {
-  position: absolute;
-  top: 48px;
+.e-options[data-scrolls] {
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+.e-options-tool {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  padding: 0 4px 0 8px;
+  font: var(--type-label);
+  color: var(--surface-text);
+  white-space: nowrap;
+}
+.e-options-tool > g-icon {
+  color: var(--surface-text-muted);
+}
+@container (max-width: 560px) {
+  .e-options-name {
+    display: none;
+  }
 }
 .e-notice {
   position: absolute;
+  top: 12px;
+  z-index: 12;
   left: 50%;
   transform: translateX(-50%);
 }
@@ -1051,7 +1142,7 @@ onUnmounted(() => {
   position: absolute;
   z-index: 25;
   left: 50%;
-  bottom: 16px;
+  bottom: 60px;
   transform: translateX(-50%);
   padding: 0 14px;
 }
