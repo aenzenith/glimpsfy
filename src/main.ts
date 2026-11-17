@@ -77,8 +77,39 @@ function forwardErrors(): void {
   window.addEventListener("unhandledrejection", (e) => send("error", [e.reason]));
 }
 
+const EDITABLE = 'input, textarea, [contenteditable=""], [contenteditable="true"]';
+
+function editable(target: EventTarget | null): boolean {
+  return target instanceof Element && target.closest(EDITABLE) !== null;
+}
+
+/** Keeps the webview on its page. A window without Tauri's drop handler (the popover, pins, the
+ * toast, the recording panels) hands a dropped file to WebKit, which opens it in place of the
+ * page: a capture dragged out of the popover and let go over it turned the popover into that
+ * picture, with no page left to hide it. Drops a page does not take itself are refused here, and
+ * WebKit's own menu (Reload, Inspect Element) gives way to the page's or to none; text fields keep
+ * theirs, and in development ⌥ right-click still reaches Inspect Element. */
+function guardWebview(): void {
+  const refuse = (e: DragEvent) => {
+    if (e.defaultPrevented || editable(e.target)) return;
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = "none";
+  };
+  window.addEventListener("dragenter", refuse);
+  window.addEventListener("dragover", refuse);
+  window.addEventListener("drop", (e) => {
+    if (!editable(e.target)) e.preventDefault();
+  });
+  window.addEventListener("contextmenu", (e) => {
+    if (e.defaultPrevented || editable(e.target)) return;
+    if (import.meta.env.DEV && e.altKey) return;
+    e.preventDefault();
+  });
+}
+
 async function start(): Promise<void> {
   forwardErrors();
+  guardWebview();
   const page = pageFor(getCurrentWebviewWindow().label);
   document.documentElement.dataset.surface = page.floating ? "floating" : page.transparent ? "popover" : "window";
   if (!page.floating) followTheme();
