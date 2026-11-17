@@ -54,8 +54,8 @@ g-icon > svg { display: block; overflow: visible; }
   --surface-hover: var(--control-hover);
   --surface-press: var(--control-press);
   --surface-fill: transparent;
-  --surface-on: var(--control-press);
-  --surface-on-shadow: none;
+  --surface-on: var(--control-on);
+  --surface-on-shadow: var(--control-on-edge);
   --surface-button: var(--control-fill);
   --surface-button-hover: var(--control-press);
   --surface-button-press: var(--control-fill-press);
@@ -129,6 +129,15 @@ html.no-blur :is(.g-glass, .g-bar, .g-strip, .g-toast, .g-tip, .g-size, .g-chip,
 .g-btn[data-tone="muted"] { color: var(--surface-text-muted); }
 .g-btn[data-tone="record"] { color: var(--rec); }
 .g-btn[data-tone="record"]:is(:disabled, [aria-disabled="true"]) { color: var(--surface-text-faint); }
+/* An open menu's button on glass wears the chosen lens, inset like the capsules beside it; a
+   small button is already shorter than the lens and keeps its full size. */
+:is(.g-glass, .g-bar, .g-strip, .g-toast, .g-chip, .g-pop) .g-btn[aria-expanded="true"] { background: none; color: var(--surface-text); isolation: isolate; }
+:is(.g-glass, .g-bar, .g-strip, .g-toast, .g-chip, .g-pop) .g-btn[aria-expanded="true"]::before {
+  content: ""; position: absolute; inset: var(--control-inset); border-radius: inherit; z-index: -1;
+  background: var(--control-on); box-shadow: var(--control-on-edge);
+}
+:is(.g-glass, .g-bar, .g-strip, .g-toast, .g-chip, .g-pop) .g-btn[aria-expanded="true"][data-size="small"]::before { inset: 0; }
+:is(.g-glass, .g-bar, .g-strip, .g-toast, .g-chip, .g-pop) .g-btn[aria-expanded="true"]:hover::before { background: var(--control-on-hover); }
 
 /* ------------------------------------------------------------------ divider */
 .g-divider { flex: none; align-self: center; width: 1px; height: 18px; margin: 0 4px; background: var(--surface-line); border-radius: 1px; }
@@ -170,6 +179,18 @@ html.no-blur :is(.g-glass, .g-bar, .g-strip, .g-toast, .g-tip, .g-size, .g-chip,
 .g-option:hover, .g-width:hover, .g-option[data-state="hover"], .g-width[data-state="hover"] { background: var(--surface-hover); }
 .g-option[aria-checked="true"], .g-width[aria-checked="true"],
 .g-option[aria-pressed="true"], .g-width[aria-pressed="true"] { background: var(--surface-press); color: var(--surface-text); }
+/* On glass the hover fill and the chosen lens move to ::after (g-width draws its line on ::before),
+   inset like every lens, so options share one shape with the segments and toggles beside them. */
+:is(.g-glass, .g-bar, .g-strip, .g-toast, .g-chip, .g-pop) :is(.g-option, .g-width) { isolation: isolate; }
+:is(.g-glass, .g-bar, .g-strip, .g-toast, .g-chip, .g-pop) :is(.g-option, .g-width):is(:hover, [data-state="hover"], [aria-checked="true"], [aria-pressed="true"]) { background: none; }
+:is(.g-glass, .g-bar, .g-strip, .g-toast, .g-chip, .g-pop) :is(.g-option, .g-width)::after {
+  content: ""; position: absolute; inset: var(--control-inset); border-radius: inherit; z-index: -1;
+  transition: background-color var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out);
+}
+:is(.g-glass, .g-bar, .g-strip, .g-toast, .g-chip, .g-pop) :is(.g-option, .g-width):is(:hover, [data-state="hover"])::after { background: var(--surface-hover); }
+:is(.g-glass, .g-bar, .g-strip, .g-toast, .g-chip, .g-pop) :is(.g-option, .g-width):is([aria-checked="true"], [aria-pressed="true"])::after { background: var(--control-on); box-shadow: var(--control-on-edge); }
+:is(.g-glass, .g-bar, .g-strip, .g-toast, .g-chip, .g-pop) :is(.g-option, .g-width):is([aria-checked="true"], [aria-pressed="true"]):is(:hover, [data-state="hover"])::after { background: var(--control-on-hover); }
+:is(.g-glass, .g-bar, .g-strip, .g-toast, .g-chip, .g-pop) :is(.g-option, .g-width):is([aria-checked="true"], [aria-pressed="true"]):active::after { background: var(--control-on-press); }
 
 /* --------------------------------------------------------------- size label */
 .g-size {
@@ -275,30 +296,39 @@ html.no-blur :is(.g-glass, .g-bar, .g-strip, .g-toast, .g-tip, .g-size, .g-chip,
 .g-seg > button[aria-checked="true"]::before { background: var(--surface-on); box-shadow: var(--surface-on-shadow); }
 .g-seg > button:disabled, .g-seg > button[aria-disabled="true"] { color: var(--surface-text-faint); }
 [data-theme] .g-seg > button { font: var(--type-button); font-weight: 500; }
-:is(.g-glass, .g-bar, .g-strip) .g-seg > button::before { inset: 0; }
+:is(.g-glass, .g-bar, .g-strip) .g-seg > button::before { inset: var(--control-inset); }
+:is(.g-glass, .g-bar, .g-strip, .g-toast, .g-chip, .g-pop) .g-seg > button[aria-checked="true"]:is(:hover, [data-state="hover"])::before { background: var(--control-on-hover); }
+:is(.g-glass, .g-bar, .g-strip, .g-toast, .g-chip, .g-pop) .g-seg > button[aria-checked="true"]:active::before { background: var(--control-on-press); }
 .g-bar > .g-seg { height: var(--button); border-radius: var(--radius-button); }
 .g-strip > .g-seg { height: 28px; }
 /* On a glass panel that is not a bar or a strip (a g-pop, a g-glass card, a toast) nothing
-   else draws the track, so the control draws its own and the chosen segment sits inside it. */
+   else draws the track, so the control draws its own and the chosen lens sits inside it. */
 :is(.g-glass, .g-pop, .g-toast, .g-chip) .g-seg:not(:is(.g-bar, .g-strip) > .g-seg) { background: var(--control-hover); }
-:is(.g-glass, .g-pop, .g-toast, .g-chip) .g-seg:not(:is(.g-bar, .g-strip) > .g-seg) > button::before { inset: 2px; }
-:is(.g-glass, .g-pop, .g-toast, .g-chip) .g-seg:not(:is(.g-bar, .g-strip) > .g-seg) > button[aria-checked="true"]::before { background: var(--control-fill-press); }
+:is(.g-glass, .g-pop, .g-toast, .g-chip) .g-seg:not(:is(.g-bar, .g-strip) > .g-seg) > button::before { inset: var(--control-inset); }
 
 /* --------------------------------------------------------- toggle (glass)
    A capsule with an icon, an optional label and an optional level meter.
-   aria-pressed="false" mutes it; swap the icon for its -off variant. */
+   aria-pressed="false" mutes it; swap the icon for its -off variant. The fill sits on ::before,
+   inset like the lens, so the hover fill and the switched-on lens share one shape. */
 .g-toggle {
   position: relative; flex: none; display: inline-flex; align-items: center; gap: 6px;
   height: var(--button); padding: 0 10px 0 6px; border-radius: var(--radius-button);
-  color: var(--surface-text-muted); font: var(--type-label); white-space: nowrap;
-  transition: background-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+  color: var(--surface-text-muted); font: var(--type-label); white-space: nowrap; isolation: isolate;
+  transition: color var(--dur-fast) var(--ease-out);
+}
+.g-toggle::before {
+  content: ""; position: absolute; inset: var(--control-inset); border-radius: inherit; z-index: -1;
+  transition: background-color var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out);
 }
 .g-toggle[aria-label]:has(> g-icon:only-child) { padding: 0; width: var(--button); justify-content: center; }
-.g-toggle:hover, .g-toggle[data-state="hover"] { background: var(--surface-hover); }
-.g-toggle[aria-pressed="true"] { color: var(--surface-text); background: var(--surface-button); }
-.g-toggle[aria-pressed="true"]:hover, .g-toggle[aria-pressed="true"][data-state="hover"] { background: var(--surface-button-hover); }
-.g-toggle:active, .g-toggle[data-state="pressed"] { background: var(--surface-button-press); }
-.g-toggle:disabled, .g-toggle[aria-disabled="true"] { color: var(--surface-text-faint); background: none; }
+.g-toggle:hover::before, .g-toggle[data-state="hover"]::before { background: var(--surface-hover); }
+.g-toggle:active::before, .g-toggle[data-state="pressed"]::before { background: var(--surface-press); }
+.g-toggle[aria-pressed="true"] { color: var(--surface-text); }
+.g-toggle[aria-pressed="true"]::before { background: var(--control-on); box-shadow: var(--control-on-edge); }
+.g-toggle[aria-pressed="true"]:is(:hover, [data-state="hover"])::before { background: var(--control-on-hover); }
+.g-toggle[aria-pressed="true"]:is(:active, [data-state="pressed"])::before { background: var(--control-on-press); }
+.g-toggle:disabled, .g-toggle[aria-disabled="true"] { color: var(--surface-text-faint); }
+.g-toggle:is(:disabled, [aria-disabled="true"])::before { background: none; box-shadow: none; }
 
 /* ------------------------------------------------------------- level meter
    role="meter" with style="--level: 0.62". Seven cells, the last two amber. */

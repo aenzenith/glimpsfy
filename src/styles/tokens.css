@@ -98,6 +98,18 @@
   --control-press: rgba(255, 255, 255, 0.16);
   --control-fill: rgba(255, 255, 255, 0.12);    /* capsule buttons, key caps */
   --control-fill-press: rgba(255, 255, 255, 0.22);
+  /* The chosen control on glass (a segment, a switched-on toggle, an option, an open menu's
+     button) is a raised lens, lit on its top edge and shadowed under, because a flat white fill
+     read as the hover fill pasted onto the glass. Lens and hover fill sit --control-inset inside
+     the control, so the control keeps its hit area. Its edges are one device pixel (--hairline)
+     and its shadow is tight: on a 1x screen a half-pixel line and an 8 px soft shadow smeared
+     the 24 px lens of a strip option into a blur. */
+  --control-on: linear-gradient(180deg, rgba(255, 255, 255, 0.21), rgba(255, 255, 255, 0.13));
+  --control-on-hover: linear-gradient(180deg, rgba(255, 255, 255, 0.27), rgba(255, 255, 255, 0.17));
+  --control-on-press: linear-gradient(180deg, rgba(255, 255, 255, 0.15), rgba(255, 255, 255, 0.10));
+  --control-on-edge: inset 0 var(--hairline) 0 rgba(255, 255, 255, 0.26), inset 0 0 0 var(--hairline) rgba(255, 255, 255, 0.10),
+    0 1px 1px rgba(0, 0, 0, 0.30);
+  --control-inset: 2px;                         /* a 32 px bar control shows a 28 px lens */
   --track: rgba(255, 255, 255, 0.16);           /* meter, ring and switch tracks on glass */
   --divider: rgba(255, 255, 255, 0.12);
   --handle: #ffffff;
