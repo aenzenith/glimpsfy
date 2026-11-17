@@ -49,7 +49,7 @@ block2.workspace = true
 objc2-foundation = { workspace = true, features = ["std", "NSArray", "NSData", "NSDictionary", "NSEnumerator", "NSGeometry", "NSString", "NSValue", "NSURL", "NSLocale"] }
 objc2-core-foundation = { workspace = true, features = ["std", "CFCGTypes"] }
 objc2-core-graphics = { workspace = true, features = ["std", "CGDirectDisplay", "CGDisplayConfiguration", "CGError", "CGWindow", "bitflags"] }
-objc2-app-kit = { workspace = true, features = ["std", "NSApplication", "NSResponder", "NSWindow", "NSPanel", "NSScreen", "NSView", "NSPasteboard", "NSPasteboardItem", "NSImage", "NSGraphics", "NSRunningApplication", "NSWorkspace", "NSEvent", "objc2-core-foundation", "NSStatusItem", "NSStatusBarButton", "NSButton", "NSControl", "NSDragging", "NSDraggingItem", "NSDraggingSession", "block2"] }
+objc2-app-kit = { workspace = true, features = ["std", "NSApplication", "NSResponder", "NSWindow", "NSPanel", "NSScreen", "NSView", "NSPasteboard", "NSPasteboardItem", "NSImage", "NSGraphics", "NSRunningApplication", "NSWorkspace", "NSEvent", "objc2-core-foundation", "NSStatusItem", "NSStatusBarButton", "NSButton", "NSControl", "NSDragging", "NSDraggingItem", "NSDraggingSession", "block2", "libc"] }
 # Start at login writes its own launch agent on macOS (app shell, `commands/settings.rs`).
 auto-launch = "0.6.0"
 # Whether the app's own place can be replaced by an update without a password (`update.rs`).

@@ -421,22 +421,11 @@ fn to_cocoa(rect: glimpsfy_capture::LogicalRect) -> NSRect {
 /// The visible area (without the menu bar and the Dock) of the screen that holds `point`, or of
 /// the screen under the pointer, in global top-left points, and that screen's scale.
 pub fn screen_area(point: Option<(f64, f64)>, mtm: MainThreadMarker) -> Option<(glimpsfy_capture::LogicalRect, f64)> {
-    let (x, y) = point.unwrap_or_else(|| {
-        let p = pointer();
-        (p.x, p.y)
-    });
-    let cocoa = objc2_foundation::NSPoint::new(x, primary_height() - y);
-    let all = NSScreen::screens(mtm);
-    let screen = all
-        .iter()
-        .find(|s| {
-            let f = s.frame();
-            cocoa.x >= f.origin.x
-                && cocoa.x < f.origin.x + f.size.width
-                && cocoa.y >= f.origin.y
-                && cocoa.y <= f.origin.y + f.size.height
-        })
-        .or_else(|| all.iter().next())?;
+    let cocoa = match point {
+        Some((x, y)) => objc2_foundation::NSPoint::new(x, primary_height() - y),
+        None => NSEvent::mouseLocation(),
+    };
+    let screen = screen_at(cocoa, mtm)?;
     let v = screen.visibleFrame();
     let rect = glimpsfy_capture::LogicalRect {
         x: v.origin.x,
@@ -445,6 +434,80 @@ pub fn screen_area(point: Option<(f64, f64)>, mtm: MainThreadMarker) -> Option<(
         height: v.size.height,
     };
     Some((rect, screen.backingScaleFactor()))
+}
+
+/// The screen whose frame holds `point`, in AppKit's coordinates, or the first screen when the
+/// point lies on none. The top edge counts as inside: the pointer at the very top of a screen
+/// (on its menu bar) reports that screen's height.
+fn screen_at(point: objc2_foundation::NSPoint, mtm: MainThreadMarker) -> Option<objc2::rc::Retained<NSScreen>> {
+    let all = NSScreen::screens(mtm);
+    let found = all.iter().find(|s| {
+        let f = s.frame();
+        point.x >= f.origin.x
+            && point.x < f.origin.x + f.size.width
+            && point.y >= f.origin.y
+            && point.y <= f.origin.y + f.size.height
+    });
+    found.or_else(|| all.iter().next())
+}
+
+/// Whether two AppKit rectangles are the same, as two frames of one screen are.
+fn same_rect(a: NSRect, b: NSRect) -> bool {
+    a.origin.x == b.origin.x
+        && a.origin.y == b.origin.y
+        && a.size.width == b.size.width
+        && a.size.height == b.size.height
+}
+
+/// The process id of the app in front: the one that has the keyboard and owns the menu bar.
+pub fn frontmost_pid() -> Option<i32> {
+    let front = objc2_app_kit::NSWorkspace::sharedWorkspace().frontmostApplication()?;
+    Some(front.processIdentifier()).filter(|pid| *pid > 0)
+}
+
+/// Puts an ordinary window in the middle of the visible area of the screen that holds `at` (a
+/// global top-left point), or of the screen under the pointer without one. With
+/// `only_if_elsewhere`, a window whose middle already lies on that screen stays where the user
+/// left it. A window wider or taller than the area shrinks to it, since a small external screen
+/// may not hold the window's first size. In AppKit's points throughout, so screens of mixed
+/// scale place it right.
+pub fn center_on_screen(
+    window: &WebviewWindow,
+    at: Option<LogicalPoint>,
+    only_if_elsewhere: bool,
+    mtm: MainThreadMarker,
+) {
+    let Some(ns_window) = ns_window(window, mtm) else {
+        return;
+    };
+    let point = match at {
+        Some(p) => objc2_foundation::NSPoint::new(p.x, primary_height() - p.y),
+        None => NSEvent::mouseLocation(),
+    };
+    let Some(screen) = screen_at(point, mtm) else {
+        return;
+    };
+    let frame = ns_window.frame();
+    if only_if_elsewhere {
+        let whole = screen.frame();
+        let middle_x = frame.origin.x + frame.size.width / 2.0;
+        let middle_y = frame.origin.y + frame.size.height / 2.0;
+        let here = middle_x >= whole.origin.x
+            && middle_x < whole.origin.x + whole.size.width
+            && middle_y >= whole.origin.y
+            && middle_y < whole.origin.y + whole.size.height;
+        if here {
+            return;
+        }
+    }
+    let area = screen.visibleFrame();
+    let width = frame.size.width.min(area.size.width);
+    let height = frame.size.height.min(area.size.height);
+    let origin = objc2_foundation::NSPoint::new(
+        (area.origin.x + (area.size.width - width) / 2.0).round(),
+        (area.origin.y + (area.size.height - height) / 2.0).round(),
+    );
+    ns_window.setFrame_display(NSRect::new(origin, objc2_foundation::NSSize::new(width, height)), true);
 }
 
 /// The popover: a keyable non-activating panel at the menu level, on every Space and beside
@@ -463,19 +526,29 @@ pub fn setup_popover(window: &WebviewWindow, mtm: MainThreadMarker) {
 }
 
 /// Puts the popover `gap` points under the menu bar icon, centred on it and inside the icon's
-/// screen, and gives it the keyboard. Without an icon (it is hidden) the popover goes to the
-/// top-right corner of the screen under the pointer. In AppKit's points throughout: a position in
-/// pixels would be read at the scale of the screen the popover was last on.
+/// screen, and gives it the keyboard. When the pointer is on another screen, the icon was clicked
+/// on that screen's menu bar: with "Displays have separate Spaces" every display shows the icon,
+/// while AppKit reports one place for it. The popover then hangs under the pointer on the
+/// pointer's screen, and without an icon (it is hidden) it goes to that screen's top-right
+/// corner. In AppKit's points throughout: a position in pixels would be read at the scale of the
+/// screen the popover was last on.
 pub fn show_popover(window: &WebviewWindow, tray: Option<&tauri::tray::TrayIcon>, gap: f64, mtm: MainThreadMarker) {
     let Some(panel) = ns_window(window, mtm) else {
         return;
     };
     let width = panel.frame().size.width;
+    let pointer = NSEvent::mouseLocation();
+    let here = screen_at(pointer, mtm).map(|s| (s.frame(), s.visibleFrame()));
+    let here_frame = here.map(|(frame, _)| frame);
     let placed = tray.and_then(|tray| {
         tray.with_inner_tray_icon(move |inner| {
             let mtm = MainThreadMarker::new()?;
             let item = inner.ns_status_item()?.button(mtm)?.window()?;
-            let (icon, area) = (item.frame(), item.screen()?.visibleFrame());
+            let screen = item.screen()?;
+            if here_frame.is_some_and(|frame| !same_rect(frame, screen.frame())) {
+                return None;
+            }
+            let (icon, area) = (item.frame(), screen.visibleFrame());
             let left = (icon.origin.x + (icon.size.width - width) / 2.0)
                 .min(area.origin.x + area.size.width - width - gap)
                 .max(area.origin.x + gap);
@@ -485,8 +558,14 @@ pub fn show_popover(window: &WebviewWindow, tray: Option<&tauri::tray::TrayIcon>
         .ok()
         .flatten()
     });
-    let (left, top) = placed.unwrap_or_else(|| match screen_area(None, mtm) {
-        Some((visible, _)) => (visible.x + visible.width - width - gap, primary_height() - visible.y - gap),
+    let (left, top) = placed.unwrap_or_else(|| match here {
+        Some((_, area)) => {
+            let top = area.origin.y + area.size.height;
+            let right = area.origin.x + area.size.width - width - gap;
+            // Above the visible area is the menu bar, where the icon was clicked.
+            let left = if pointer.y >= top { (pointer.x - width / 2.0).round() } else { right };
+            (left.min(right).max(area.origin.x + gap), top - gap)
+        }
         None => (0.0, primary_height()),
     });
     panel.setFrameTopLeftPoint(objc2_foundation::NSPoint::new(left, top));

@@ -308,13 +308,16 @@ pub fn toast_fit(app: &AppHandle, height: f64) {
 
 // -------------------------------------------------------------------------- ordinary windows
 
-/// Opens (or brings forward) one of the app's ordinary windows.
+/// Opens (or brings forward) one of the app's ordinary windows on the active screen
+/// (`active_point`). A new window is made hidden and shown once it is in place, so it never
+/// flashes on the main screen first; an open window moves only when it sits on another screen.
 pub fn open(app: &AppHandle, kind: WindowKind) {
     let label = kind.label();
+    // Read before the window is made or shown, so it never counts itself as the active one.
+    let at = active_point(app);
     if let Some(window) = app.get_webview_window(label) {
-        let _ = window.show();
         let _ = window.unminimize();
-        let _ = window.set_focus();
+        bring_forward(app, window, at, true);
         return;
     }
     let (width, height) = kind.size();
@@ -322,14 +325,95 @@ pub fn open(app: &AppHandle, kind: WindowKind) {
         .title(kind.title())
         .inner_size(width, height)
         .min_inner_size(width.min(480.0), height.min(360.0))
+        // Where the window stays when no screen can be read.
         .center()
-        .visible(true)
-        .focused(true)
+        .visible(false)
         .build();
     match built {
-        Ok(window) => {
-            let _ = window.set_focus();
-        }
+        Ok(window) => bring_forward(app, window, at, false),
         Err(error) => trace::log(format!("[glimpsfy] window {label}: {error}")),
     }
+}
+
+/// The middle of the window the user works in: the front ordinary window (layer 0) of the app in
+/// front, Glimpsfy's own included, or the front ordinary window of any app when that app shows
+/// none (the desktop was clicked last). `None` sends the window to the pointer's screen.
+///
+/// The pointer alone cannot say it: when the displays share one Space ("Displays have separate
+/// Spaces" is off), the menu bar lives only on the main display, so every click on the icon, its
+/// menu or the popover leaves the pointer there, whichever screen the user works on.
+#[cfg(target_os = "macos")]
+fn active_point(app: &AppHandle) -> Option<glimpsfy_capture::LogicalPoint> {
+    let options =
+        glimpsfy_capture::WindowListOptions { on_screen_only: true, exclude_desktop: true, exclude_own: false };
+    let listed = app.state::<AppState>().backend.windows(options).ok()?;
+    // Small layer-0 windows are not where the user works: a browser's hover cards and bubbles,
+    // some apps' invisible key catchers. A 270 × 80 one of Chrome's came first in a test.
+    let ordinary: Vec<_> = listed
+        .iter()
+        .filter(|w| w.layer == 0 && w.alpha > 0.0 && w.bounds.width >= 160.0 && w.bounds.height >= 120.0)
+        .collect();
+    let front = crate::macos::frontmost_pid();
+    let window = ordinary.iter().find(|w| Some(w.pid) == front).or_else(|| ordinary.first())?;
+    Some(glimpsfy_capture::LogicalPoint {
+        x: window.bounds.x + window.bounds.width / 2.0,
+        y: window.bounds.y + window.bounds.height / 2.0,
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
+fn active_point(_app: &AppHandle) -> Option<glimpsfy_capture::LogicalPoint> {
+    None
+}
+
+/// Moves an ordinary window to the screen that holds `at` (the pointer's without it), then shows
+/// it with the keyboard.
+fn bring_forward(
+    app: &AppHandle,
+    window: WebviewWindow,
+    at: Option<glimpsfy_capture::LogicalPoint>,
+    only_if_elsewhere: bool,
+) {
+    #[cfg(target_os = "macos")]
+    crate::macos::on_main(app, move |mtm| {
+        crate::macos::center_on_screen(&window, at, only_if_elsewhere, mtm);
+        let _ = window.show();
+        let _ = window.set_focus();
+    });
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = at;
+        center_on_cursor_monitor(app, &window, only_if_elsewhere);
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
+/// Without AppKit: the middle of the work area of the monitor under the cursor, in physical
+/// pixels, which Windows and X11 use for every monitor alike. Wayland reports no cursor, so
+/// there the window stays where `center` put it.
+#[cfg(not(target_os = "macos"))]
+fn center_on_cursor_monitor(app: &AppHandle, window: &WebviewWindow, only_if_elsewhere: bool) {
+    let Ok(cursor) = app.cursor_position() else {
+        return;
+    };
+    let Ok(Some(monitor)) = app.monitor_from_point(cursor.x, cursor.y) else {
+        return;
+    };
+    if only_if_elsewhere {
+        if let Ok(Some(current)) = window.current_monitor() {
+            if current.position() == monitor.position() && current.size() == monitor.size() {
+                return;
+            }
+        }
+    }
+    let Ok(size) = window.outer_size() else {
+        return;
+    };
+    let area = monitor.work_area();
+    let (area_w, area_h) = (i64::from(area.size.width), i64::from(area.size.height));
+    let (w, h) = (i64::from(size.width).min(area_w), i64::from(size.height).min(area_h));
+    let x = i64::from(area.position.x) + (area_w - w) / 2;
+    let y = i64::from(area.position.y) + (area_h - h) / 2;
+    let _ = window.set_position(tauri::PhysicalPosition::new(x as i32, y as i32));
 }
