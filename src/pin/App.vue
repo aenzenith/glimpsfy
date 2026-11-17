@@ -68,6 +68,8 @@ const naturalWidth = computed(() => (info.value ? info.value.pixelWidth / info.v
 const naturalHeight = computed(() => (info.value ? info.value.pixelHeight / info.value.scale : 1));
 const aspect = computed(() => naturalWidth.value / naturalHeight.value);
 const narrow = computed(() => width.value - 2 * margin.value < NARROW);
+/** The opacity slider takes what Close, the Opacity button and the value leave of the top row. */
+const sliderWidth = computed(() => Math.round(Math.min(112, Math.max(40, width.value - 2 * margin.value - 132))));
 const controls = computed(() => !locked.value && !collapsedFrom.value);
 const percent = (value: number) => t("pin.percent", { p: Math.round(value) });
 
@@ -210,7 +212,7 @@ function resizeUp(event: PointerEvent): void {
 
 function pinDown(event: PointerEvent): void {
   if (event.button !== 0 || (locked.value && !optionHeld.value)) return;
-  if ((event.target as HTMLElement).closest("button, input, .s-pin-corner, .s-pin-strip, .s-pin-wake")) return;
+  if ((event.target as HTMLElement).closest("button, input, .s-pin-corner, .s-pin-wake")) return;
   if (event.detail === 2) {
     void toggleCollapse();
     return;
@@ -440,24 +442,27 @@ onUnmounted(() => {
     </div>
 
     <template v-if="controls">
-      <div class="g-glass s-pin-close">
-        <TipWrap :tip="t('pin.close')" :caps="['⌘', 'W']" side="below">
+      <div class="s-pin-scrim" aria-hidden="true" />
+      <div class="s-pin-close">
+        <TipWrap :tip="t('pin.close')" :caps="['⌘', 'W']" side="below" align="start">
           <button type="button" class="g-btn" data-size="small" :aria-label="t('pin.close')" @click="close">
             <GIcon name="close" :size="16" />
           </button>
         </TipWrap>
       </div>
-      <div class="g-glass s-pin-tools" role="toolbar" :aria-label="t('pin.tools')">
-        <TipWrap :tip="t('pin.copy')" :caps="['⌘', 'C']" side="below">
-          <button type="button" class="g-btn" data-size="small" :aria-label="t('pin.copy')" @click="copy">
-            <GIcon name="copy" :size="16" />
-          </button>
-        </TipWrap>
-        <TipWrap v-if="!narrow" :tip="t('pin.save')" :caps="['⌘', 'S']" side="below">
-          <button type="button" class="g-btn" data-size="small" :aria-label="t('pin.save')" @click="save">
-            <GIcon name="save" :size="16" />
-          </button>
-        </TipWrap>
+      <div class="s-pin-tools" role="toolbar" :aria-label="t('pin.tools')">
+        <template v-if="!showOpacity">
+          <TipWrap :tip="t('pin.copy')" :caps="['⌘', 'C']" side="below">
+            <button type="button" class="g-btn" data-size="small" :aria-label="t('pin.copy')" @click="copy">
+              <GIcon name="copy" :size="16" />
+            </button>
+          </TipWrap>
+          <TipWrap v-if="!narrow" :tip="t('pin.save')" :caps="['⌘', 'S']" side="below">
+            <button type="button" class="g-btn" data-size="small" :aria-label="t('pin.save')" @click="save">
+              <GIcon name="save" :size="16" />
+            </button>
+          </TipWrap>
+        </template>
         <TipWrap :tip="t('pin.opacity')" side="below" align="end">
           <button
             type="button"
@@ -470,26 +475,25 @@ onUnmounted(() => {
             <GIcon name="opacity" :size="16" />
           </button>
         </TipWrap>
-        <TipWrap v-if="!narrow" :tip="t('pin.edit')" :caps="['⌘', 'O']" side="below" align="end">
+        <template v-if="showOpacity">
+          <input
+            type="range"
+            class="g-slider"
+            min="10"
+            max="100"
+            step="1"
+            :value="Math.round(alpha * 100)"
+            :style="{ width: `${sliderWidth}px`, '--value': `${((alpha * 100 - 10) / 90) * 100}%` }"
+            :aria-label="t('pin.opacity')"
+            @input="sliderInput"
+          />
+          <span class="s-pin-value">{{ percent(alpha * 100) }}</span>
+        </template>
+        <TipWrap v-else-if="!narrow" :tip="t('pin.edit')" :caps="['⌘', 'O']" side="below" align="end">
           <button type="button" class="g-btn" data-size="small" :aria-label="t('pin.edit')" @click="edit">
             <GIcon name="external-link" :size="16" />
           </button>
         </TipWrap>
-      </div>
-      <div v-if="showOpacity" class="g-strip s-pin-strip">
-        <GIcon name="opacity" :size="16" />
-        <input
-          type="range"
-          class="g-slider"
-          min="10"
-          max="100"
-          step="1"
-          :value="Math.round(alpha * 100)"
-          :style="{ '--value': `${((alpha * 100 - 10) / 90) * 100}%` }"
-          :aria-label="t('pin.opacity')"
-          @input="sliderInput"
-        />
-        <span class="s-pin-value">{{ percent(alpha * 100) }}</span>
       </div>
       <span
         v-for="corner in CORNERS"
@@ -566,31 +570,59 @@ onUnmounted(() => {
   opacity: var(--pin-alpha);
   pointer-events: none;
 }
+/* The controls sit bare on a dark band that fades down from the top edge (design/canvas row 03,
+   Y2): twice the button row, but never more than 45 % of a short pin. The band does not fade with
+   the opacity, so the icons stay legible over a faded image. */
+.s-pin-scrim {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  z-index: 1;
+  height: min(80px, 45%);
+  border-top-left-radius: inherit;
+  border-top-right-radius: inherit;
+  background: linear-gradient(
+    180deg,
+    rgba(0, 0, 0, 0.58) 0%,
+    rgba(0, 0, 0, 0.5) 22%,
+    rgba(0, 0, 0, 0.34) 48%,
+    rgba(0, 0, 0, 0.16) 74%,
+    rgba(0, 0, 0, 0) 100%
+  );
+  pointer-events: none;
+  transition: opacity var(--dur-base) var(--ease-out);
+}
 .s-pin-close,
 .s-pin-tools {
   position: absolute;
-  top: 6px;
+  top: 8px;
   z-index: 2;
-  display: inline-flex;
-  padding: 2px;
-  border-radius: 16px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
   transition: opacity var(--dur-base) var(--ease-out);
 }
-.s-pin-close { left: 6px; }
-.s-pin-tools { right: 6px; }
-.s-pin-strip {
-  position: absolute;
-  right: 6px;
-  top: 44px;
-  z-index: 2;
-  gap: 8px;
-  padding: 4px 12px 4px 10px;
-  transition: opacity var(--dur-base) var(--ease-out);
+.s-pin-close { left: 8px; }
+.s-pin-tools { right: 8px; --surface-track: rgba(255, 255, 255, 0.3); }
+.s-pin :is(.s-pin-close, .s-pin-tools) .g-btn:not([aria-pressed="true"]) { color: rgba(255, 255, 255, 0.92); }
+.s-pin :is(.s-pin-close, .s-pin-tools) .g-btn:not([aria-pressed="true"]):hover { color: #ffffff; background: rgba(255, 255, 255, 0.18); }
+.s-pin :is(.s-pin-close, .s-pin-tools) .g-btn:not([aria-pressed="true"]):active { background: rgba(255, 255, 255, 0.26); }
+/* a light shadow keeps the white icons apart from a bright image under the band's thin end */
+.s-pin :is(.s-pin-close, .s-pin-tools) .g-btn:not([aria-pressed="true"]) > g-icon { filter: drop-shadow(0 1px 1.5px rgba(0, 0, 0, 0.55)); }
+.s-pin-tools > .g-slider { margin: 0 6px 0 4px; }
+.s-pin-value {
+  min-width: 34px;
+  font: var(--type-num);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  color: #ffffff;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.55);
 }
-.s-pin-strip > g-icon { color: var(--text-muted); }
-.s-pin-strip > .g-slider { width: 112px; }
-.s-pin-strip > .s-pin-value { min-width: 34px; font: var(--type-num); font-variant-numeric: tabular-nums; text-align: right; }
-.s-pin:not(:hover):not(:focus-within) > :is(.s-pin-close, .s-pin-tools, .s-pin-strip, .s-pin-zoom) {
+/* Focus keeps the controls up only when it came from the keyboard: the pin itself takes focus on
+   every click and a clicked button keeps it, so :focus-within would hold them after the pointer
+   left. */
+.s-pin:not(:hover):not(:has(:focus-visible)) > :is(.s-pin-scrim, .s-pin-close, .s-pin-tools, .s-pin-zoom) {
   opacity: 0;
   pointer-events: none;
 }
