@@ -236,6 +236,36 @@ pub fn pointer() -> LogicalPoint {
     LogicalPoint { x: point.x, y: primary.size.height - point.y }
 }
 
+// ------------------------------------------------------------------------------------ spaces
+
+/// Puts a window that belongs on every Space back on every Space before it is ordered in.
+///
+/// After the displays changed, the window server kept the overlay a member of one Space only
+/// while the window still carried the flag: the next capture opened on that Space, out of sight,
+/// and waited there until the user swiped to it. Ordering the window in does not repair it;
+/// clearing the flag and setting it again does, once the first change has been committed on its
+/// own, because the two in one transaction reach the window server as no change at all. Only a
+/// window that is ordered out is checked, where AppKit answers for the Space it would open on.
+fn join_every_space(window: &NSWindow) {
+    let behaviour = window.collectionBehavior();
+    if window.isVisible()
+        || !behaviour.contains(NSWindowCollectionBehavior::CanJoinAllSpaces)
+        || window.isOnActiveSpace()
+    {
+        return;
+    }
+    window.setCollectionBehavior(behaviour & !NSWindowCollectionBehavior::CanJoinAllSpaces);
+    if let Some(transaction) = AnyClass::get(c"CATransaction") {
+        // SAFETY: `+[CATransaction flush]` takes no arguments and returns nothing; main thread.
+        let _: () = unsafe { msg_send![transaction, flush] };
+    }
+    window.setCollectionBehavior(behaviour);
+    crate::trace::log(format!(
+        "[glimpsfy] window {} was on another Space and joins every Space again",
+        window.windowNumber()
+    ));
+}
+
 // ---------------------------------------------------------------------------------- overlays
 
 /// What makes a window an overlay: a keyable non-activating panel at the screen saver level,
@@ -274,6 +304,7 @@ pub fn prewarm_overlay(window: &WebviewWindow, mtm: MainThreadMarker) {
     if let Some(ns_window) = ns_window(window, mtm) {
         ns_window.setAlphaValue(0.0);
         ns_window.setIgnoresMouseEvents(true);
+        join_every_space(ns_window);
         ns_window.orderFrontRegardless();
     }
 }
@@ -379,6 +410,7 @@ pub fn place_toast(window: &WebviewWindow, screen: &Screen, frame: crate::window
             ns_window.setIgnoresMouseEvents(true);
         }
         if !ns_window.isVisible() {
+            join_every_space(ns_window);
             ns_window.orderFrontRegardless();
         }
     }
@@ -765,6 +797,7 @@ pub fn show_popover(window: &WebviewWindow, tray: Option<&tauri::tray::TrayIcon>
         None => (0.0, primary_height()),
     });
     panel.setFrameTopLeftPoint(objc2_foundation::NSPoint::new(left, top));
+    join_every_space(panel);
     panel.makeKeyAndOrderFront(None);
     panel.invalidateShadow();
 }
@@ -985,7 +1018,7 @@ pub mod recording {
     use objc2_foundation::{NSArray, NSPoint, NSRect, NSSize, NSString, NSURL};
     use tauri::{AppHandle, WebviewWindow};
 
-    use super::{make_panel, ns_window, primary_height, to_cocoa};
+    use super::{join_every_space, make_panel, ns_window, primary_height, to_cocoa};
     use crate::recording::setup::GlassPiece;
 
     /// The recorder's webview panels.
@@ -1039,6 +1072,7 @@ pub mod recording {
         w.setFrame_display(to_cocoa(frame), true);
         w.setIgnoresMouseEvents(through);
         w.setAlphaValue(1.0);
+        join_every_space(w);
         if key {
             w.makeKeyAndOrderFront(None);
         } else {
@@ -1271,6 +1305,7 @@ pub mod recording {
                 Ok(())
             };
             shape(bubble, frame, round);
+            join_every_space(&bubble.panel);
             bubble.panel.orderFrontRegardless();
             result
         })
@@ -1464,6 +1499,7 @@ pub mod recording {
                 }
                 view.addSubview(&glass);
             }
+            join_every_space(panel);
             panel.orderFrontRegardless();
         });
     }
