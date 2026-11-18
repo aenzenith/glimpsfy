@@ -498,6 +498,8 @@ pub fn write_mp4(
     let asset = open(source)?;
     let wanted_start = plan.trim.start_ms * 1_000_000;
     let end = plan.trim.end_ms * 1_000_000;
+    // A re-encode cuts exactly, even on a still screen that sent no frame at the start: a decoding
+    // reader hands out the picture on screen at its range's start, stamped with that start.
     let start =
         if plan.reencode.is_none() { keyframe_before(&asset, wanted_start)?.unwrap_or(0) } else { wanted_start };
     let url = file_url(dest)?;
