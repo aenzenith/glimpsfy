@@ -123,6 +123,28 @@ fn ids(page: &HistoryPage) -> Vec<String> {
     page.items.iter().map(|i| i.entry.name.clone()).collect()
 }
 
+/// Adds a screenshot with an image of its own and stores `text` as the background recognition
+/// does: the text thread claims the entry's job and answers it, one line per line of `text`.
+fn add_read(f: &Fixture, mut new: NewEntry, text: &str) -> Entry {
+    new.recognize_text = true;
+    let entry = f.store.add(new, OwnFile::Bytes { bytes: b"png", extension: "png" }).unwrap();
+    let job = f.store.next_text_job(NOW).unwrap().unwrap();
+    assert_eq!(job.id, entry.id);
+    let lines = RecognizedText {
+        image_size: PixelSize { width: 800, height: 600 },
+        lines: text
+            .lines()
+            .enumerate()
+            .map(|(i, l)| TextLine {
+                text: l.into(),
+                bounds: TextBox { x: 10.0, y: 30.0 * i as f64, width: 300.0, height: 20.0 },
+                words: vec![],
+            })
+            .collect(),
+    };
+    f.store.set_text(&job, Some(text.into()), Some(lines)).unwrap().unwrap()
+}
+
 /// The sweep removes exactly the unpinned entries older than the period, with their own files,
 /// and nothing else: never a pinned entry, never a file outside the history's folder unless the
 /// option says so (and then only to the Trash), and nothing at all with "forever" or with the
@@ -482,22 +504,7 @@ fn write_schema_fixture() {
 #[test]
 fn search_finds_turkish_text_by_any_i_and_forgets_deleted_entries() {
     let f = fixture(false);
-    let add = |name: &str, text: &str, age: i64| {
-        let entry = f.store.add(screenshot(name, NOW - age), OwnFile::None).unwrap();
-        let lines = RecognizedText {
-            image_size: PixelSize { width: 800, height: 600 },
-            lines: text
-                .lines()
-                .enumerate()
-                .map(|(i, l)| TextLine {
-                    text: l.into(),
-                    bounds: TextBox { x: 10.0, y: 30.0 * i as f64, width: 300.0, height: 20.0 },
-                    words: vec![],
-                })
-                .collect(),
-        };
-        f.store.set_text(&entry.id, Some(text.into()), Some(lines)).unwrap()
-    };
+    let add = |name: &str, text: &str, age: i64| add_read(&f, screenshot(name, NOW - age), text);
     let lights = add("Ekran ayarları", "IŞIK AYARLARI\nParlaklık", 0);
     let keyboard = add("Klavye", "Arka ışıklı klavye", DAY);
     let office = add("İSTANBUL OFİSİ", "Adres", 2 * DAY);
@@ -674,4 +681,60 @@ fn an_edit_revised_by_later_outputs_keeps_the_saved_file_and_its_drawings() {
     reopened.delete(std::slice::from_ref(&entry.id), &DeleteOptions::default(), &none).unwrap();
     assert!(!document.exists() && !base.exists() && !own.exists());
     assert_eq!(fs::read(&saved).unwrap(), b"saved png");
+}
+
+/// The text thread reads an image while a later output may revise its entry: a Save, then a Copy
+/// after blurring a password. What it read belongs to the old image, so it is never stored on the
+/// revised entry, neither a failure nor a pause on the old image (which the revision unlinks)
+/// touches the entry, and the next job reads the image the entry shows. The scheme, the copy and
+/// the drag-out serve that same newer image.
+#[test]
+fn text_read_from_an_image_the_entry_no_longer_shows_is_not_stored() {
+    let f = fixture(false);
+    let saved = f.user.join("Login.png");
+    fs::write(&saved, b"the password in clear").unwrap();
+    let mut new = screenshot("Login", NOW);
+    new.saved_path = Some(saved.clone());
+    new.recognize_text = true;
+    let entry = f.store.add(new, OwnFile::None).unwrap();
+
+    let stale = f.store.next_text_job(NOW).unwrap().unwrap();
+    assert_eq!(stale.image, saved);
+    let inbox = f.user.join("inbox.png");
+    fs::write(&inbox, b"the password blurred").unwrap();
+    let revision = Revision {
+        own: OwnFile::Move { from: &inbox },
+        saved_path: None,
+        size: None,
+        scale: None,
+        file_bytes: None,
+        annotations: None,
+    };
+    let revised = f.store.revise(&entry.id, revision).unwrap();
+    let own = revised.file.clone().unwrap();
+    assert_eq!(revised.saved_path.as_deref(), Some(saved.as_path()));
+    assert_eq!(revised.media_path(), Some(own.as_path()), "the entry shows its newer own copy");
+    assert_eq!(f.store.media(&entry.id, Media::File).unwrap(), Some(own.clone()));
+
+    assert!(f.store.set_text(&stale, Some("hunter2".into()), None).unwrap().is_none());
+    f.store.postpone_text(&stale, NOW + DAY, true).unwrap();
+    f.store.text_failed(&stale).unwrap();
+    let still = f.store.get(&entry.id).unwrap();
+    assert_eq!((still.text_state, still.text), (TextState::Pending, None));
+    assert_eq!(f.store.search("hunter2", &HistoryQuery::default()).unwrap().total, 0);
+
+    let fresh = f.store.next_text_job(NOW).unwrap().unwrap();
+    assert_eq!((&fresh.id, &fresh.image, fresh.attempts), (&entry.id, &own, 0));
+    let done = f.store.set_text(&fresh, Some("Password ••••".into()), None).unwrap().unwrap();
+    assert_eq!(done.text_state, TextState::Done);
+
+    // A job whose entry was deleted meanwhile writes nothing and fails nothing.
+    let mut new = screenshot("gone", NOW);
+    new.recognize_text = true;
+    let gone = f.store.add(new, OwnFile::Bytes { bytes: b"png", extension: "png" }).unwrap();
+    let job = f.store.next_text_job(NOW).unwrap().unwrap();
+    assert_eq!(job.id, gone.id);
+    let none = Hosts { host: Host::Deletes, calls: Mutex::new(Vec::new()) };
+    f.store.delete(std::slice::from_ref(&gone.id), &DeleteOptions::default(), &none).unwrap();
+    assert!(f.store.set_text(&job, Some("late".into()), None).unwrap().is_none());
 }

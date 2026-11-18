@@ -55,6 +55,10 @@ pub struct TextJob {
     pub image: PathBuf,
     /// How many times the engine failed on it so far.
     pub attempts: u32,
+    /// The row's `file` and `saved_path` as the job found them. A later output can revise the
+    /// entry while its old image is still being read; the job's answer then belongs to a picture
+    /// the entry no longer shows, so it is written only while the row still names this image.
+    claimed: (Option<String>, Option<String>),
 }
 
 /// What [`HistoryStore::reconcile`] found and did.
@@ -108,6 +112,11 @@ pub struct HistoryStore {
     readers: Mutex<Vec<Connection>>,
     trash: Arc<dyn Trash>,
 }
+
+/// The `WHERE` clause that finds a text job's entry only while it still waits for the image the
+/// job read: `?1` is the id, `?2` and `?3` the `file` and `saved_path` the job was claimed with
+/// (`IS`, because either may be NULL).
+const STILL_CLAIMED: &str = "id = ?1 AND text_state = 'pending' AND file IS ?2 AND saved_path IS ?3";
 
 const COLUMNS: &str = "e.id, e.kind, e.name, e.created_at_ms, e.file, e.thumbnail, e.annotations, e.saved_path, \
     e.width, e.height, e.scale, e.duration_ms, e.file_bytes, e.app_name, e.bundle_id, e.window_title, e.display_id, \
@@ -542,32 +551,57 @@ impl HistoryStore {
         self.update(id, "UPDATE entries SET name = ?2 WHERE id = ?1", &[&name])
     }
 
-    /// Stores what text recognition read, which makes the entry searchable by it.
-    pub fn set_text(&self, id: &EntryId, text: Option<String>, lines: Option<RecognizedText>) -> Result<Entry> {
+    /// Stores what text recognition read from `job`'s image, which makes the entry searchable by
+    /// it. Answers `None` and stores nothing when the entry was revised (it shows another image
+    /// now, which it waits to have read) or deleted while the image was read.
+    pub fn set_text(
+        &self,
+        job: &TextJob,
+        text: Option<String>,
+        lines: Option<RecognizedText>,
+    ) -> Result<Option<Entry>> {
         let count = lines.as_ref().map(|l| l.lines.len()).unwrap_or(0) as i64;
         let json = lines.as_ref().map(serde_json::to_string).transpose().map_err(json_error)?;
-        self.update(
-            id,
-            "UPDATE entries SET text = ?2, text_lines = ?3, text_line_count = ?4, text_state = 'done', text_retry_at_ms = NULL
-             WHERE id = ?1",
-            &[&text, &json, &count],
-        )
+        let (file, saved) = &job.claimed;
+        let changed = self.write().execute(
+            &format!(
+                "UPDATE entries SET text = ?4, text_lines = ?5, text_line_count = ?6, text_state = 'done',
+                    text_retry_at_ms = NULL WHERE {STILL_CLAIMED}"
+            ),
+            params![job.id.0, file, saved, text, json, count],
+        )?;
+        if changed == 0 {
+            return Ok(None);
+        }
+        self.get(&job.id).map(Some)
     }
 
-    /// Puts off an entry's text recognition until `retry_at_ms`, counting a failed attempt when
-    /// `failed` is set (an engine that is not there yet is not a failure).
-    pub fn postpone_text(&self, id: &EntryId, retry_at_ms: i64, failed: bool) -> Result<()> {
+    /// Puts off `job`'s text recognition until `retry_at_ms`, counting a failed attempt when
+    /// `failed` is set (an engine that is not there yet is not a failure). An entry revised
+    /// meanwhile is left as it is: its new image has not been tried.
+    pub fn postpone_text(&self, job: &TextJob, retry_at_ms: i64, failed: bool) -> Result<()> {
+        let (file, saved) = &job.claimed;
         self.write().execute(
-            "UPDATE entries SET text_retry_at_ms = ?2, text_attempts = text_attempts + ?3 WHERE id = ?1 AND text_state = 'pending'",
-            params![id.0, retry_at_ms, failed as i64],
+            &format!(
+                "UPDATE entries SET text_retry_at_ms = ?4, text_attempts = text_attempts + ?5 WHERE {STILL_CLAIMED}"
+            ),
+            params![job.id.0, file, saved, retry_at_ms, failed as i64],
         )?;
         Ok(())
     }
 
-    /// Gives up on an entry's text, which leaves it searchable by name only.
-    pub fn text_failed(&self, id: &EntryId) -> Result<()> {
-        self.write()
-            .execute("UPDATE entries SET text_state = 'failed', text_retry_at_ms = NULL WHERE id = ?1", [&id.0])?;
+    /// Gives up on `job`'s text, which leaves the entry searchable by name only. An entry revised
+    /// meanwhile keeps waiting: the image that failed (perhaps unlinked by the revision) is not
+    /// the one it shows.
+    pub fn text_failed(&self, job: &TextJob) -> Result<()> {
+        self.fail_text(&job.id, &job.claimed)
+    }
+
+    fn fail_text(&self, id: &EntryId, (file, saved): &(Option<String>, Option<String>)) -> Result<()> {
+        self.write().execute(
+            &format!("UPDATE entries SET text_state = 'failed', text_retry_at_ms = NULL WHERE {STILL_CLAIMED}"),
+            params![id.0, file, saved],
+        )?;
         Ok(())
     }
 
@@ -600,11 +634,13 @@ impl HistoryStore {
         })?;
         match due {
             Some((id, file, saved, attempts)) => {
-                let image = file.map(|f| self.paths.resolve(&f)).or(saved.map(PathBuf::from));
+                // The same image as `Entry::media_path`: the own copy is the newer picture.
+                let image = file.as_deref().map(|f| self.paths.resolve(f)).or(saved.as_deref().map(PathBuf::from));
+                let claimed = (file, saved);
                 match image {
-                    Some(image) => Ok(Ok(TextJob { id: EntryId(id), image, attempts })),
+                    Some(image) => Ok(Ok(TextJob { id: EntryId(id), image, attempts, claimed })),
                     None => {
-                        self.text_failed(&EntryId(id))?;
+                        self.fail_text(&EntryId(id), &claimed)?;
                         self.next_text_job(now_ms)
                     }
                 }

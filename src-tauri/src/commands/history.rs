@@ -846,26 +846,29 @@ enum TextFailure {
     Failed(String),
 }
 
+/// Reads one job's image. The store writes the answer only while the entry still shows that
+/// image, so an entry revised meanwhile stays waiting and the loop reads its new image next.
 fn read_text(app: &AppHandle, store: &HistoryStore, job: &glimpsfy_history::TextJob) {
     match recognize(app, &job.image) {
-        Ok((text, lines)) => match store.set_text(&job.id, Some(text), Some(lines)) {
-            Ok(entry) => changed(app, HistoryChanged::Updated { entry: light(entry) }),
+        Ok((text, lines)) => match store.set_text(job, Some(text), Some(lines)) {
+            Ok(Some(entry)) => changed(app, HistoryChanged::Updated { entry: light(entry) }),
+            Ok(None) => {}
             Err(error) => trace::log(format!("[glimpsfy] history: the text of {} was not stored: {error}", job.id)),
         },
         Err(TextFailure::Unavailable(reason)) => {
-            let _ = store.postpone_text(&job.id, now_ms() + ENGINE_MISSING_RETRY.as_millis() as i64, false);
+            let _ = store.postpone_text(job, now_ms() + ENGINE_MISSING_RETRY.as_millis() as i64, false);
             trace::log(format!("[glimpsfy] history: text recognition waits: {reason}"));
         }
         Err(TextFailure::Unreadable(reason)) => {
-            let _ = store.text_failed(&job.id);
+            let _ = store.text_failed(job);
             trace::log(format!("[glimpsfy] history: the image of {} cannot be read: {reason}", job.id));
         }
         Err(TextFailure::Failed(reason)) => {
             if job.attempts + 1 >= MAX_TEXT_ATTEMPTS {
-                let _ = store.text_failed(&job.id);
+                let _ = store.text_failed(job);
             } else {
                 let pause = 10 * 60 * 1000 * (1i64 << job.attempts);
-                let _ = store.postpone_text(&job.id, now_ms() + pause, true);
+                let _ = store.postpone_text(job, now_ms() + pause, true);
             }
             trace::log(format!("[glimpsfy] history: text recognition failed on {}: {reason}", job.id));
         }
