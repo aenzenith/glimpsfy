@@ -30,6 +30,10 @@ export function useRecognition() {
     const mine = jobName();
     job = mine;
     readKey = key;
+    // The old result belongs to other pixels (perhaps from before a blur): showing or copying it
+    // while the new ones are read would hand out text the image no longer shows.
+    result.value = null;
+    codes.value = [];
     status.value = "reading";
     problem.value = null;
     try {

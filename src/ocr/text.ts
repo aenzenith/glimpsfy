@@ -93,11 +93,30 @@ export function languageName(tag: string | null, uiLanguage: string): string | n
   }
 }
 
-/** A cheap fingerprint of pixels, so the same area with the same pixels is not read twice. */
-export function fingerprint(width: number, height: number, data: ArrayLike<number>): string {
-  let hash = 2166136261;
-  const step = Math.max(1, Math.floor(data.length / 4096));
-  for (let i = 0; i < data.length; i += step) hash = Math.imul(hash ^ data[i], 16777619);
+/** A fingerprint of pixels, so the same area with the same pixels is not read twice. Every byte
+ * counts: a blur over a password changes a few thousand bytes of a 5K image, which a sample would
+ * miss, and the layer would then show and copy the text from before the blur. It hashes 32-bit
+ * words with murmur3's mixing, under 20 ms for a 5K image, next to the second or so a reading
+ * takes. Each step is a bijection of the state, so inputs that differ in one word never collide. */
+export function fingerprint(width: number, height: number, data: Uint8Array | Uint8ClampedArray): string {
+  let hash = 0x9747b28c ^ data.length;
+  // Pixels from a canvas start on a word boundary; a view that does not is hashed byte by byte.
+  const words = data.byteOffset % 4 === 0 ? new Uint32Array(data.buffer, data.byteOffset, data.length >>> 2) : new Uint32Array(0);
+  // The mixing is written out in both loops: a shared closure runs several times slower.
+  for (let w = 0; w < words.length; w++) {
+    let k = Math.imul(words[w], 0xcc9e2d51);
+    k = Math.imul((k << 15) | (k >>> 17), 0x1b873593);
+    hash ^= k;
+    hash = (hash << 13) | (hash >>> 19);
+    hash = (Math.imul(hash, 5) + 0xe6546b64) | 0;
+  }
+  for (let i = words.length * 4; i < data.length; i++) {
+    let k = Math.imul(data[i], 0xcc9e2d51);
+    k = Math.imul((k << 15) | (k >>> 17), 0x1b873593);
+    hash ^= k;
+    hash = (hash << 13) | (hash >>> 19);
+    hash = (Math.imul(hash, 5) + 0xe6546b64) | 0;
+  }
   return `${width}x${height}:${(hash >>> 0).toString(36)}`;
 }
 
