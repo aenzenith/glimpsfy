@@ -43,6 +43,10 @@ pub enum PinSource {
     },
     File {
         path: PathBuf,
+        /// Pixels per point of the image, when the caller knows it (the editor). Without it the
+        /// pin takes the scale of the screen under the pointer.
+        #[serde(default)]
+        scale: Option<f64>,
     },
     /// A capture with drawings, which the overlay rendered and staged as a PNG
     /// (`output_stage_rendered`): the pin shows the file where `selection` was captured, at the
@@ -140,14 +144,18 @@ pub async fn open(app: &AppHandle, source: PinSource) -> CommandResult<PinInfo> 
         PinSource::Capture { selection } => capture_image(app, &selection)?,
         PinSource::History { entry_id } => {
             let entry = crate::commands::history::history_get(app.clone(), entry_id).await?;
-            let file = entry.file.clone().ok_or_else(|| CommandError::not_found("the image of this history entry"))?;
-            let bytes = std::fs::read(&file)?;
+            // A saved capture has no copy of its own in the history, only the user's file.
+            let file = entry
+                .media_path()
+                .filter(|p| p.is_file())
+                .ok_or_else(|| CommandError::not_found("the image of this history entry"))?;
+            let bytes = std::fs::read(file)?;
             (bytes, entry.name.clone(), None, entry.scale.unwrap_or(0.0))
         }
-        PinSource::File { path } => {
+        PinSource::File { path, scale } => {
             let bytes = std::fs::read(&path)?;
             let name = path.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-            (bytes, name, None, 0.0)
+            (bytes, name, None, scale.filter(|s| s.is_finite()).unwrap_or(0.0))
         }
         PinSource::Rendered { path, selection } => {
             let bytes = std::fs::read(&path)?;

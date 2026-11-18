@@ -94,7 +94,9 @@ export const popover_drag_out = (entryId: EntryId) => call<void>("popover_drag_o
 export type PinSource =
   | { kind: "capture"; selection: Selection }
   | { kind: "history"; entryId: EntryId }
-  | { kind: "file"; path: string }
+  /** `scale` is the image's pixels per point when the caller knows it (the editor); without it
+   * the pin takes the scale of the screen under the pointer. */
+  | { kind: "file"; path: string; scale?: number }
   /** A capture with drawings staged by `output_stage_rendered`: the pin opens where `selection`
    * was captured, at its size. Open it before the capture closes; after, it opens centred. */
   | { kind: "rendered"; path: string; selection: Selection };

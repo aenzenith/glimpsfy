@@ -427,7 +427,8 @@ const uploads = uploadFlow({
 const uploadAsk = uploads.asking;
 const upload = () => void uploads.start();
 
-const pin = () => staged((path) => pin_open({ kind: "file", path }));
+// The image's own scale, or the pin would take the scale of the screen under the pointer.
+const pin = () => staged((path) => pin_open({ kind: "file", path, scale: scale.value }));
 
 function copyText(): void {
   if (!textLayerComponent) return say(t("overlay.notReady"));
