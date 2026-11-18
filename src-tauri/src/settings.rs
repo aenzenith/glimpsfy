@@ -664,17 +664,19 @@ fn merge<T: DeserializeOwned>(root: &mut Value, path: &mut Vec<String>, user: Va
             if path.is_empty() {
                 return;
             }
-            let previous = put(root, path, Some(value));
-            if serde_json::from_value::<T>(root.clone()).is_err() {
-                put(root, path, previous);
+            // The leaf goes into a copy: on its way `put` may turn a scalar into an object, and
+            // undoing only the leaf would leave that object behind and no later leaf would fit.
+            let mut candidate = root.clone();
+            put(&mut candidate, path, value);
+            if T::deserialize(&candidate).is_ok() {
+                *root = candidate;
             }
         }
     }
 }
 
-/// Puts `value` at `path` (removing the key for `None`), making objects on the way, and returns
-/// what was there before.
-fn put(root: &mut Value, path: &[String], value: Option<Value>) -> Option<Value> {
+/// Puts `value` at `path`, making objects on the way.
+fn put(root: &mut Value, path: &[String], value: Value) -> Option<()> {
     let (last, parents) = path.split_last()?;
     let mut node = root;
     for key in parents {
@@ -686,11 +688,8 @@ fn put(root: &mut Value, path: &[String], value: Option<Value>) -> Option<Value>
     if !node.is_object() {
         *node = Value::Object(Map::new());
     }
-    let map = node.as_object_mut()?;
-    match value {
-        Some(value) => map.insert(last.clone(), value),
-        None => map.remove(last),
-    }
+    node.as_object_mut()?.insert(last.clone(), value);
+    Some(())
 }
 
 /// Writes `bytes` to `path` through a temporary file in the same folder and a rename, so the
@@ -950,6 +949,38 @@ mod tests {
         assert_eq!(written["fromTheFuture"], json!({ "enabled": true, "level": 3 }));
         assert_eq!(written["shortcuts"]["pinLast"], json!("Shift+CommandOrControl+P"));
         assert_eq!(written["output"]["newOutputOption"], json!([1, 2]));
+    }
+
+    /// A field that another version wrote as an object where this one keeps a plain value takes
+    /// its default alone: the fields read after it (shortcuts, upload providers, consents) survive
+    /// the load and the next save, instead of the whole file falling back to the defaults.
+    #[test]
+    fn an_object_where_a_plain_value_belongs_costs_only_that_field() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        fs::write(
+            &path,
+            br#"{ "general": { "language": { "code": "tr" }, "shutterSound": false, "firstRunDone": true },
+                  "shortcuts": { "captureArea": "Alt+Shift+CommandOrControl+9" },
+                  "upload": { "defaultProvider": "custom",
+                              "confirmedProviders": ["custom@share.example.dev"],
+                              "providers": { "custom": { "requestUrl": "https://share.example.dev/up" } } } }"#,
+        )
+        .unwrap();
+
+        let check = |settings: &Settings| {
+            assert_eq!(settings.general.language, Language::System);
+            assert!(!settings.general.shutter_sound);
+            assert!(settings.general.first_run_done);
+            assert_eq!(settings.shortcuts.capture_area.as_deref(), Some("Alt+Shift+CommandOrControl+9"));
+            assert_eq!(settings.upload.default_provider.as_deref(), Some("custom"));
+            assert_eq!(settings.upload.confirmed_providers, vec!["custom@share.example.dev".to_string()]);
+            assert_eq!(settings.upload.providers["custom"], json!({ "requestUrl": "https://share.example.dev/up" }));
+        };
+        let store = SettingsStore::open_with(path.clone(), SecretFields::new());
+        check(&store.get());
+        store.set(store.get()).unwrap();
+        check(&SettingsStore::open_with(path, SecretFields::new()).get());
     }
 
     /// Saving replaces the file through a rename: the old file is never truncated in place, the
