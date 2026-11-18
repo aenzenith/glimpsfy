@@ -26,10 +26,12 @@ export const GIF_FPS = [10, 15, 20] as const;
 export const MIN_KEPT_MS = 500;
 
 /** The trim with one end moved to `ms`, on a tenth of a second, keeping at least half a second
- * (or the whole recording when it is shorter). */
+ * (or the whole recording when it is shorter). The ends of the recording are kept exactly. */
 export function withEdge(range: TrimRange, edge: "start" | "end", ms: number, totalMs: number): TrimRange {
   const min = Math.min(MIN_KEPT_MS, totalMs);
-  const at = Math.round(ms / 100) * 100;
+  // A length is rarely a whole tenth, and rounding the end down would cut its tail off and make
+  // the export a trimmed copy.
+  const at = ms >= totalMs ? totalMs : ms <= 0 ? 0 : Math.round(ms / 100) * 100;
   if (edge === "start") return { startMs: Math.max(0, Math.min(at, range.endMs - min)), endMs: range.endMs };
   return { startMs: range.startMs, endMs: Math.min(totalMs, Math.max(at, range.startMs + min)) };
 }
