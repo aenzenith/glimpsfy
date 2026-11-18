@@ -8,6 +8,7 @@
 //! countdown from any app (`session/delay.rs`).
 
 use std::str::FromStr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::Instant;
 
@@ -68,9 +69,15 @@ pub struct ShortcutProblem {
     pub message: String,
 }
 
+// The plugin registers and unregisters on the main thread and blocks its caller until it has,
+// and the handler below runs on the main thread and locks BOUND and ESCAPE on every press. A
+// thread that held either lock across a plugin call would wait for a main thread that waits for
+// it, so neither is ever held across one.
 static BOUND: Mutex<Vec<(Shortcut, Action)>> = Mutex::new(Vec::new());
 /// Esc, while a delayed capture counts down.
 static ESCAPE: Mutex<Option<Shortcut>> = Mutex::new(None);
+/// Whether a countdown wants Esc; `settle_escape` brings `ESCAPE` in line with it.
+static WANT_ESCAPE: AtomicBool = AtomicBool::new(false);
 
 pub fn plugin() -> TauriPlugin<Wry> {
     tauri_plugin_global_shortcut::Builder::new()
@@ -124,10 +131,11 @@ pub(crate) fn bound() -> Vec<(String, Action)> {
 /// Registers the working actions' keys, replacing whatever was registered before.
 pub fn apply(app: &AppHandle, shortcuts: &Shortcuts) -> Vec<ShortcutProblem> {
     let manager = app.global_shortcut();
-    let mut bound = BOUND.lock().unwrap_or_else(|p| p.into_inner());
-    for (shortcut, _) in bound.drain(..) {
+    let previous = std::mem::take(&mut *BOUND.lock().unwrap_or_else(|p| p.into_inner()));
+    for (shortcut, _) in previous {
         let _ = manager.unregister(shortcut);
     }
+    let mut bound = Vec::new();
 
     let wanted = [
         (Action::CaptureArea, &shortcuts.capture_area),
@@ -162,6 +170,9 @@ pub fn apply(app: &AppHandle, shortcuts: &Shortcuts) -> Vec<ShortcutProblem> {
             Err(error) => problems.push(problem(error.to_string())),
         }
     }
+    // Added to rather than replaced, so a key registered here is always one a later apply
+    // unregisters.
+    BOUND.lock().unwrap_or_else(|p| p.into_inner()).extend(bound);
     for problem in &problems {
         trace::log(format!(
             "[glimpsfy] shortcut {} for {:?}: {}",
@@ -174,22 +185,41 @@ pub fn apply(app: &AppHandle, shortcuts: &Shortcuts) -> Vec<ShortcutProblem> {
 
 /// Registers Esc for a countdown; a key Glimpsfy cannot take only costs the shortcut.
 pub fn bind_escape(app: &AppHandle) {
-    let mut escape = ESCAPE.lock().unwrap_or_else(|p| p.into_inner());
-    if escape.is_some() {
-        return;
-    }
-    match Shortcut::from_str("Escape") {
-        Ok(shortcut) => match app.global_shortcut().register(shortcut) {
-            Ok(()) => *escape = Some(shortcut),
-            Err(error) => trace::log(format!("[glimpsfy] Esc for the countdown: {error}")),
-        },
-        Err(error) => trace::log(format!("[glimpsfy] Esc for the countdown: {error}")),
-    }
+    WANT_ESCAPE.store(true, Ordering::SeqCst);
+    settle_escape(app);
 }
 
 /// Gives Esc back to the other apps.
 pub fn unbind_escape(app: &AppHandle) {
-    if let Some(shortcut) = ESCAPE.lock().unwrap_or_else(|p| p.into_inner()).take() {
-        let _ = app.global_shortcut().unregister(shortcut);
+    WANT_ESCAPE.store(false, Ordering::SeqCst);
+    settle_escape(app);
+}
+
+/// Registers or unregisters Esc on the main thread, without waiting for it. The countdown's
+/// thread binds and unbinds while a key press can be running the handler there, and waiting
+/// would freeze both. The main thread runs the tasks one after another and each reads the latest
+/// wish, so Esc ends up as the last call asked even when a bind and an unbind cross.
+fn settle_escape(app: &AppHandle) {
+    let handle = app.clone();
+    let queued = app.run_on_main_thread(move || {
+        let wanted = WANT_ESCAPE.load(Ordering::SeqCst);
+        let held = *ESCAPE.lock().unwrap_or_else(|p| p.into_inner());
+        match (wanted, held) {
+            (true, None) => match Shortcut::from_str("Escape") {
+                Ok(shortcut) => match handle.global_shortcut().register(shortcut) {
+                    Ok(()) => *ESCAPE.lock().unwrap_or_else(|p| p.into_inner()) = Some(shortcut),
+                    Err(error) => trace::log(format!("[glimpsfy] Esc for the countdown: {error}")),
+                },
+                Err(error) => trace::log(format!("[glimpsfy] Esc for the countdown: {error}")),
+            },
+            (false, Some(shortcut)) => {
+                *ESCAPE.lock().unwrap_or_else(|p| p.into_inner()) = None;
+                let _ = handle.global_shortcut().unregister(shortcut);
+            }
+            _ => {}
+        }
+    });
+    if let Err(error) = queued {
+        trace::log(format!("[glimpsfy] Esc for the countdown: {error}"));
     }
 }
