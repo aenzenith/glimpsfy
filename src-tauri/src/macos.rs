@@ -311,6 +311,7 @@ pub fn prewarm_overlay(window: &WebviewWindow, mtm: MainThreadMarker) {
 
 /// Shows an overlay at full opacity; `key` gives it the keyboard.
 pub fn show_overlay(window: &WebviewWindow, key: bool, mtm: MainThreadMarker) {
+    forward_pointer(true);
     if let Some(ns_window) = ns_window(window, mtm) {
         ns_window.setIgnoresMouseEvents(false);
         ns_window.setAlphaValue(1.0);
@@ -322,13 +323,25 @@ pub fn show_overlay(window: &WebviewWindow, key: bool, mtm: MainThreadMarker) {
     }
 }
 
-/// Gives a shown overlay the keyboard, when the pointer moves onto its display.
-pub fn key_overlay(window: &WebviewWindow, mtm: MainThreadMarker) {
-    if let Some(ns_window) = ns_window(window, mtm) {
-        if ns_window.isVisible() && !ns_window.isKeyWindow() {
-            ns_window.makeKeyAndOrderFront(None);
+/// Gives a shown overlay the keyboard when anything else has it: another overlay (the pointer
+/// moved onto its display), another app, or a window of Glimpsfy's own that a Space switch brought
+/// forward (Settings or History left open on that Space). One that waits invisible for its frame,
+/// or stepped aside, is left alone, and so is a window in `keep`, which took the keyboard on
+/// purpose: ⌘R shows the recording setup with the keyboard before the capture closes, and the
+/// setup's Target panel sits at the overlay's own level, so the level could not tell them apart.
+pub fn key_overlay(window: &WebviewWindow, keep: &[WebviewWindow], mtm: MainThreadMarker) {
+    let Some(ns_window) = ns_window(window, mtm) else {
+        return;
+    };
+    if !ns_window.isVisible() || ns_window.alphaValue() == 0.0 || ns_window.isKeyWindow() {
+        return;
+    }
+    if let Some(key) = objc2_app_kit::NSApplication::sharedApplication(mtm).keyWindow() {
+        if keep.iter().filter_map(|w| self::ns_window(w, mtm)).any(|w| std::ptr::eq(w, &*key)) {
+            return;
         }
     }
+    ns_window.makeKeyAndOrderFront(None);
 }
 
 pub fn hide_overlay(window: &WebviewWindow, mtm: MainThreadMarker) {
@@ -339,12 +352,94 @@ pub fn hide_overlay(window: &WebviewWindow, mtm: MainThreadMarker) {
     }
 }
 
-/// The toast: a panel that never takes the keyboard, over full-screen apps too. Its window
-/// reaches past the toasts for their shadows, so a pointer move anywhere sets whether it takes
-/// clicks (`glass::toast_hit`); the monitors stay for good, and do nothing while it is hidden.
-pub fn setup_toast(window: &WebviewWindow, mtm: MainThreadMarker) {
+thread_local! {
+    /// The monitor that hands the overlay the pointer moves meant for the app in front, while a
+    /// capture shows (`forward_pointer`).
+    static POINTER_FEED: std::cell::RefCell<Option<objc2::rc::Retained<AnyObject>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Hands the key overlay every pointer move while a capture shows (`on`), or stops.
+///
+/// macOS sends pointer moves to the app in front. The overlay is a panel of an app that never
+/// comes to the front, so it heard only the moves its tracking area was given, and how many
+/// depended on the app in front: at 120 posted moves a second its page saw about 61 while
+/// Glimpsfy had been in front, 26 with Finder and 12 with Visual Studio Code. The crosshair,
+/// the loupe and the window hover then trailed the pointer, and a Space switch, which changes
+/// the app in front, made every later capture feel slower. A global monitor sees the moves the
+/// app in front receives, without any permission, and each one goes back through the overlay's
+/// own `sendEvent:`, which routes it as AppKit routes a move of its own; with it the page sees
+/// about 61 a second whichever app is in front. A global monitor never sees the moves AppKit
+/// already delivers to Glimpsfy, so none arrives twice.
+pub fn forward_pointer(on: bool) {
     use objc2_app_kit::NSEventMask;
 
+    POINTER_FEED.with_borrow_mut(|feed| {
+        if !on {
+            if let Some(monitor) = feed.take() {
+                // SAFETY: a monitor that `addGlobalMonitorForEventsMatchingMask:` returned.
+                unsafe { NSEvent::removeMonitor(&monitor) };
+            }
+            return;
+        }
+        if feed.is_some() {
+            return;
+        }
+        let block = block2::RcBlock::new(|event: std::ptr::NonNull<NSEvent>| {
+            if let Some(mtm) = MainThreadMarker::new() {
+                // SAFETY: AppKit hands the monitor a valid event for the duration of the call.
+                forward_move(unsafe { event.as_ref() }, mtm);
+            }
+        });
+        *feed = NSEvent::addGlobalMonitorForEventsMatchingMask_handler(NSEventMask::MouseMoved, &block);
+    });
+}
+
+/// Gives one pointer move to the overlay that has the keyboard, when the pointer is over it: the
+/// move AppKit would have delivered had Glimpsfy been the app in front.
+fn forward_move(event: &NSEvent, mtm: MainThreadMarker) {
+    let Some(window) = objc2_app_kit::NSApplication::sharedApplication(mtm).keyWindow() else {
+        return;
+    };
+    if window.level() != NSScreenSaverWindowLevel || window.alphaValue() == 0.0 || window.ignoresMouseEvents() {
+        return;
+    }
+    let at = NSEvent::mouseLocation();
+    let frame = window.frame();
+    let inside = at.x >= frame.origin.x
+        && at.x < frame.origin.x + frame.size.width
+        && at.y >= frame.origin.y
+        && at.y < frame.origin.y + frame.size.height;
+    if !inside {
+        return;
+    }
+    let local = objc2_foundation::NSPoint::new(at.x - frame.origin.x, at.y - frame.origin.y);
+    let null: *const AnyObject = std::ptr::null();
+    // SAFETY: the documented factory of a mouse event; its arguments have the declared types, and
+    // the graphics context must be nil.
+    let moved: Option<objc2::rc::Retained<NSEvent>> = unsafe {
+        msg_send![
+            NSEvent::class(),
+            mouseEventWithType: objc2_app_kit::NSEventType::MouseMoved,
+            location: local,
+            modifierFlags: event.modifierFlags(),
+            timestamp: event.timestamp(),
+            windowNumber: window.windowNumber(),
+            context: null,
+            eventNumber: 0isize,
+            clickCount: 0isize,
+            pressure: 0.0f32
+        ]
+    };
+    // Calling the web view's `mouseMoved:` directly reached the page only now and then; through
+    // the window, every move does.
+    if let Some(moved) = moved {
+        window.sendEvent(&moved);
+    }
+}
+
+/// The toast: a panel that never takes the keyboard, over full-screen apps too.
+pub fn setup_toast(window: &WebviewWindow, mtm: MainThreadMarker) {
     make_panel(window, false, mtm);
     if let Some(ns_window) = ns_window(window, mtm) {
         // Above the overlay's level minus one: over every app, under a running capture.
@@ -356,32 +451,56 @@ pub fn setup_toast(window: &WebviewWindow, mtm: MainThreadMarker) {
         );
         ns_window.setHasShadow(false);
     }
+}
 
-    let moves = NSEventMask::MouseMoved | NSEventMask::LeftMouseDragged | NSEventMask::RightMouseDragged;
-    let hit = {
-        let window = window.clone();
-        move || {
-            if let Some(mtm) = MainThreadMarker::new() {
-                if let Some(ns_window) = ns_window(&window, mtm) {
-                    glass::toast_hit(ns_window);
+thread_local! {
+    /// The toast's pointer monitors while toasts show (`toast_monitors`).
+    static TOAST_MONITORS: std::cell::RefCell<Vec<objc2::rc::Retained<AnyObject>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The toast's window reaches past the toasts for their shadows, so while toasts show a pointer
+/// move anywhere sets whether it takes clicks (`glass::toast_hit`). The monitors exist only then:
+/// kept for good, they woke the main thread on every pointer move in every app, all day long.
+fn toast_monitors(window: &WebviewWindow, on: bool) {
+    use objc2_app_kit::NSEventMask;
+
+    TOAST_MONITORS.with_borrow_mut(|monitors| {
+        if !on {
+            for monitor in monitors.drain(..) {
+                // SAFETY: each one is a monitor that `add…MonitorForEventsMatchingMask:` returned.
+                unsafe { NSEvent::removeMonitor(&monitor) };
+            }
+            return;
+        }
+        if !monitors.is_empty() {
+            return;
+        }
+        let moves = NSEventMask::MouseMoved | NSEventMask::LeftMouseDragged | NSEventMask::RightMouseDragged;
+        let hit = {
+            let window = window.clone();
+            move || {
+                if let Some(mtm) = MainThreadMarker::new() {
+                    if let Some(ns_window) = ns_window(&window, mtm) {
+                        glass::toast_hit(ns_window);
+                    }
                 }
             }
-        }
-    };
-    // Moves over other apps, and over Glimpsfy's own windows: the pointer reaches a toast
-    // through either, depending on whether the window lets clicks through just then.
-    let outside = {
-        let hit = hit.clone();
-        block2::RcBlock::new(move |_: std::ptr::NonNull<NSEvent>| hit())
-    };
-    let inside = block2::RcBlock::new(move |event: std::ptr::NonNull<NSEvent>| -> *mut NSEvent {
-        hit();
-        event.as_ptr()
+        };
+        // Moves over other apps, and over Glimpsfy's own windows: the pointer reaches a toast
+        // through either, depending on whether the window lets clicks through just then.
+        let outside = {
+            let hit = hit.clone();
+            block2::RcBlock::new(move |_: std::ptr::NonNull<NSEvent>| hit())
+        };
+        let inside = block2::RcBlock::new(move |event: std::ptr::NonNull<NSEvent>| -> *mut NSEvent {
+            hit();
+            event.as_ptr()
+        });
+        monitors.extend(NSEvent::addGlobalMonitorForEventsMatchingMask_handler(moves, &outside));
+        // SAFETY: the block hands back the event it was given, a valid pointer.
+        monitors.extend(unsafe { NSEvent::addLocalMonitorForEventsMatchingMask_handler(moves, &inside) });
     });
-    // AppKit keeps the monitors until they are removed, which never happens.
-    std::mem::forget(NSEvent::addGlobalMonitorForEventsMatchingMask_handler(moves, &outside));
-    // SAFETY: the block hands back the event it was given, a valid pointer.
-    std::mem::forget(unsafe { NSEvent::addLocalMonitorForEventsMatchingMask_handler(moves, &inside) });
 }
 
 /// Puts the toast window at the bottom-right corner of `screen`'s visible area (above the Dock
@@ -414,6 +533,7 @@ pub fn place_toast(window: &WebviewWindow, screen: &Screen, frame: crate::window
             ns_window.orderFrontRegardless();
         }
     }
+    toast_monitors(window, frame.shown);
 }
 
 /// The pointer in `window`'s own space (points from its top-left corner), or `None` while the

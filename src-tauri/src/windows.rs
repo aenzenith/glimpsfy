@@ -154,6 +154,7 @@ pub fn hide_overlays(app: &AppHandle) {
             for (_, window) in overlays(&handle) {
                 crate::macos::hide_overlay(&window, mtm);
             }
+            crate::macos::forward_pointer(false);
         });
     }
     #[cfg(not(target_os = "macos"))]
@@ -166,34 +167,34 @@ pub fn hide_overlays(app: &AppHandle) {
 /// space bar act on the display the user is looking at, and hover reaches its page. Once a
 /// display holds a selection, its overlay keeps the keyboard wherever the pointer goes, so Copy,
 /// Save and the arrow keys still reach the selection from another display.
+///
+/// The keyboard is taken back at every check, not only when the display changes: switching the
+/// Space (or ⌘Tab) activates another app and takes the key status from the panel, and WebKit
+/// follows the pointer only in a key window, so the overlay froze, with Esc and ⌘C going to the
+/// app behind it, until the user clicked it. The overlay covers every display above every other
+/// app's window while it shows, so the keyboard has nowhere else to go meanwhile. Only the
+/// recording setup's panels keep it, which ⌘R shows with the keyboard just before the capture
+/// closes; an overlay that stepped aside (a save panel) is ordered out and left alone.
 pub fn follow_pointer(app: &AppHandle, id: CaptureId) {
     #[cfg(target_os = "macos")]
     {
         let app = app.clone();
-        std::thread::spawn(move || {
-            let mut last = None;
-            loop {
-                std::thread::sleep(Duration::from_millis(30));
-                let state = app.state::<AppState>();
-                let Some(session) = state.sessions.get(id) else {
-                    return;
-                };
-                let pointer = crate::macos::pointer();
-                let under = session.displays.iter().find(|d| d.display.frame.contains(pointer)).map(|d| d.display.id);
-                let holder = session.holder();
-                let Some(display) = holder.or(under) else {
-                    continue;
-                };
-                // A click makes the panel under it key on its own (AppKit), so while the pointer
-                // is away from the selection the keyboard is taken back at every check; the call
-                // does nothing while the holder is still key.
-                let away = holder.is_some() && under != holder;
-                if (last.is_some() && last != Some(display)) || away {
-                    if let Some(window) = app.get_webview_window(&overlay_label(display)) {
-                        crate::macos::on_main(&app, move |mtm| crate::macos::key_overlay(&window, mtm));
-                    }
-                }
-                last = Some(display);
+        std::thread::spawn(move || loop {
+            std::thread::sleep(Duration::from_millis(30));
+            let state = app.state::<AppState>();
+            let Some(session) = state.sessions.get(id) else {
+                return;
+            };
+            let pointer = crate::macos::pointer();
+            let under = session.displays.iter().find(|d| d.display.frame.contains(pointer)).map(|d| d.display.id);
+            let Some(display) = session.holder().or(under) else {
+                continue;
+            };
+            if let Some(window) = app.get_webview_window(&overlay_label(display)) {
+                let keep: Vec<WebviewWindow> =
+                    crate::recording::PANELS.iter().filter_map(|label| app.get_webview_window(label)).collect();
+                // Does nothing while that overlay is key already, or not shown yet.
+                crate::macos::on_main(&app, move |mtm| crate::macos::key_overlay(&window, &keep, mtm));
             }
         });
     }
