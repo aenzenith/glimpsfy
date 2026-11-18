@@ -251,6 +251,7 @@
   "upload.syntax.patternTooLong": "这个正则表达式超过了 1,000 个字符，请缩短它。",
   "upload.syntax.badPattern": "无法解析这个正则表达式，请检查其中的括号和转义字符。",
   "upload.syntax.badJsonPath": "无法解析这个 JSON 路径。请写成 data.link 或 files[0].url 这样的形式。",
+  "upload.syntax.tooDeep": "这个模板中的调用嵌套超过了 16 层，请减少相互嵌套的调用。",
   "upload.sxcu.tooLarge": "这个文件超过了 256 KB，而自定义上传器用不到这么大。请确认你选对了文件。",
   "upload.sxcu.notJson": "这不是 ShareX 自定义上传器文件。请选择 .sxcu 文件。",
   "upload.sxcu.legacyRegex": "这个文件来自旧版 ShareX，其中的正则表达式是按编号排列的。请在新版 ShareX 中打开它并重新保存，然后导入新文件。",

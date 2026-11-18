@@ -251,6 +251,7 @@
   "upload.syntax.patternTooLong": "Düzenli ifade 1.000 karakterden uzundur, bu yüzden kısalt.",
   "upload.syntax.badPattern": "Düzenli ifade okunamıyor. Ayraçlarını ve kaçış karakterlerini denetle.",
   "upload.syntax.badJsonPath": "JSON yolu okunamıyor. Yolu data.link ya da files[0].url gibi yaz.",
+  "upload.syntax.tooDeep": "Şablondaki çağrılar 16 düzeyden daha derin iç içe geçiyor, bu yüzden şablonu daha az iç içe çağrıyla yaz.",
   "upload.sxcu.tooLarge": "Dosya 256 KB'den büyüktür ve hiçbir özel yükleyici bu boyuta ihtiyaç duymaz. Doğru dosyayı seçip seçmediğini denetle.",
   "upload.sxcu.notJson": "Bu bir ShareX özel yükleyici dosyası değildir. Bir .sxcu dosyası seç.",
   "upload.sxcu.legacyRegex": "Bu dosya, desenlerini numaralandıran eski bir ShareX sürümünden gelir. Dosyayı güncel bir ShareX'te açıp yeniden kaydet ve yeni dosyayı içe aktar.",

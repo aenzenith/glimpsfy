@@ -251,6 +251,7 @@
   "upload.syntax.patternTooLong": "The regular expression is longer than 1,000 characters, so shorten it.",
   "upload.syntax.badPattern": "The regular expression cannot be read. Check its brackets and its escapes.",
   "upload.syntax.badJsonPath": "The JSON path cannot be read. Write it like data.link or files[0].url.",
+  "upload.syntax.tooDeep": "The template nests calls more than 16 deep, so write it with fewer calls inside one another.",
   "upload.sxcu.tooLarge": "The file is larger than 256 KB, which no custom uploader needs. Check that you picked the right file.",
   "upload.sxcu.notJson": "This is not a ShareX custom uploader file. Pick a .sxcu file.",
   "upload.sxcu.legacyRegex": "This file comes from an old ShareX version that numbers its patterns. Open it in a current ShareX, save it again and import the new file.",

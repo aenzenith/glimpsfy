@@ -251,6 +251,7 @@
   "upload.syntax.patternTooLong": "La expresión regular tiene más de 1000 caracteres, así que acórtala.",
   "upload.syntax.badPattern": "No se puede leer la expresión regular. Revisa sus corchetes y sus escapes.",
   "upload.syntax.badJsonPath": "No se puede leer la ruta JSON. Escríbela como data.link o files[0].url.",
+  "upload.syntax.tooDeep": "La plantilla anida llamadas a más de 16 niveles de profundidad, así que escríbela con menos llamadas una dentro de otra.",
   "upload.sxcu.tooLarge": "El archivo pesa más de 256 KB, algo que ningún uploader personalizado necesita. Comprueba que elegiste el archivo correcto.",
   "upload.sxcu.notJson": "Este no es un archivo de uploader personalizado de ShareX. Elige un archivo .sxcu.",
   "upload.sxcu.legacyRegex": "Este archivo viene de una versión antigua de ShareX que numera sus patrones. Ábrelo en un ShareX actual, guárdalo de nuevo e importa el archivo nuevo.",

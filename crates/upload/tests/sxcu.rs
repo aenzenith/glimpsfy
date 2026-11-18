@@ -8,6 +8,7 @@ mod support;
 use glimpsfy_upload::engine::Stored;
 use glimpsfy_upload::http::HttpClient;
 use glimpsfy_upload::secrets::SecretStore;
+use glimpsfy_upload::syntax::{Place, Template};
 use glimpsfy_upload::{providers, sxcu, ProviderId, UploadData, UploadError, Uploader};
 use serde_json::{json, Value};
 use support::{Reply, TestServer};
@@ -135,4 +136,23 @@ fn the_answer_is_read_once_and_never_followed() {
     assert!(result.url.starts_with(&canary.origin()));
     assert!(canary.requests().is_empty(), "the link or the deletion link was requested");
     assert_eq!(server.requests().len(), 3, "the upload made more than one request each");
+}
+
+/// A crafted file whose template nests calls thousands deep is refused with a message, in any
+/// field, instead of running the parser out of stack and taking the app down with it.
+#[test]
+fn deeply_nested_calls_are_refused_without_crashing() {
+    // Small enough for the file size limit, deep enough for any thread's stack.
+    let deep = "{x:".repeat(80_000);
+    let in_url = sxcu::read(&file(&format!("https://files.example/{deep}"), "{json:url}"));
+    assert_eq!(in_url.map(|_| ()).map_err(|e| e.message), Err("upload.syntax.tooDeep".to_string()));
+    let in_header = json!({
+        "RequestURL": "https://files.example/upload", "FileFormName": "file",
+        "Headers": { "X-Value": deep }, "URL": "{json:url}"
+    });
+    assert!(sxcu::read(&in_header.to_string()).is_err(), "the deep header was accepted");
+    assert!(sxcu::read(&file("https://files.example/upload", &deep)).is_err(), "the deep link was accepted");
+
+    // Nesting as deep as a real template goes still reads.
+    assert!(Template::parse("{base64:{random:{filename}|{base64:x}}}", Place::Request).is_ok());
 }

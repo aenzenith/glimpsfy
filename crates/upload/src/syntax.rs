@@ -79,12 +79,17 @@ impl SyntaxError {
 /// The longest regular expression a template may hold.
 const MAX_PATTERN: usize = 1000;
 
+/// How deep calls may sit inside one another's arguments. Only `random` and `base64` take calls
+/// as arguments, and a real template nests them two or three deep; the parser recurses once per
+/// level, so a file with thousands of `{x:` would otherwise exhaust the thread's stack.
+const MAX_DEPTH: usize = 16;
+
 impl Template {
     /// Reads a template for `place`.
     pub fn parse(text: &str, place: Place) -> Result<Template, SyntaxError> {
         let chars: Vec<char> = text.chars().collect();
         let mut at = 0;
-        let pieces = parse_pieces(&chars, &mut at, place, false)?;
+        let pieces = parse_pieces(&chars, &mut at, place, 0)?;
         if at < chars.len() {
             return Err(SyntaxError::new("upload.syntax.unbalanced", None));
         }
@@ -219,8 +224,8 @@ fn describe_path(steps: &[Step]) -> String {
 
 // --------------------------------------------------------------------------------------- parser
 
-/// Reads pieces until the end, or, inside a call's arguments, until `|` or `}`.
-fn parse_pieces(chars: &[char], at: &mut usize, place: Place, in_call: bool) -> Result<Vec<Piece>, SyntaxError> {
+/// Reads pieces until the end, or, inside a call's arguments (`depth` above 0), until `|` or `}`.
+fn parse_pieces(chars: &[char], at: &mut usize, place: Place, depth: usize) -> Result<Vec<Piece>, SyntaxError> {
     let mut pieces = Vec::new();
     let mut text = String::new();
     while *at < chars.len() {
@@ -241,10 +246,13 @@ fn parse_pieces(chars: &[char], at: &mut usize, place: Place, in_call: bool) -> 
                 if !text.is_empty() {
                     pieces.push(Piece::Text(std::mem::take(&mut text)));
                 }
+                if depth >= MAX_DEPTH {
+                    return Err(SyntaxError::new("upload.syntax.tooDeep", None));
+                }
                 *at += 1;
-                pieces.push(Piece::Call(parse_call(chars, at, place)?));
+                pieces.push(Piece::Call(parse_call(chars, at, place, depth + 1)?));
             }
-            '}' | '|' if in_call => break,
+            '}' | '|' if depth > 0 => break,
             '}' => return Err(SyntaxError::new("upload.syntax.unbalanced", None)),
             _ => {
                 text.push(c);
@@ -259,7 +267,7 @@ fn parse_pieces(chars: &[char], at: &mut usize, place: Place, in_call: bool) -> 
 }
 
 /// Reads a call after its `{`, up to and including its `}`.
-fn parse_call(chars: &[char], at: &mut usize, place: Place) -> Result<Call, SyntaxError> {
+fn parse_call(chars: &[char], at: &mut usize, place: Place, depth: usize) -> Result<Call, SyntaxError> {
     let start = *at;
     while *at < chars.len() && (chars[*at].is_ascii_alphanumeric() || chars[*at] == '_') {
         *at += 1;
@@ -271,7 +279,7 @@ fn parse_call(chars: &[char], at: &mut usize, place: Place) -> Result<Call, Synt
         Some(':') => {
             *at += 1;
             loop {
-                args.push(parse_pieces(chars, at, place, true)?);
+                args.push(parse_pieces(chars, at, place, depth)?);
                 match chars.get(*at) {
                     Some('|') => *at += 1,
                     Some('}') => {

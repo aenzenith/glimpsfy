@@ -251,6 +251,7 @@
   "upload.syntax.patternTooLong": "正規表現が1,000文字を超えているため、短くしてください。",
   "upload.syntax.badPattern": "正規表現を読み取れません。括弧とエスケープを確認してください。",
   "upload.syntax.badJsonPath": "JSONパスを読み取れません。data.linkやfiles[0].urlのように書いてください。",
+  "upload.syntax.tooDeep": "テンプレートの呼び出しが16階層より深く入れ子になっているため、入れ子の呼び出しを減らして書いてください。",
   "upload.sxcu.tooLarge": "このファイルは256 KBを超えており、カスタムアップローダーには不要な大きさです。正しいファイルを選んだか確認してください。",
   "upload.sxcu.notJson": "これはShareXのカスタムアップローダーのファイルではありません。.sxcuファイルを選んでください。",
   "upload.sxcu.legacyRegex": "このファイルは、パターンに番号を付ける古いShareXのバージョンで作られています。最新のShareXで開いて保存し直し、新しいファイルを読み込んでください。",
