@@ -182,6 +182,9 @@ pub struct SessionDisplay {
     painted: AtomicBool,
     /// The display was disconnected, or its page failed twice; the capture goes on without it.
     removed: AtomicBool,
+    /// The display was disconnected. A display dropped for its page is still on screen, so only
+    /// this one counts as added when a later change finds it connected.
+    unplugged: AtomicBool,
     failures: AtomicU32,
 }
 
@@ -501,6 +504,7 @@ fn capture_frozen(
                 ready: AtomicBool::new(false),
                 painted: AtomicBool::new(false),
                 removed: AtomicBool::new(false),
+                unplugged: AtomicBool::new(false),
                 failures: AtomicU32::new(0),
             })
         })
@@ -984,8 +988,8 @@ pub fn displays_changed(app: &AppHandle) {
     };
     // A display that was connected after the frames were taken has no frame, and its overlay
     // would never show: the user would see the live desktop there and keys would skip it.
-    // One unplugged and plugged back in keeps its id, and its entry is only marked removed.
-    if let Some(added) = now.iter().find(|d| current.display(d.id).is_none_or(|e| !e.live())) {
+    // One unplugged and plugged back in keeps its id, and its entry is only marked unplugged.
+    if let Some(added) = now.iter().find(|d| current.display(d.id).is_none_or(|e| e.unplugged.load(Ordering::SeqCst))) {
         trace::log(format!("[glimpsfy] capture #{} closed: display {} was added", current.id.0, added.id.0));
         close(app, current.id, CloseReason::Cancelled);
         return;
@@ -1006,6 +1010,7 @@ pub fn displays_changed(app: &AppHandle) {
         }
     }
     for entry in &gone {
+        entry.unplugged.store(true, Ordering::SeqCst);
         entry.removed.store(true, Ordering::SeqCst);
         trace::log(format!("[glimpsfy] capture #{}: display {} was removed", current.id.0, entry.display.id.0));
     }
