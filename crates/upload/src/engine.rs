@@ -388,7 +388,13 @@ fn full_validation(provider: &dyn Provider, config: &ProviderConfig) -> Vec<Issu
             _ => match config.value(&field.key) {
                 Some(FieldValue::Text(text)) => !text.trim().is_empty(),
                 Some(_) => true,
-                None => false,
+                // A row never typed in holds the default the form shows, and the provider sends
+                // that default; only a row the user emptied is missing.
+                None => matches!(
+                    &field.input,
+                    FieldInput::Text { default: Some(default), .. } | FieldInput::Url { default: Some(default), .. }
+                        if !default.trim().is_empty()
+                ),
             },
         };
         if !present {
