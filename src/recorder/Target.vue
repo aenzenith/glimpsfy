@@ -9,7 +9,7 @@
 // (Esc cancels, Return starts at once). During the take it draws only the frame, dashed and
 // neutral while paused; the core makes the window click-through then. While the webcam bubble is
 // dragged it shows the four corner slots it can snap to.
-import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, defineComponent, h, onMounted, onUnmounted, ref, watch, watchEffect } from "vue";
 
 import GIcon from "../components/GIcon.vue";
 import {
@@ -112,8 +112,6 @@ const frameBox = computed<Rect | null>(() => {
   return { x: 2, y: 2, width: r.width - 4, height: r.height - 4 };
 });
 
-const NO_HOLE: Rect = { x: -1, y: -1, width: 0, height: 0 };
-
 const hovered = computed<SetupWindow | null>(() => {
   const s = setup.value;
   const p = pointer.value;
@@ -121,12 +119,19 @@ const hovered = computed<SetupWindow | null>(() => {
   return s.windows.find((w) => inside(w.rect, p)) ?? null;
 });
 
-/** The clear part of the dim during the setup. */
-const hole = computed<Rect>(() => {
+const cornerOf = (w: SetupWindow | null | undefined) => w?.cornerRadius ?? WINDOW_RADIUS;
+const radiusOf = (w: SetupWindow | null | undefined) => `${cornerOf(w)}px`;
+
+/** The clear part of the dim and the radius of its corners, or null where nothing is dimmed. The
+ * setup dims around the chosen window or the area, and all of the display before there is one;
+ * the countdown dims around the target unless it is the whole display. */
+const dim = computed<{ hole: Rect | null; radius: number } | null>(() => {
   const s = setup.value;
-  if (!s) return NO_HOLE;
-  if (s.mode === "window") return s.window?.rect ?? NO_HOLE;
-  return area.value ?? NO_HOLE;
+  if (!s || s.mode === "display") return null;
+  const radius = s.mode === "window" ? cornerOf(s.window) : 0;
+  if (phase.value === "setup") return { hole: s.mode === "window" ? (s.window?.rect ?? null) : area.value, radius };
+  if (phase.value === "countdown" && target.value) return { hole: target.value, radius };
+  return null;
 });
 
 const handles = computed(() => {
@@ -169,22 +174,132 @@ const tagAt = computed(() => {
   return { left: `${r.x}px`, top: `${Math.max(visible.value.y + 4, r.y - 26)}px` };
 });
 
-const radiusOf = (w: SetupWindow | null | undefined) => `${w?.cornerRadius ?? WINDOW_RADIUS}px`;
-const windowRadius = computed(() => (mode.value === "window" ? radiusOf(setup.value?.window) : ""));
+// ------------------------------------------------------------------------------------ the dim
+//
+// The dim is four bands around the hole and, around a window, four corner pieces, as the capture
+// overlay draws it (`paintDim` in overlay/App.vue). Each is a box of one solid colour moved by its
+// transform, which WebKit composites without a backing store, so dragging the area or picking
+// another window repaints nothing. The kit's `.g-dim`, one spread shadow around the hole, repainted
+// a layer the size of the display on every move. The pieces are written straight to the DOM after
+// the render that mounts them.
+
+const dimEl = ref<HTMLElement | null>(null);
+
+/** The device pixels per point. A move to a display of another scale paints the dim again, or its
+ * edges would sit off the new pixel grid and show seams. */
+const scale = ref(window.devicePixelRatio || 1);
+let scaleQuery: MediaQueryList | null = null;
+
+function followScale(): void {
+  scaleQuery?.removeEventListener("change", followScale);
+  scale.value = window.devicePixelRatio || 1;
+  scaleQuery = window.matchMedia(`(resolution: ${scale.value}dppx)`);
+  scaleQuery.addEventListener("change", followScale);
+}
+
+const written = new WeakMap<HTMLElement, Record<string, string>>();
+
+/** Sets one style property, and skips a write that would change nothing. */
+function put(el: HTMLElement, name: string, value: string): void {
+  let seen = written.get(el);
+  if (!seen) written.set(el, (seen = {}));
+  if (seen[name] === value) return;
+  seen[name] = value;
+  el.style.setProperty(name, value);
+}
+
+/** A box of `w` × `h` points at (`x`, `y`), moved by its transform. */
+function setBox(el: HTMLElement, x: number, y: number, w: number, h: number): void {
+  put(el, "transform", `translate(${x}px, ${y}px)`);
+  put(el, "width", `${Math.max(0, w)}px`);
+  put(el, "height", `${Math.max(0, h)}px`);
+}
+
+/** A coordinate in WebKit's layout units: a CSS length is cut to 1/64 point. */
+const lu = (v: number) => Math.trunc(v * 64) / 64;
+
+/** A coordinate on the device pixel grid, rounded half away from zero, the way WebKit snaps the
+ * edges of a box: the kit's dim left its hole on these pixels, and the bands meet there with no
+ * seam and nothing dimmed twice. */
+function snap(v: number, d: number): number {
+  const n = lu(v) * d;
+  return (n < 0 ? -Math.round(-n) : Math.round(n)) / d;
+}
+
+/** The dim over the `width` × `height` page around `hole`, or over all of it without one: four
+ * bands, then the corner pieces of a rounded hole when the page has them. */
+function paintDim(host: HTMLElement, hole: Rect | null, radius: number, width: number, height: number, d: number): void {
+  const [top, bottom, left, right, tl, tr, bl, br] = Array.from(host.children) as HTMLElement[];
+  let l = 0;
+  let t = 0;
+  let r = 0;
+  let b = 0;
+  if (hole) {
+    l = snap(hole.x, d);
+    t = snap(hole.y, d);
+    r = snap(lu(hole.x) + lu(hole.width), d);
+    b = snap(lu(hole.y) + lu(hole.height), d);
+  }
+  const cl = clamp(l, 0, width);
+  const cr = clamp(r, cl, width);
+  const ct = clamp(t, 0, height);
+  const cb = clamp(b, ct, height);
+  setBox(top, 0, 0, width, ct);
+  setBox(bottom, 0, cb, width, height - cb);
+  setBox(left, 0, ct, cl, cb - ct);
+  setBox(right, cr, ct, width - cr, cb - ct);
+  if (!tl || !tr || !bl || !br) return;
+  // CSS shrinks radii that do not fit the box. A piece spans whole device pixels, so its layer is
+  // never resampled along the edges it shares with the bands; its circle stays where the hole's
+  // corner is (the `.r-dim` rules below).
+  const k = radius > 0 ? Math.min(radius, (r - l) / 2, (b - t) / 2) : 0;
+  const s = k > 0 ? Math.ceil(k * d) / d : 0;
+  put(host, "--r-dim-r", `${k}px`);
+  put(host, "--r-dim-far", `${s - 2 * k}px`);
+  setBox(tl, l, t, s, s);
+  setBox(tr, r - s, t, s, s);
+  setBox(bl, l, b - s, s, s);
+  setBox(br, r - s, b - s, s, s);
+}
+
+// Post-flush: it runs after the render that mounts the dim or its corners, in the same task as the
+// change, so the dim never shows in a stale place.
+watchEffect(
+  () => {
+    const host = dimEl.value;
+    const v = dim.value;
+    if (host && v) paintDim(host, v.hole, v.radius, bounds.value.width, bounds.value.height, scale.value);
+  },
+  { flush: "post" },
+);
 
 // ------------------------------------------------------------------------------- countdown
 
-/** The ring fills smoothly between the core's whole-second ticks. */
+/** The ring fills smoothly between the core's whole-second ticks. With Reduce Motion it steps
+ * with the ticks, and once a second's share is full it waits for the next tick: neither needs a
+ * frame, and the watch below starts the frames again on the next tick. */
 function runRing(): void {
   cancelAnimationFrame(ringFrame);
+  ringFrame = 0;
   const c = countdown.value;
   if (!c) return;
   const total = Math.max(1, c.totalSeconds);
   const done = total - c.remainingSeconds;
-  const part = reducedMotion() ? 0 : Math.min(1, (performance.now() - tick.at) / 1000);
+  const still = reducedMotion();
+  const part = still ? 0 : Math.min(1, (performance.now() - tick.at) / 1000);
   progress.value = clamp(((done + part) / total) * 100, 0, 100);
-  ringFrame = requestAnimationFrame(runRing);
+  if (!still && part < 1) ringFrame = requestAnimationFrame(runRing);
 }
+
+/** The countdown's ring as a component of its own, which reads `progress` itself: a new share on
+ * every frame then draws the ring again, not the whole target with its dim, frame and handles. */
+const CountdownRing = defineComponent(
+  () => () =>
+    h("svg", { class: "g-ring", viewBox: "0 0 22 22", style: { "--progress": progress.value }, "aria-hidden": "true" }, [
+      h("circle", { cx: "11", cy: "11", r: "8", pathLength: "100" }),
+      h("circle", { cx: "11", cy: "11", r: "8", pathLength: "100" }),
+    ]),
+);
 
 watch(countdown, (c) => {
   if (!c) {
@@ -377,6 +492,7 @@ onMounted(async () => {
   window.addEventListener("mousemove", onMouseMove);
   window.addEventListener("mouseup", onMouseUp);
   window.addEventListener("keydown", onKeyDown);
+  followScale();
   let heardSetup = false;
   let heardBubble = false;
   try {
@@ -414,6 +530,7 @@ onUnmounted(() => {
   window.removeEventListener("mousemove", onMouseMove);
   window.removeEventListener("mouseup", onMouseUp);
   window.removeEventListener("keydown", onKeyDown);
+  scaleQuery?.removeEventListener("change", followScale);
   cancelAnimationFrame(frameRequest);
   cancelAnimationFrame(ringFrame);
   stops.forEach((stop) => stop());
@@ -422,6 +539,13 @@ onUnmounted(() => {
 
 <template>
   <div class="r-target-page" :style="{ cursor }" @mousedown="onMouseDown" @mouseleave="onMouseLeave">
+    <!-- The dim, under everything else: bands above, below, left and right of the hole, then the
+         corners of a window's rounded hole (`paintDim`). -->
+    <div v-if="dim" ref="dimEl" class="r-dim" aria-hidden="true">
+      <i data-band /><i data-band /><i data-band /><i data-band />
+      <template v-if="dim.radius > 0"><i data-corner="tl" /><i data-corner="tr" /><i data-corner="bl" /><i data-corner="br" /></template>
+    </div>
+
     <!-- the setup -->
     <template v-if="phase === 'setup' && setup">
       <template v-if="mode === 'display'">
@@ -434,11 +558,9 @@ onUnmounted(() => {
         </div>
       </template>
       <template v-else-if="mode === 'window'">
-        <div class="g-dim" :style="{ ...box(hole), borderRadius: windowRadius }" />
         <div v-if="hovered" class="r-win" :style="{ ...box(hovered.rect), '--r-radius': radiusOf(hovered) }" />
       </template>
       <template v-else>
-        <div class="g-dim" :style="box(hole)" />
         <template v-if="area">
           <div class="g-selection" :style="box(area)" />
           <span
@@ -457,15 +579,11 @@ onUnmounted(() => {
 
     <!-- the countdown: the edge is already red -->
     <template v-else-if="phase === 'countdown' && countdown">
-      <div v-if="mode !== 'display' && target" class="g-dim" :style="{ ...box(target), borderRadius: windowRadius }" />
       <div v-if="frameBox" class="g-rec-frame" :style="box(frameBox)" />
       <div v-if="countAt" class="r-count" :style="countAt">
         <div class="g-countdown" role="timer" :aria-label="t('record.countdown.label', { n: countdown.remainingSeconds })">
           <span>{{ countdown.remainingSeconds }}</span>
-          <svg class="g-ring" viewBox="0 0 22 22" :style="{ '--progress': progress }" aria-hidden="true">
-            <circle cx="11" cy="11" r="8" pathLength="100" />
-            <circle cx="11" cy="11" r="8" pathLength="100" />
-          </svg>
+          <CountdownRing />
         </div>
         <div class="g-glass r-cap">
           <button type="button" class="g-button" @mousedown.stop @click="cancelCountdown">
@@ -497,9 +615,25 @@ onUnmounted(() => {
 
 <style>
 .r-target-page { position: fixed; inset: 0; overflow: hidden; }
-/* The kit's dim spreads 4000 px; 200vmax reaches every corner of any display. */
-.r-target-page .g-dim { box-shadow: 0 0 0 200vmax var(--dim); }
 .r-abs { position: absolute; }
+
+/* The dim as the capture overlay draws it (overlay.css): bands of one solid colour and, for a
+   window's rounded hole, corner pieces that each clip the kit's own drawing, a spread shadow
+   around a circle the size of the corner, so the curve is drawn exactly as the kit draws it. A
+   piece may be a fraction of a pixel larger than the radius (--r-dim-far moves the circle back
+   into the corner), and that margin lies inside the circle. */
+.r-dim { position: absolute; inset: 0; pointer-events: none; }
+.r-dim > i { position: absolute; left: 0; top: 0; width: 0; height: 0; will-change: transform; }
+.r-dim > [data-band] { background: var(--dim); }
+.r-dim > [data-corner] { overflow: hidden; }
+.r-dim > [data-corner]::before {
+  content: ""; position: absolute; left: 0; top: 0;
+  width: calc(2 * var(--r-dim-r, 0px)); height: calc(2 * var(--r-dim-r, 0px)); border-radius: 50%;
+  box-shadow: 0 0 0 var(--r-dim-r, 0px) var(--dim);
+}
+.r-dim > [data-corner="tr"]::before { left: var(--r-dim-far, 0px); }
+.r-dim > [data-corner="bl"]::before { top: var(--r-dim-far, 0px); }
+.r-dim > [data-corner="br"]::before { left: var(--r-dim-far, 0px); top: var(--r-dim-far, 0px); }
 
 /* targets: the window under the pointer, as the capture overlay outlines it, and a whole display */
 .r-win { position: absolute; pointer-events: none; border-radius: var(--r-radius); background: var(--window-tint); }

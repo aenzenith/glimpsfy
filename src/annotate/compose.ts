@@ -88,8 +88,12 @@ export class Composer {
     const { pixels, colorSpace } = this.source;
     const key = `${area.x},${area.y},${area.width},${area.height}`;
     if (!this.base || key !== this.baseKey) {
-      this.base = scratchCanvas(area.width, area.height);
-      context2d(this.base, colorSpace).drawImage(this.source.canvas, area.x, area.y, area.width, area.height, 0, 0, area.width, area.height);
+      // Moving the overlay's selection changes the area on every frame but not its size: the
+      // copy is redrawn into the same canvas rather than into a new one each time.
+      if (!this.base || this.base.width !== area.width || this.base.height !== area.height) this.base = scratchCanvas(area.width, area.height);
+      const copy = context2d(this.base, colorSpace);
+      copy.clearRect(0, 0, area.width, area.height);
+      copy.drawImage(this.source.canvas, area.x, area.y, area.width, area.height, 0, 0, area.width, area.height);
       this.baseKey = key;
     }
     ctx.save();

@@ -2,10 +2,36 @@
    stacking, tooltip sides, the crosshair, the loupe, the window hover and the bar transitions.
    Everything else is the kit's. Every colour, radius and duration reads a kit token. */
 
-/* The kit's dim spreads its shadow 4000 px around the hole, which leaves the far side of a
-   display wider than 4000 points (a 5120 × 2160 monitor at 1×) undimmed. 200vmax reaches every
-   corner of any display from a hole anywhere on it. */
-.overlay .g-dim { box-shadow: 0 0 0 200vmax var(--dim); }
+/* ------------------------------------------- the dim and the selection's edge
+   The kit draws the dim as one spread shadow around the hole (.g-dim) and the edge as a border
+   and an inset shadow (.g-selection). Both repaint a layer the size of the display or of the
+   selection whenever the selection moves, at the display's full resolution. Here the dim is four
+   bands that cover the whole display around the hole, and the edge is eight strips; each is a box
+   of one solid colour, which WebKit composites without a backing store, so a move repaints
+   nothing. App.vue puts their edges on the device pixels where the kit's boxes fall, so bands and
+   strips meet without a seam and nothing is dimmed twice. */
+.o-dim, .o-edge { position: absolute; inset: 0; pointer-events: none; }
+.o-dim > i, .o-edge > i { position: absolute; left: 0; top: 0; width: 0; height: 0; will-change: transform; }
+.o-dim > [data-band] { background: var(--dim); }
+/* A window's rounded hole: each corner piece clips the kit's own drawing, a spread shadow around
+   a circle the size of the corner, so the curve is drawn exactly as the kit draws it. A piece may
+   be a fraction of a pixel larger than the radius (--o-dim-far moves the circle back into the
+   corner), and that margin lies inside the circle. */
+.o-dim > [data-corner] { overflow: hidden; }
+.o-dim > [data-corner]::before {
+  content: ""; position: absolute; left: 0; top: 0;
+  width: calc(2 * var(--o-dim-r, 0px)); height: calc(2 * var(--o-dim-r, 0px)); border-radius: 50%;
+  box-shadow: 0 0 0 var(--o-dim-r, 0px) var(--dim);
+}
+.o-dim > [data-corner="tr"]::before { left: var(--o-dim-far, 0px); }
+.o-dim > [data-corner="bl"]::before { top: var(--o-dim-far, 0px); }
+.o-dim > [data-corner="br"]::before { left: var(--o-dim-far, 0px); top: var(--o-dim-far, 0px); }
+.o-edge > i { background: var(--iris); }
+.o-edge > [data-ring="inner"] { background: var(--selection-inner); }
+
+/* Parts that follow the pointer every frame move by transform on a layer of their own, which
+   the compositor moves without repainting them. */
+.o-moving { left: 0; top: 0; will-change: transform; }
 
 /* ------------------------------------------------ stacking inside the overlay */
 .o-abs { position: absolute; }

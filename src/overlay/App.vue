@@ -7,7 +7,7 @@
 //
 // The page waits warm in a hidden window. On `capture://started` it fetches and draws its frame
 // while still invisible, then calls `overlay_ready`, and the core shows the window.
-import { computed, nextTick, onMounted, onUnmounted, provide, reactive, ref, watch } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, provide, reactive, ref, shallowRef, watch, watchEffect } from "vue";
 
 import GIcon from "../components/GIcon.vue";
 import OptionsStrip from "../annotate/OptionsStrip.vue";
@@ -59,6 +59,12 @@ const MIN_SELECTION = 6;
 const HANDLE_HIT = 14;
 const LENS_CELLS = 17;
 const LENS_SIZE = 136;
+/** How long a pointer move may wait for its animation frame before it is handled at once: WebKit
+ * holds back the frames of a window it believes occluded, and the overlay follows the pointer
+ * even then. */
+const MOVE_WAIT_MS = 48;
+/** The selection's iris line outside its edge, in points (the kit's `.g-selection::before`). */
+const EDGE_IRIS = 1.5;
 const HANDLES: [number, number, "x" | "y" | null][] = [
   [0, 0, null],
   [0.5, 0, "x"],
@@ -72,15 +78,17 @@ const HANDLES: [number, number, "x" | "y" | null][] = [
 
 const displayId = Number(getCurrentWebviewWindow().label.replace("overlay-", ""));
 
-const frame = ref<OverlayFrame | null>(null);
+// The frame, the selection, the pointer and the hovered window are replaced, never changed in
+// place, so shallow refs spare a proxy on every read in the pointer's path.
+const frame = shallowRef<OverlayFrame | null>(null);
 const mode = ref<Mode>("idle");
 const windowMode = ref(false);
-const sel = ref<Rect | null>(null);
-const pointer = ref<Point | null>(null);
-const hovered = ref<OverlayWindow | null>(null);
+const sel = shallowRef<Rect | null>(null);
+const pointer = shallowRef<Point | null>(null);
+const hovered = shallowRef<OverlayWindow | null>(null);
 const tool = ref<ToolId | null>(null);
 const barsShown = ref(false);
-const placement = ref<Placement | null>(null);
+const placement = shallowRef<Placement | null>(null);
 const hintFaded = ref(false);
 const notice = ref<string | null>(null);
 const allTips = ref(false);
@@ -90,7 +98,7 @@ const cursor = ref("crosshair");
  * outside the selection does on its own display. */
 const heldElsewhere = ref<number | null>(null);
 const view = reactive({ w: window.innerWidth, h: window.innerHeight });
-const loupe = reactive({ shown: false, x: 0, y: 0, hex: "#000000", swatch: "#000", px: 0, py: 0 });
+const loupeShown = ref(false);
 
 const frameHost = ref<HTMLElement | null>(null);
 const lensHost = ref<HTMLElement | null>(null);
@@ -98,10 +106,26 @@ const toolsEl = ref<HTMLElement | null>(null);
 const actionsEl = ref<HTMLElement | null>(null);
 const stripEl = ref<HTMLElement | null>(null);
 const chipEl = ref<HTMLElement | null>(null);
+// What follows the pointer, written without a render of the page (see "per-frame painting").
+const dimEl = ref<HTMLElement | null>(null);
+const edgeEl = ref<HTMLElement | null>(null);
+const sizeEl = ref<HTMLElement | null>(null);
+const lineH = ref<HTMLElement | null>(null);
+const lineV = ref<HTMLElement | null>(null);
+const loupeEl = ref<HTMLElement | null>(null);
+const swatchEl = ref<HTMLElement | null>(null);
+const hexEl = ref<HTMLElement | null>(null);
+const xyEl = ref<HTMLElement | null>(null);
 
 let ctx: CanvasRenderingContext2D | null = null;
 let lens: CanvasRenderingContext2D | null = null;
 let pixels: Uint8ClampedArray | null = null;
+/** The frame pixel the lens shows, so a move within one pixel draws nothing; -1 for a new frame. */
+const lensAt = { x: -1, y: -1 };
+/** The newest pointer move not handled yet: moves are handled once per animation frame. */
+let pendingMove: MouseEvent | null = null;
+let moveFrame = 0;
+let movedAt = 0;
 let start: Point | null = null;
 let grab: { offset: Point; origin: Rect; handle: [number, number] | null } | null = null;
 let busy = false;
@@ -172,21 +196,17 @@ const RESIZE_CURSORS: Record<string, string> = {
 
 // ---------------------------------------------------------------------------- what shows
 
-const dimRect = computed<Rect>(() => {
-  if (sel.value) return sel.value;
-  const w = hovered.value;
-  if (w) return { x: w.rect.x, y: w.rect.y, w: w.rect.width, h: w.rect.height };
-  return { x: -1, y: -1, w: 0, h: 0 };
-});
-const dimRadius = computed(() => (!sel.value && hovered.value ? `${hovered.value.cornerRadius ?? 10}px` : ""));
+// The template reads only these yes-or-no answers about the selection, which change at its start
+// and end, so a drag does not render the page again; the moving parts are painted below.
+const hasSel = computed(() => sel.value !== null);
+const sizeShown = computed(() => sel.value !== null && sel.value.w > 0);
 const showLines = computed(() => mode.value === "idle" && !windowMode.value && heldElsewhere.value === null && pointer.value !== null);
-const pixelSize = computed(() => {
+type HandleAt = { key: string; kind: "x" | "y" | null; x: number; y: number };
+/** One empty list for every state without handles, so a drag leaves the computed unchanged. */
+const NO_HANDLES: HandleAt[] = [];
+const handles = computed<HandleAt[]>(() => {
   const r = sel.value;
-  return r ? { w: Math.round(r.w * ratio.value.x), h: Math.round(r.h * ratio.value.y) } : { w: 0, h: 0 };
-});
-const handles = computed(() => {
-  const r = sel.value;
-  if (!r || mode.value !== "sel") return [];
+  if (!r || mode.value !== "sel") return NO_HANDLES;
   return HANDLES.map(([fx, fy, kind]) => ({ key: `${fx},${fy}`, kind, x: r.x + fx * r.w, y: r.y + fy * r.h }));
 });
 const chip = computed(() => {
@@ -229,16 +249,185 @@ provide(TEXT_LAYER, {
   visible: textLayerVisible,
 });
 
+// --------------------------------------------------------------------- per-frame painting
+//
+// The parts that follow the pointer (the dim, the selection's edge, the size label, the crosshair
+// and the loupe) are written straight to the DOM, so a move costs a few style writes instead of a
+// render of the whole page with its bars. Each moves by `transform` on a layer of its own, and the
+// dim and the edge are boxes of one solid colour, which WebKit composites without a backing store:
+// moving the selection repaints nothing. The kit's dim, one box-shadow around the hole, repainted
+// the whole display at its full resolution on every move.
+
+const dpr = () => window.devicePixelRatio || 1;
+const written = new WeakMap<HTMLElement, Record<string, string>>();
+
+/** Sets one style property, and skips a write that would change nothing. */
+function put(el: HTMLElement, name: string, value: string): void {
+  let seen = written.get(el);
+  if (!seen) written.set(el, (seen = {}));
+  if (seen[name] === value) return;
+  seen[name] = value;
+  el.style.setProperty(name, value);
+}
+
+function text(el: Element | null, value: string): void {
+  if (el && el.textContent !== value) el.textContent = value;
+}
+
+/** A box of `w` × `h` points at (`x`, `y`), moved by its transform. */
+function setBox(el: HTMLElement, x: number, y: number, w: number, h: number): void {
+  put(el, "transform", `translate(${x}px, ${y}px)`);
+  put(el, "width", `${Math.max(0, w)}px`);
+  put(el, "height", `${Math.max(0, h)}px`);
+}
+
+/** A coordinate in WebKit's layout units: a CSS length is cut to 1/64 point. */
+const lu = (v: number) => Math.trunc(v * 64) / 64;
+
+/** A coordinate on the device pixel grid, rounded half away from zero, the way WebKit snaps the
+ * edges of a box. The kit's boxes land on these pixels, so the painted parts land there too, and
+ * two neighbours share an edge with no seam and no doubled dim between them. */
+function snap(v: number, d: number): number {
+  const n = lu(v) * d;
+  return (n < 0 ? -Math.round(-n) : Math.round(n)) / d;
+}
+
+/** The dim around `hole`, or over the whole display without one: four bands, and four corner
+ * pieces where a window's hole is rounded. */
+function paintDim(host: HTMLElement, hole: Rect | null, radius: number): void {
+  const [top, bottom, left, right, tl, tr, bl, br] = Array.from(host.children) as HTMLElement[];
+  const d = dpr();
+  const W = view.w;
+  const H = view.h;
+  let l = 0;
+  let t = 0;
+  let r = 0;
+  let b = 0;
+  if (hole) {
+    l = snap(hole.x, d);
+    t = snap(hole.y, d);
+    r = snap(lu(hole.x) + lu(hole.w), d);
+    b = snap(lu(hole.y) + lu(hole.h), d);
+  }
+  const cl = clamp(l, 0, W);
+  const cr = clamp(r, cl, W);
+  const ct = clamp(t, 0, H);
+  const cb = clamp(b, ct, H);
+  setBox(top, 0, 0, W, ct);
+  setBox(bottom, 0, cb, W, H - cb);
+  setBox(left, 0, ct, cl, cb - ct);
+  setBox(right, cr, ct, W - cr, cb - ct);
+  // CSS shrinks radii that do not fit the box. A piece spans whole device pixels, so its layer is
+  // never resampled along the edges it shares with the bands; its circle stays where the hole's
+  // corner is (overlay.css).
+  const k = radius > 0 ? Math.min(radius, (r - l) / 2, (b - t) / 2) : 0;
+  const s = k > 0 ? Math.ceil(k * d) / d : 0;
+  put(host, "--o-dim-r", `${k}px`);
+  put(host, "--o-dim-far", `${s - 2 * k}px`);
+  setBox(tl, l, t, s, s);
+  setBox(tr, r - s, t, s, s);
+  setBox(bl, l, b - s, s, s);
+  setBox(br, r - s, b - s, s, s);
+}
+
+/** Four strips around the box (`l`, `t`)–(`r`, `b`) less the hole (`hl`, `ht`)–(`hr`, `hb`); a
+ * ring without a hole is a filled box, as WebKit draws a border or an inset shadow too wide for
+ * its box. */
+function ring(strips: HTMLElement[], l: number, t: number, r: number, b: number, hl: number, ht: number, hr: number, hb: number): void {
+  if (hr <= hl || hb <= ht) {
+    hl = hr = l;
+    ht = hb = b;
+  }
+  const [top, bottom, left, right] = strips;
+  setBox(top, l, t, r - l, ht - t);
+  setBox(bottom, l, hb, r - l, b - hb);
+  setBox(left, l, ht, hl - l, hb - ht);
+  setBox(right, hr, ht, r - hr, hb - ht);
+}
+
+/** The selection's edge on the pixels where the kit's `.g-selection` draws it: its iris border
+ * outside the box (a border is a whole number of device pixels, at least one) and its 1 pt light
+ * inset hairline inside. */
+function paintEdge(host: HTMLElement, r: Rect): void {
+  const strips = Array.from(host.children) as HTMLElement[];
+  const d = dpr();
+  const x0 = lu(r.x);
+  const y0 = lu(r.y);
+  const x1 = x0 + lu(r.w);
+  const y1 = y0 + lu(r.h);
+  const o = EDGE_IRIS;
+  const bw = Math.max(1, Math.floor(o * d)) / d;
+  const at = (v: number) => snap(v, d);
+  ring(strips.slice(0, 4), at(x0 - o), at(y0 - o), at(x1 + o), at(y1 + o), at(x0 - o + bw), at(y0 - o + bw), at(x1 + o - bw), at(y1 + o - bw));
+  ring(strips.slice(4, 8), at(x0), at(y0), at(x1), at(y1), at(x0 + 1), at(y0 + 1), at(x1 - 1), at(y1 - 1));
+}
+
+// Post-flush effects run after the render that mounts their elements, in the same task as the
+// change, so nothing shows in a stale place.
+watchEffect(
+  () => {
+    const host = dimEl.value;
+    if (!host) return;
+    const s = sel.value;
+    const w = s ? null : hovered.value;
+    paintDim(host, s ?? (w && { x: w.rect.x, y: w.rect.y, w: w.rect.width, h: w.rect.height }), w ? (w.cornerRadius ?? 10) : 0);
+  },
+  { flush: "post" },
+);
+watchEffect(
+  () => {
+    const host = edgeEl.value;
+    const r = sel.value;
+    if (host && r) paintEdge(host, r);
+  },
+  { flush: "post" },
+);
+watchEffect(
+  () => {
+    const el = sizeEl.value;
+    const r = sel.value;
+    if (!el || !r) return;
+    const p = placement.value && mode.value === "sel" ? placement.value.size : r.y - 30 >= 8 ? { x: r.x, y: r.y - 30 } : { x: r.x + 6, y: r.y + 6 };
+    const d = dpr();
+    put(el, "transform", `translate(${snap(p.x, d)}px, ${snap(p.y, d)}px)`);
+    text(el.firstElementChild, `${Math.round(r.w * ratio.value.x)}`);
+    text(el.lastElementChild, `${Math.round(r.h * ratio.value.y)}`);
+  },
+  { flush: "post" },
+);
+watchEffect(
+  () => {
+    const h = lineH.value;
+    const v = lineV.value;
+    // `showLines` first: a hidden crosshair does not wake for every move.
+    if (!h || !v || !showLines.value || !pointer.value) return;
+    const p = pointer.value;
+    const d = dpr();
+    put(h, "transform", `translate(0px, ${snap(p.y, d)}px)`);
+    put(v, "transform", `translate(${snap(p.x, d)}px, 0px)`);
+  },
+  { flush: "post" },
+);
+
 // ---------------------------------------------------------------------------------- loupe
 
 function updateLoupe(p: Point): void {
   if (!ctx || !lens || !frame.value) return;
   const px = clamp(Math.floor(p.x * ratio.value.x), 0, ctx.canvas.width - 1);
   const py = clamp(Math.floor(p.y * ratio.value.y), 0, ctx.canvas.height - 1);
-  drawLens(lens, ctx.canvas, px, py, LENS_CELLS);
-  const rgb = pixelAt(ctx, pixels, px, py);
+  // A move within one frame pixel shows the same lens and the same colour.
+  if (px !== lensAt.x || py !== lensAt.y) {
+    lensAt.x = px;
+    lensAt.y = py;
+    drawLens(lens, ctx.canvas, px, py, LENS_CELLS);
+    const rgb = pixelAt(ctx, pixels, px, py);
+    text(hexEl.value, hex(rgb));
+    text(xyEl.value, `${px}, ${py}`);
+    if (swatchEl.value) put(swatchEl.value, "background", cssColor(rgb, frame.value.colorSpace));
+  }
   const placed = placeLoupe(p.x, p.y, view);
-  Object.assign(loupe, { shown: true, x: placed.x, y: placed.y, hex: hex(rgb), swatch: cssColor(rgb, frame.value.colorSpace), px, py });
+  if (loupeEl.value) put(loupeEl.value, "transform", `translate(${placed.x}px, ${placed.y}px)`);
+  loupeShown.value = true;
 }
 
 // ----------------------------------------------------------------------------- the bars
@@ -301,8 +490,10 @@ function resetAll(): void {
   annotations.setTool(null);
   textLayerVisible.value = false;
   uploads.cancel();
+  pendingMove = null;
   pointer.value = null;
-  loupe.shown = false;
+  loupeShown.value = false;
+  lensAt.x = lensAt.y = -1;
   hintFaded.value = false;
   notice.value = null;
   allTips.value = false;
@@ -321,9 +512,10 @@ async function begin(next: OverlayFrame): Promise<void> {
   if (!frameHost.value || !lensHost.value) return;
   ctx = ensureContext(frameHost.value, next.colorSpace, "frame");
   lens = ensureContext(lensHost.value, next.colorSpace, "lens");
-  const dpr = window.devicePixelRatio || 1;
-  lens.canvas.width = LENS_SIZE * dpr;
-  lens.canvas.height = LENS_SIZE * dpr;
+  // Setting a canvas's size clears and reallocates it even when the size is the same.
+  const lensPixels = LENS_SIZE * dpr();
+  if (lens.canvas.width !== lensPixels) lens.canvas.width = lensPixels;
+  if (lens.canvas.height !== lensPixels) lens.canvas.height = lensPixels;
 
   let loaded;
   try {
@@ -342,17 +534,14 @@ async function begin(next: OverlayFrame): Promise<void> {
   await nextTick();
   if (frame.value?.captureId !== next.captureId) return;
 
+  // Only the timings go into the frame callbacks: WebKit holds back the frames of a hidden
+  // window, and a callback holding `loaded` would keep the frame's pixels alive after the capture.
+  const { fetchMs, decodeMs, drawMs, bytes } = loaded;
   await overlay_ready(next.captureId, displayId);
   const ready = performance.now();
   requestAnimationFrame(() =>
     requestAnimationFrame(() => {
-      void overlay_painted(next.captureId, displayId, {
-        fetchMs: loaded.fetchMs,
-        decodeMs: loaded.decodeMs,
-        drawMs: loaded.drawMs,
-        paintMs: performance.now() - ready,
-        bytes: loaded.bytes,
-      });
+      void overlay_painted(next.captureId, displayId, { fetchMs, decodeMs, drawMs, paintMs: performance.now() - ready, bytes });
     }),
   );
   hintTimer = window.setTimeout(() => (hintFaded.value = true), 2000);
@@ -372,7 +561,7 @@ function finishSelection(r: Rect, windowId: number | null = null): void {
   annotations.setSelection(frameRect(r));
   hovered.value = null;
   mode.value = "sel";
-  loupe.shown = false;
+  loupeShown.value = false;
   hintFaded.value = true;
   void finishByMode(r, windowId);
 }
@@ -575,7 +764,41 @@ function point(e: MouseEvent): Point {
   return { x: clamp(e.clientX, 0, view.w), y: clamp(e.clientY, 0, view.h) };
 }
 
+/** Handles the move waiting for its frame now, so a press, a release or a key sees the pointer
+ * where it is and a selection ends exactly where the drag did. */
+function flushMove(): void {
+  const e = pendingMove;
+  pendingMove = null;
+  if (e) handleMove(e);
+}
+
+function onMoveFrame(): void {
+  moveFrame = 0;
+  flushMove();
+}
+
+// Moves are handled at most once per animation frame, with the newest position: the screen can
+// show no more than that, and a fast mouse sends several moves per frame.
+function onMouseMove(e: MouseEvent): void {
+  // A drawing gesture takes every move, so a pen stroke keeps each point the pointer passed.
+  if (mode.value === "sel" && annotations.busy()) {
+    flushMove();
+    handleMove(e);
+    return;
+  }
+  pendingMove = e;
+  const now = performance.now();
+  if (!moveFrame) {
+    movedAt = now;
+    moveFrame = requestAnimationFrame(onMoveFrame);
+  } else if (now - movedAt > MOVE_WAIT_MS) {
+    movedAt = now;
+    flushMove();
+  }
+}
+
 function onMouseDown(e: MouseEvent): void {
+  flushMove();
   if (e.button !== 0 || !frame.value) return;
   const p = point(e);
   e.preventDefault();
@@ -627,7 +850,7 @@ function onMouseDown(e: MouseEvent): void {
   updateLoupe(p);
 }
 
-function onMouseMove(e: MouseEvent): void {
+function handleMove(e: MouseEvent): void {
   if (!frame.value) return;
   const p = point(e);
   pointer.value = p;
@@ -636,15 +859,19 @@ function onMouseMove(e: MouseEvent): void {
   switch (mode.value) {
     case "idle":
       if (heldElsewhere.value !== null) {
-        loupe.shown = false;
+        loupeShown.value = false;
         hovered.value = null;
         cursor.value = "default";
         break;
       }
       if (windowMode.value) {
-        loupe.shown = false;
-        hovered.value = windowAt(p);
-        void placeChip();
+        loupeShown.value = false;
+        // The chip is measured only when the window under the pointer changes.
+        const w = windowAt(p);
+        if (w !== hovered.value) {
+          hovered.value = w;
+          void placeChip();
+        }
       } else {
         hovered.value = null;
         updateLoupe(p);
@@ -700,6 +927,7 @@ function aim(p: Point, over: boolean): void {
 }
 
 function onDoubleClick(e: MouseEvent): void {
+  flushMove();
   if (mode.value !== "sel" || !sel.value || !inside(sel.value, point(e))) return;
   annotations.doubleClick(toFrame(point(e)), reach.value);
 }
@@ -720,6 +948,7 @@ watch(
 watch(stripTool, () => void layoutBars());
 
 function onMouseUp(e: MouseEvent): void {
+  flushMove();
   if (e.button !== 0) return;
   const p = point(e);
   if (annotations.busy()) {
@@ -747,9 +976,10 @@ function onMouseUp(e: MouseEvent): void {
 }
 
 function onMouseLeave(): void {
+  flushMove();
   annotations.hover(null, reach.value);
   if (mode.value === "idle") {
-    loupe.shown = false;
+    loupeShown.value = false;
     pointer.value = null;
     hovered.value = null;
   }
@@ -760,15 +990,15 @@ async function placeChip(): Promise<void> {
   const c = chip.value;
   const el = chipEl.value;
   if (!c || !el) return;
-  chipAt.value = {
-    x: Math.round(clamp(c.cx - el.offsetWidth / 2, 8, view.w - 8 - el.offsetWidth)),
-    y: Math.round(clamp(c.cy - el.offsetHeight / 2, 8, view.h - 8 - el.offsetHeight)),
-  };
+  const x = Math.round(clamp(c.cx - el.offsetWidth / 2, 8, view.w - 8 - el.offsetWidth));
+  const y = Math.round(clamp(c.cy - el.offsetHeight / 2, 8, view.h - 8 - el.offsetHeight));
+  if (x !== chipAt.value.x || y !== chipAt.value.y) chipAt.value = { x, y };
 }
 
 // ---------------------------------------------------------------------------- the keyboard
 
 function onKeyDown(e: KeyboardEvent): void {
+  flushMove();
   // A dialog that took the key (the first-upload question's Esc) has prevented its default.
   if (!frame.value || uploadAsk.value || e.defaultPrevented) return;
   // A text being typed takes its own keys.
@@ -789,7 +1019,7 @@ function onKeyDown(e: KeyboardEvent): void {
     windowMode.value = !windowMode.value;
     hintFaded.value = true;
     hovered.value = windowMode.value && pointer.value ? windowAt(pointer.value) : null;
-    if (windowMode.value) loupe.shown = false;
+    if (windowMode.value) loupeShown.value = false;
     else if (pointer.value) updateLoupe(pointer.value);
     void placeChip();
     return;
@@ -856,6 +1086,7 @@ function onKeyDown(e: KeyboardEvent): void {
 }
 
 function onKeyUp(e: KeyboardEvent): void {
+  flushMove();
   if (e.key === "Alt") allTips.value = false;
   if (e.key === "Meta" && mode.value === "sel" && pointer.value && !annotations.busy()) aim(pointer.value, false);
 }
@@ -884,9 +1115,11 @@ onMounted(async () => {
   stops.push(
     await on<{ captureId: number; displayId: number }>(OVERLAY_SELECTION_STARTED, (other) => {
       if (other.displayId === displayId || other.captureId !== frame.value?.captureId) return;
+      // A move that came before the news is handled before it, as it was sent.
+      flushMove();
       resetSelection();
       heldElsewhere.value = other.displayId;
-      loupe.shown = false;
+      loupeShown.value = false;
       pointer.value = null;
       cursor.value = "default";
     }),
@@ -896,6 +1129,7 @@ onMounted(async () => {
       // Only the holder's own end frees this display; an end from a display that just lost the
       // selection to a third one changes nothing.
       if (other.captureId !== frame.value?.captureId || other.displayId !== heldElsewhere.value) return;
+      flushMove();
       heldElsewhere.value = null;
       cursor.value = "crosshair";
     }),
@@ -910,6 +1144,7 @@ onUnmounted(() => {
   window.removeEventListener("keydown", onKeyDown);
   window.removeEventListener("keyup", onKeyUp);
   window.removeEventListener("resize", onResize);
+  cancelAnimationFrame(moveFrame);
   stops.forEach((stop) => stop());
 });
 </script>
@@ -919,19 +1154,25 @@ onUnmounted(() => {
     <div ref="frameHost" class="frame-host" />
 
     <template v-if="frame">
-      <div class="g-dim" :style="{ ...box(dimRect), borderRadius: dimRadius }" />
-      <!-- The drawings over the selection, in the document order of the dim and the edge. -->
+      <!-- The dim: bands top, bottom, left and right of the hole, then the corners of a rounded
+           hole (`paintDim`). -->
+      <div ref="dimEl" class="o-dim" aria-hidden="true">
+        <i data-band /><i data-band /><i data-band /><i data-band />
+        <i data-corner="tl" /><i data-corner="tr" /><i data-corner="bl" /><i data-corner="br" />
+      </div>
+      <!-- The drawings over the selection, in the document order of the dim and the edge. Without
+           drawings it needs no area, so a drag does not render it again. -->
       <Surface
-        v-if="sel && annotations.source.value"
+        v-if="hasSel && annotations.source.value"
         :engine="engine"
         :source="annotations.source.value"
         :view="annotationView"
-        :area="liveArea"
+        :area="drawn ? liveArea : null"
         :composed="drawn"
         :chrome="mode === 'sel'"
       />
 
-      <div v-if="hovered && !sel" class="o-win" :style="{ ...box({ x: hovered.rect.x, y: hovered.rect.y, w: hovered.rect.width, h: hovered.rect.height }), '--o-radius': `${hovered.cornerRadius ?? 10}px` }" />
+      <div v-if="hovered && !hasSel" class="o-win" :style="{ ...box({ x: hovered.rect.x, y: hovered.rect.y, w: hovered.rect.width, h: hovered.rect.height }), '--o-radius': `${hovered.cornerRadius ?? 10}px` }" />
       <div v-if="chip" ref="chipEl" class="g-glass o-winchip o-float" :style="at(chipAt)">
         <span class="o-app" aria-hidden="true"><GIcon name="window" :size="24" /></span>
         <div>
@@ -944,12 +1185,15 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <template v-if="showLines && pointer">
-        <div class="o-xh" data-axis="h" :style="{ top: `${pointer.y}px` }" />
-        <div class="o-xh" data-axis="v" :style="{ left: `${pointer.x}px` }" />
-      </template>
+      <div ref="lineH" v-show="showLines" class="o-xh o-moving" data-axis="h" />
+      <div ref="lineV" v-show="showLines" class="o-xh o-moving" data-axis="v" />
 
-      <div v-if="sel" class="g-selection" :style="box(sel)" />
+      <!-- The selection's edge: the iris line outside, then the light hairline inside, each as
+           four strips (`paintEdge`). -->
+      <div v-if="hasSel" ref="edgeEl" class="o-edge" aria-hidden="true">
+        <i /><i /><i /><i />
+        <i data-ring="inner" /><i data-ring="inner" /><i data-ring="inner" /><i data-ring="inner" />
+      </div>
       <span
         v-for="h in handles"
         :key="h.key"
@@ -957,25 +1201,24 @@ onUnmounted(() => {
         :data-handle="h.kind ?? undefined"
         :style="at(h)"
       />
-      <div v-if="sel && sel.w > 0" class="g-size o-float" :style="at(placement && mode === 'sel' ? placement.size : sel.y - 30 >= 8 ? { x: sel.x, y: sel.y - 30 } : { x: sel.x + 6, y: sel.y + 6 })">
-        {{ pixelSize.w }}<span class="g-size-x">×</span>{{ pixelSize.h }}
-      </div>
+      <div v-if="sizeShown" ref="sizeEl" class="g-size o-float o-moving"><span>0</span><span class="g-size-x">×</span><span>0</span></div>
       <!-- Mount point of the text recognition layer (src/ocr/TextLayer.vue); its context comes
            from `provide(TEXT_LAYER)` above. -->
-      <div v-if="textLayerComponent && sel && mode === 'sel'" class="o-textlayer">
+      <div v-if="textLayerComponent && hasSel && mode === 'sel'" class="o-textlayer">
         <component :is="textLayerComponent" />
       </div>
     </template>
 
-    <div v-show="frame && loupe.shown" class="g-glass o-loupe" aria-hidden="true" :style="at(loupe)">
+    <div ref="loupeEl" v-show="frame && loupeShown" class="g-glass o-loupe o-moving" aria-hidden="true">
       <div class="o-lens">
         <div ref="lensHost" class="lens-host" />
         <span class="o-lens-mid" />
       </div>
+      <!-- `updateLoupe` writes the colour and the position. -->
       <div class="o-loupe-meta">
-        <span class="o-loupe-swatch" :style="{ background: loupe.swatch }" />
-        <span>{{ loupe.hex }}</span>
-        <span class="o-loupe-xy">{{ loupe.px }}, {{ loupe.py }}</span>
+        <span ref="swatchEl" class="o-loupe-swatch" style="background: #000" />
+        <span ref="hexEl">#000000</span>
+        <span ref="xyEl" class="o-loupe-xy">0, 0</span>
       </div>
     </div>
 
