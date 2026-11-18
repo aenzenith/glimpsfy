@@ -54,11 +54,17 @@ function followTheme(): void {
   };
   apply();
   dark.addEventListener("change", apply);
-  void on<Settings>(SETTINGS_CHANGED, (settings) => {
-    appearance = settings.general.appearance;
-    apply();
-  });
   themeApply = apply;
+}
+
+/** The last language asked for, which the page waits for before its first paint. */
+let languageSet: Promise<void> = Promise.resolve();
+
+/** Every window follows the language, and ordinary windows and the popover the theme too. */
+function follow(settings: Settings): void {
+  languageSet = setLanguage(settings.general.language);
+  appearance = settings.general.appearance;
+  themeApply?.();
 }
 
 /** Errors of hidden pages (overlays, the toast) reach the core's log instead of a console nobody
@@ -114,16 +120,23 @@ async function start(): Promise<void> {
   document.documentElement.dataset.surface = page.floating ? "floating" : page.transparent ? "popover" : "window";
   if (!page.floating) followTheme();
 
+  // One listener for the language and the theme: every window registers it, and each listener is
+  // a call at start and a script run in that window on every change. A change heard before the
+  // settings below answered is newer than they are.
+  let heard = false;
+  void on<Settings>(SETTINGS_CHANGED, (settings) => {
+    heard = true;
+    follow(settings);
+  });
+
   // The language and the theme before the first paint, so no page flashes in the wrong one.
   try {
     const settings = await settings_get();
-    setLanguage(settings.general.language);
-    appearance = settings.general.appearance;
-    themeApply?.();
+    if (!heard) follow(settings);
   } catch {
-    setLanguage("system");
+    if (!heard) languageSet = setLanguage("system");
   }
-  void on<Settings>(SETTINGS_CHANGED, (settings) => setLanguage(settings.general.language));
+  await languageSet;
 
   const { default: root } = await page.load();
   createApp(root).mount("#app");

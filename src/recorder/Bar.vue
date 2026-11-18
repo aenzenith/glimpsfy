@@ -142,8 +142,13 @@ const asked = computed(() => state.value.kind === "paused" && state.value.discar
 const muted = computed(() => (state.value.kind === "recording" || state.value.kind === "paused" ? state.value.microphoneMuted : false));
 const takeHasMic = computed(() => (state.value.kind === "recording" || state.value.kind === "paused" ? state.value.microphone : false));
 
+/** The clock as it reads, to the second. The ticks and the timer move `take.shown` eight times a
+ * second; Vue passes a computed on only when its value changed, so the bar draws once a second
+ * for the clock (and on each tick for a live microphone meter). */
+const time = computed(() => clock(take.shown));
+
 const controlModel = computed(() => ({
-  time: clock(take.shown),
+  time: time.value,
   paused: paused.value,
   finishing: state.value.kind === "finishing" || stopping.value,
   mic: { recorded: takeHasMic.value, live: !muted.value, level: !muted.value && state.value.kind === "recording" ? take.micLevel : 0 },
@@ -190,9 +195,17 @@ watch(view, (v, old) => {
   // The core hides the window while there is no bar; the next bar is fitted afresh.
   if (!v) lastFit = "";
   if (v === "setup" && old !== "setup") void loadDevices();
-  window.clearInterval(clockTimer);
-  if (v === "control") clockTimer = window.setInterval(tickClock, 250);
 });
+
+// The timer moves the clock only while the take runs: paused or finishing, `tickClock` keeps the
+// time as it is, and a timer then would wake the page four times a second for nothing.
+watch(
+  () => take.running,
+  (running) => {
+    window.clearInterval(clockTimer);
+    clockTimer = running ? window.setInterval(tickClock, 250) : 0;
+  },
+);
 
 // ----------------------------------------------------------------------------- failures
 

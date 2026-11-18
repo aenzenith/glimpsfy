@@ -119,7 +119,12 @@ const sel = ref(0);
 const permissions = ref<Permissions | null>(null);
 const delay = ref<DelayState>({ pendingSeconds: 0, remainingSeconds: null, mode: null });
 const recording = ref<RecordingState>({ kind: "idle" });
+/** The take's time to the whole second, which is all the clock shows (`duration`). */
 const elapsedMs = ref(0);
+/** The core ticks four times a second through the whole take, and this page lives (mostly hidden)
+ * through it: keeping only the shown second leaves three ticks in four without a render, and
+ * without the measuring `fit` after it. */
+const showElapsed = (ms: number) => void (elapsedMs.value = Math.round(ms / 1000) * 1000);
 /** A line under the panel's sections: the result or the failure of the last action. */
 const notice = ref<{ tone: "ok" | "warn"; text: string } | null>(null);
 
@@ -186,7 +191,7 @@ async function loadRecording(): Promise<void> {
   try {
     const state = await record_state();
     recording.value = state;
-    if (state.kind === "recording" || state.kind === "paused") elapsedMs.value = state.elapsedMs;
+    if (state.kind === "recording" || state.kind === "paused") showElapsed(state.elapsedMs);
   } catch (error) {
     console.warn("record_state", error);
   }
@@ -683,10 +688,10 @@ onMounted(async () => {
     await onHistoryChanged(historyChanged),
     await onRecordState((state) => {
       recording.value = state;
-      if (state.kind === "recording" || state.kind === "paused") elapsedMs.value = state.elapsedMs;
+      if (state.kind === "recording" || state.kind === "paused") showElapsed(state.elapsedMs);
       if (state.kind === "idle") elapsedMs.value = 0;
     }),
-    await onRecordTick((tick) => (elapsedMs.value = tick.elapsedMs)),
+    await onRecordTick((tick) => showElapsed(tick.elapsedMs)),
     await onUploadProgress((p) => uploadProgress(p.uploadId, p.provider, p.sentBytes, p.totalBytes)),
     await onUploadDone((done) => uploadEnded(done.result.uploadId)),
     await onUploadFailed((failed) => uploadEnded(failed.uploadId)),

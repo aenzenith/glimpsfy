@@ -193,6 +193,10 @@ function valueAt(t: Tween, now: number): number {
 
 const running = (t: Tween, now: number) => t.start < 0 || (t.ms > 0 && now < t.start + t.ms);
 const moving = (motion: Motion, now: number) => running(motion.y, now) || running(motion.alpha, now);
+/** Whether a frame would draw anything new: a toast held for its picture waits without frames,
+ * and `arrival` asks for them again once it lets the toast go. */
+const drawing = (motion: Motion, now: number) =>
+  [motion.y, motion.alpha].some((t) => t.start !== HELD && running(t, now));
 
 /** Reduced motion keeps the fades and drops the rises, the lifts and the glides. */
 const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
@@ -308,7 +312,7 @@ function frame(now: number): void {
   let busy = false;
   for (const motion of motions.values()) {
     for (const t of [motion.y, motion.alpha]) if (t.start === LET_GO) t.start = now + t.wait;
-    busy ||= moving(motion, now);
+    busy ||= drawing(motion, now);
   }
   paint(now);
   report(now);
@@ -602,7 +606,7 @@ async function onExportProgress(p: ExportProgress): Promise<void> {
       dismiss(key);
     }, EXPORT_QUIET_MS),
   );
-  void fit();
+  // As for upload progress, the report changes numbers only, not the toast's size.
 }
 
 function cancelExport(item: Item): void {
@@ -674,7 +678,8 @@ function onProgress(progress: UploadProgress): void {
   upload.phase = "uploading";
   upload.sentBytes = progress.sentBytes;
   upload.totalBytes = progress.totalBytes;
-  void fit();
+  // No `fit` per report: a new toast was fitted as it was added, the numbers keep the toast's
+  // size, and a size that changes reaches `fit` through the stack's observer.
 }
 
 async function onDone(done: UploadDone): Promise<void> {

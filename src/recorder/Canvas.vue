@@ -173,13 +173,15 @@ onUnmounted(() => {
 @keyframes r-click { from { transform: scale(0.6); opacity: 1; } 70% { opacity: 1; } to { transform: scale(1.15); opacity: 0; } }
 @keyframes r-click-still { 0%, 70% { opacity: 1; } to { opacity: 0; } }
 
-/* the keystroke overlay: 36, 44 or 56 px key caps on glass */
+/* the keystroke overlay: 36, 44 or 56 px key caps on glass. Faded out, it is also hidden once the
+   fade ends (as the kit's tips are): its glass is a composited backdrop layer, which opacity 0
+   alone leaves in the recorded window's layers for the whole take. */
 .r-keys {
   position: absolute; display: inline-flex; align-items: center; gap: var(--space-6); padding: var(--space-6);
   border-radius: var(--radius-card); white-space: nowrap;
-  transition: opacity var(--dur-base) var(--ease-out), top var(--dur-move) var(--ease-out);
+  transition: opacity var(--dur-base) var(--ease-out), top var(--dur-move) var(--ease-out), visibility 0s;
 }
-.r-keys[data-shown="false"] { opacity: 0; }
+.r-keys[data-shown="false"] { opacity: 0; visibility: hidden; transition-delay: 0s, 0s, var(--dur-base); }
 .r-key {
   display: inline-grid; place-items: center; min-width: var(--r-cap); height: var(--r-cap); padding: 0 var(--r-cap-pad);
   border-radius: var(--r-cap-radius); background: var(--control-fill); box-shadow: var(--surface-kbd-shadow);
@@ -191,6 +193,7 @@ onUnmounted(() => {
 
 @media (prefers-reduced-motion: reduce) {
   .r-click { animation-name: r-click-still; }
-  .r-keys { transition: opacity var(--dur-base) var(--ease-out); }
+  .r-keys { transition: opacity var(--dur-base) var(--ease-out), visibility 0s; }
+  .r-keys[data-shown="false"] { transition-delay: 0s, var(--dur-base); }
 }
 </style>

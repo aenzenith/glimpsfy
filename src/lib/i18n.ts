@@ -6,13 +6,7 @@
 
 import { ref } from "vue";
 
-import de from "../locales/de.json";
 import en from "../locales/en.json";
-import es from "../locales/es.json";
-import ja from "../locales/ja.json";
-import ru from "../locales/ru.json";
-import tr from "../locales/tr.json";
-import zhHans from "../locales/zh-Hans.json";
 import type { Language as LanguageChoice } from "./settings";
 
 export type Key = keyof typeof en;
@@ -33,7 +27,20 @@ export const LANGUAGES = [
 
 export type Language = (typeof LANGUAGES)[number]["code"];
 
-const catalogs: Record<Language, Catalog> = { en, tr, de, es, ru, ja, "zh-Hans": zhHans };
+// Every window is a page of its own that loads this module (the overlays, the toast, the popover,
+// each pin, the recorder's panels), and a page speaks one language: loading only that catalog
+// keeps the other six (some 600 KB of text) out of every page's memory. The type of each loader
+// still holds every catalog to every English key.
+const LOADERS: Record<Exclude<Language, "en">, () => Promise<{ default: Catalog }>> = {
+  tr: () => import("../locales/tr.json"),
+  de: () => import("../locales/de.json"),
+  es: () => import("../locales/es.json"),
+  ru: () => import("../locales/ru.json"),
+  ja: () => import("../locales/ja.json"),
+  "zh-Hans": () => import("../locales/zh-Hans.json"),
+};
+
+const catalogs: Partial<Record<Language, Catalog>> = { en };
 
 /** The language the pages speak now. */
 export const language = ref<Language>(resolve("system"));
@@ -62,12 +69,27 @@ export function resolve(choice: LanguageChoice): Language {
   return pick(navigator.languages?.length ? navigator.languages : [navigator.language]);
 }
 
-export function setLanguage(choice: LanguageChoice): void {
-  language.value = resolve(choice);
-  if (typeof document !== "undefined") document.documentElement.lang = language.value;
+let turns = 0;
+
+/** Switches the pages to a language once its catalog has loaded, so no page shows a mix. */
+export async function setLanguage(choice: LanguageChoice): Promise<void> {
+  const next = resolve(choice);
+  const turn = ++turns;
+  if (next !== "en" && !catalogs[next]) {
+    try {
+      catalogs[next] = (await LOADERS[next]()).default;
+    } catch (error) {
+      // The page speaks English instead, which `t` falls back to.
+      console.warn("The language could not be loaded.", next, error);
+    }
+  }
+  // A newer choice made while this one loaded has the last word.
+  if (turn !== turns) return;
+  language.value = next;
+  if (typeof document !== "undefined") document.documentElement.lang = next;
 }
 
 export function t(key: Key, params: Record<string, string | number> = {}): string {
-  const text = catalogs[language.value][key] ?? catalogs.en[key];
+  const text = (catalogs[language.value] ?? en)[key] ?? en[key];
   return text.replace(/\{(\w+)\}/g, (whole, name: string) => (name in params ? String(params[name]) : whole));
 }
