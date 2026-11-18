@@ -1250,6 +1250,7 @@
   "firstrun.fin.tryNoKeys": "İlk yakalamanı almak için menü çubuğunda Alan yakala’ya tıkla ve ekranda istediğin yeri sürükleyerek seç.",
   "firstrun.fin.saveFailed": "Glimpsfy yaptığın seçimi kaydedemedi.",
   "firstrun.fin.keysRefused": "Glimpsfy {keys} tuşlarını alamadı. Önce macOS tuşlarını kapat ya da Glimpsfy tuşlarıyla devam et.",
+  "firstrun.fin.keysTaken": "Glimpsfy {keys} tuşlarını alamadı, çünkü {other} eylemi bu tuşları zaten kullanıyor. Ayarlar › Kısayollar bölümünde {other} eylemine başka tuşlar ver ya da Glimpsfy tuşlarıyla devam et.",
   "toast.lines.one": "1 satır metin kopyalandı.",
   "toast.lines.many": "{n} satır metin kopyalandı.",
   "toast.quote": "“{text}”",

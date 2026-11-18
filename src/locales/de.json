@@ -1250,6 +1250,7 @@
   "firstrun.fin.tryNoKeys": "Wähle in der Menüleiste „Bereich aufnehmen“ und ziehe über irgendetwas auf dem Bildschirm, um deine erste Aufnahme zu machen.",
   "firstrun.fin.saveFailed": "Glimpsfy konnte deine Auswahl nicht sichern.",
   "firstrun.fin.keysRefused": "Glimpsfy konnte {keys} nicht belegen. Schalte zuerst die macOS-Tasten aus oder behalte die Glimpsfy-Tasten.",
+  "firstrun.fin.keysTaken": "Glimpsfy konnte {keys} nicht belegen, weil „{other}“ diese Tasten schon nutzt. Gib „{other}“ unter Einstellungen › Kurzbefehle andere Tasten oder behalte die Glimpsfy-Tasten.",
   "toast.lines.one": "1 Textzeile kopiert.",
   "toast.lines.many": "{n} Textzeilen kopiert.",
   "toast.quote": "„{text}“",

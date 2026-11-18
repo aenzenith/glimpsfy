@@ -1250,6 +1250,7 @@
   "firstrun.fin.tryNoKeys": "在菜单栏中选取“截取区域”，并在屏幕上任意内容上拖移，即可截取你的第一张图。",
   "firstrun.fin.saveFailed": "Glimpsfy 无法保存你的选择。",
   "firstrun.fin.keysRefused": "Glimpsfy 无法使用 {keys}。请先关闭 macOS 的那些快捷键，或者继续使用 Glimpsfy 的按键。",
+  "firstrun.fin.keysTaken": "Glimpsfy 无法使用 {keys}，因为“{other}”已经在使用这些按键。请在“设置 › 快捷键”中为“{other}”换一组按键，或者继续使用 Glimpsfy 的按键。",
   "toast.lines.one": "已复制 1 行文字。",
   "toast.lines.many": "已复制 {n} 行文字。",
   "toast.quote": "“{text}”",

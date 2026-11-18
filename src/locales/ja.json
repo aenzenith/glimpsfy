@@ -1250,6 +1250,7 @@
   "firstrun.fin.tryNoKeys": "メニューバーで「範囲をキャプチャ」を選び、画面上の好きな場所をドラッグすると、最初のキャプチャを撮れます。",
   "firstrun.fin.saveFailed": "Glimpsfyは選択を保存できませんでした。",
   "firstrun.fin.keysRefused": "Glimpsfyは{keys}を使えませんでした。先にmacOSのキーをオフにするか、Glimpsfyのキーのままにしてください。",
+  "firstrun.fin.keysTaken": "「{other}」がすでに{keys}を使っているため、Glimpsfyはこのキーを使えませんでした。「設定 › ショートカット」で「{other}」に別のキーを割り当てるか、Glimpsfyのキーのままにしてください。",
   "toast.lines.one": "テキスト1行をコピーしました。",
   "toast.lines.many": "テキスト{n}行をコピーしました。",
   "toast.quote": "「{text}」",

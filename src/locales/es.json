@@ -1250,6 +1250,7 @@
   "firstrun.fin.tryNoKeys": "Elige Capturar área en la barra de menús y arrastra sobre cualquier cosa de la pantalla para hacer tu primera captura.",
   "firstrun.fin.saveFailed": "Glimpsfy no pudo guardar tu elección.",
   "firstrun.fin.keysRefused": "Glimpsfy no pudo tomar {keys}. Desactiva primero las teclas de macOS o conserva las teclas de Glimpsfy.",
+  "firstrun.fin.keysTaken": "Glimpsfy no pudo tomar {keys} porque {other} ya usa esas teclas. Asigna otras teclas a {other} en Ajustes › Atajos o conserva las teclas de Glimpsfy.",
   "toast.lines.one": "Se copió 1 línea de texto.",
   "toast.lines.many": "Se copiaron {n} líneas de texto.",
   "toast.quote": "«{text}»",

@@ -33,6 +33,7 @@ import { PERMISSIONS_CHANGED, SETTINGS_CHANGED } from "../lib/events";
 import { t, type Key } from "../lib/i18n";
 import { capsOf, capsText } from "../lib/keys";
 import type { Settings } from "../lib/settings";
+import { tr } from "../settings/text";
 import { codeOf, reasonText } from "../toast/reason";
 
 /** How often step 1 asks for the permissions while the window is visible. */
@@ -210,6 +211,17 @@ async function finish(): Promise<void> {
     }
     const saved = await settings_set(current);
     takeSettings(saved.settings);
+    const taken = choice.value === "replace" ? saved.clearedShortcuts.find((c) => c.action === "captureArea") : undefined;
+    if (taken) {
+      // Another action held the keys first, so the save cleared Capture area. It gets its own
+      // keys back, so a refused replace never leaves the main action without a shortcut.
+      const restored = { ...saved.settings, shortcuts: { ...saved.settings.shortcuts, captureArea: originalArea ?? null } };
+      takeSettings((await settings_set(restored)).settings);
+      replaced = false;
+      const other = tr(`settings.shortcuts.action.${taken.keptBy}`, {}, taken.keptBy);
+      saveError.value = t("firstrun.fin.keysTaken", { keys: capsText(MAC_AREA_KEYS), other });
+      return;
+    }
     if (choice.value === "replace" && saved.shortcutProblems.some((p) => p.action === "captureArea")) {
       saveError.value = t("firstrun.fin.keysRefused", { keys: capsText(MAC_AREA_KEYS) });
       return;
