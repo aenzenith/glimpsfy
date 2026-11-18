@@ -63,6 +63,21 @@ pub struct RenderHeader {
     /// none for the default one.
     #[serde(default)]
     pub provider_id: Option<ProviderId>,
+    /// The part of the source the pixels show, in its pixels: from the overlay, the selection's
+    /// crop of the frame, which Repeat Last Area captures again. A page that leaves it out
+    /// still renders; its outputs only leave the last area as it was.
+    #[serde(default)]
+    pub area: Option<RenderedArea>,
+}
+
+/// A rectangle in the source's pixels. The numbers are `f64` so that a fractional value from the
+/// page cannot make the whole header fail to parse.
+#[derive(Clone, Copy, Debug, Deserialize)]
+pub struct RenderedArea {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
 }
 
 /// Where the rendered pixels came from.
@@ -222,12 +237,14 @@ struct Prepared {
 }
 
 /// Builds the output frame. With `close`, a capture is closed here, before the encoding, so the
-/// overlays go away at once, as they do for a copy without drawings.
+/// overlays go away at once, as they do for a copy without drawings. With `remember`, a
+/// capture's rendered area becomes the last area, as the outputs of `output::take` make it.
 fn prepare(
     app: &AppHandle,
     header: RenderHeader,
     pixels: Vec<u8>,
     close: Option<CloseReason>,
+    remember: bool,
 ) -> CommandResult<Prepared> {
     let nowhere = LogicalRect::new(0.0, 0.0, 0.0, 0.0);
     let mut editor_record = None;
@@ -242,6 +259,9 @@ fn prepare(
                 .display(*display_id)
                 .ok_or_else(|| CommandError::not_found(format!("display {}", display_id.0)))?;
             let found = (entry.frame.color.clone(), entry.frame.scale, session.front_app.clone());
+            if let (true, Some(area)) = (remember, header.area) {
+                remember_area(app, &session, *capture_id, *display_id, area);
+            }
             if let Some(reason) = close {
                 session::close(app, *capture_id, reason);
             }
@@ -267,6 +287,34 @@ fn prepare(
     let size = PhysicalSize::new(header.width, header.height);
     let frame = Frame::new(size, header.width as usize * 4, PixelFormat::Rgba8, color, scale, pixels)?;
     Ok(Prepared { frame, origin, front_app, editor: editor_record })
+}
+
+/// Makes the overlay's rendered crop the area Repeat Last Area captures again. The crop arrives
+/// in frame pixels and the last area is kept in the display's own points, so it is mapped back
+/// by the inverse of `selection_to_frame`. A picked window stays out, as it does in
+/// `output::take`, since Repeat Last Area repeats areas and not windows.
+fn remember_area(
+    app: &AppHandle,
+    session: &session::CaptureSession,
+    capture_id: CaptureId,
+    display_id: DisplayId,
+    area: RenderedArea,
+) {
+    let Some(entry) = session.display(display_id) else {
+        return;
+    };
+    let (sx, sy) = ScaleFactor::between(entry.display.frame.size(), entry.frame.size);
+    let rect = LogicalRect::new(area.x / sx.0, area.y / sy.0, area.width / sx.0, area.height / sy.0);
+    let usable = [rect.x, rect.y, rect.width, rect.height].iter().all(|v| v.is_finite())
+        && rect.width > 0.0
+        && rect.height > 0.0;
+    if !usable {
+        return;
+    }
+    let selection = Selection { capture_id, display_id, rect };
+    if session.picked_for(&selection).is_none() {
+        session::remember_area(app, session, &selection);
+    }
 }
 
 /// Runs one delivery of `ready`, and for the editor's image tells the history first which
@@ -295,7 +343,7 @@ fn deliver(
 pub async fn output_copy_rendered(app: AppHandle, request: Request<'_>) -> CommandResult<OutputDone> {
     let (header, pixels) = read_rendered(&request)?;
     off_main(move || {
-        let ready = prepare(&app, header, pixels, Some(CloseReason::Copied))?;
+        let ready = prepare(&app, header, pixels, Some(CloseReason::Copied), true)?;
         deliver(ready, |origin, frame, _| crate::output::copy_frame(&app, origin, frame))
     })
     .await
@@ -308,23 +356,51 @@ pub async fn output_copy_rendered(app: AppHandle, request: Request<'_>) -> Comma
 pub async fn output_save_rendered(app: AppHandle, request: Request<'_>) -> CommandResult<OutputDone> {
     let (header, pixels) = read_rendered(&request)?;
     off_main(move || {
-        let ready = prepare(&app, header, pixels, Some(CloseReason::Saved))?;
+        let ready = prepare(&app, header, pixels, Some(CloseReason::Saved), true)?;
         deliver(ready, |origin, frame, front_app| crate::output::save_frame(&app, origin, frame, front_app, None))
     })
     .await
 }
 
 /// Asks where to save a rendered image with the system's save panel and saves it there as PNG
-/// (Save as…, ⇧⌘S). A name that is taken gets " (2)" instead of replacing the file, and a
-/// cancelled panel answers `cancelled` and leaves a capture open. Body: RGBA bytes; header:
-/// `x-glimpsfy-render`.
+/// (Save as…, ⇧⌘S). A name that is taken gets " (2)" instead of replacing the file. From the
+/// overlay, the overlays step aside for the panel as they do in `output::save_as`, and a
+/// cancelled panel answers `cancelled` and brings them back with the capture still open. Body:
+/// RGBA bytes; header: `x-glimpsfy-render`.
 #[tauri::command]
 pub async fn output_save_as_rendered(app: AppHandle, request: Request<'_>) -> CommandResult<OutputDone> {
     let (header, pixels) = read_rendered(&request)?;
     off_main(move || {
         let (folder, name) = suggestion(&app, &header.source);
-        let target = pick_save_path(&app, folder, &name)?;
-        let ready = prepare(&app, header, pixels, Some(CloseReason::Saved))?;
+        // The overlays sit at the screen saver level, above any panel, so the panel would open
+        // where nobody can see it.
+        let capture = match &header.source {
+            RenderSource::Capture { capture_id, .. } => Some(*capture_id),
+            RenderSource::Editor { .. } => None,
+        };
+        if capture.is_some() {
+            crate::windows::hide_overlays(&app);
+        }
+        let target = match pick_save_path(&app, folder, &name) {
+            Ok(target) => target,
+            Err(error) => {
+                if let Some(id) = capture {
+                    session::reshow(&app, id);
+                }
+                return Err(error);
+            }
+        };
+        let ready = match prepare(&app, header, pixels, Some(CloseReason::Saved), true) {
+            Ok(ready) => ready,
+            Err(error) => {
+                // Without this the capture stayed open with every overlay ordered out, where
+                // Esc could not reach it. A capture that `prepare` closed already stays closed.
+                if let Some(id) = capture {
+                    session::reshow(&app, id);
+                }
+                return Err(error);
+            }
+        };
         deliver(ready, |origin, frame, front_app| {
             crate::output::save_frame(&app, origin, frame, front_app, Some(&target))
         })
@@ -374,7 +450,7 @@ pub async fn upload_capture_rendered(app: AppHandle, request: Request<'_>) -> Co
 /// Settings › Output. `for_upload` scales it to 1× when the settings say so, as an upload of a
 /// capture is.
 fn stage(app: &AppHandle, header: RenderHeader, pixels: Vec<u8>, for_upload: bool) -> CommandResult<PathBuf> {
-    let ready = prepare(app, header, pixels, None)?;
+    let ready = prepare(app, header, pixels, None, for_upload)?;
     let settings = app.state::<AppState>().settings.get();
     let frame = match settings.output.retina {
         RetinaScale::ScaleTo1x if for_upload => ready.frame.at_1x().unwrap_or(ready.frame),
@@ -409,18 +485,33 @@ fn prune(folder: &Path, age: std::time::Duration) {
 
 /// The folder and the name the save panel suggests: "<name> edited" beside the file the image
 /// came from (in the save folder for a history entry the user never saved), or a dated name in
-/// the save folder of the settings.
+/// the save folder of the settings. A file in the app's own folders (a pin's copy in the cache)
+/// gets the dated name in the save folder, since its folder is emptied without asking and its
+/// name is the app's, not the user's.
 fn suggestion(app: &AppHandle, source: &RenderSource) -> (PathBuf, String) {
     let output = app.state::<AppState>().settings.get().output;
     let (save_folder, ext) = (output.save_folder, output.format.extension());
     let suggest = match source {
         RenderSource::Editor { token } => find(&editor(), token).ok().and_then(|s| s.suggest.clone()),
         RenderSource::Capture { .. } => None,
-    };
+    }
+    .filter(|(folder, _)| !folder.as_deref().is_some_and(|f| app_owned(app, f)));
     match suggest {
         Some((folder, stem)) => (folder.filter(|f| f.is_dir()).unwrap_or(save_folder), format!("{stem} edited.{ext}")),
         None => (save_folder, format!("Glimpsfy {}.{ext}", chrono::Local::now().format("%Y-%m-%d at %H.%M.%S"))),
     }
+}
+
+/// Whether `folder` lies in the app's cache or data folder. The pins' cache is deleted at every
+/// launch and the history inbox after a day, so a file the user saved there would vanish.
+fn app_owned(app: &AppHandle, folder: &Path) -> bool {
+    // A symlink or a `..` must not hide the folder's real place.
+    let real = |path: &Path| std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let folder = real(folder);
+    [crate::paths::cache_dir(app), crate::paths::data_dir(app)]
+        .into_iter()
+        .flatten()
+        .any(|own| folder.starts_with(real(&own)))
 }
 
 /// The save panel of the dialog plugin, offering PNG, JPEG and WebP with the settings' format
@@ -446,6 +537,8 @@ fn pick_save_path(app: &AppHandle, folder: PathBuf, name: &str) -> CommandResult
     for (_, label, extensions) in filters {
         dialog = dialog.add_filter(label, extensions);
     }
+    // A menu bar app is not active, and an inactive app's panel opens behind the front app.
+    crate::output::bring_forward(app);
     let picked = dialog
         .blocking_save_file()
         .ok_or_else(|| CommandError::new(ErrorCode::Cancelled, "the save panel was cancelled"))?;

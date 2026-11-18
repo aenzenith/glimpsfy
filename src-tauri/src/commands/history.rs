@@ -1096,7 +1096,9 @@ fn copy_to_clipboard(_what: Clipboard<'_>) -> CommandResult<()> {
 }
 
 /// Saves a copy of an entry's capture where the user picks in the save panel (Save as… ⇧⌘S),
-/// and answers the path. A cancelled panel answers `cancelled`. The entry is left as it was.
+/// and answers the path it got. A taken name gets " (2)" instead of replacing the file, picking
+/// the capture's own file is refused (`invalid_argument`), and a cancelled panel answers
+/// `cancelled`. The entry is left as it was.
 #[tauri::command]
 pub async fn history_save_as(app: AppHandle, entry_id: EntryId) -> CommandResult<String> {
     let entry = with_store(&app, move |store| store.get(&entry_id)).await?;
@@ -1126,9 +1128,8 @@ pub async fn history_save_as(app: AppHandle, entry_id: EntryId) -> CommandResult
             .ok_or_else(|| CommandError::new(ErrorCode::Cancelled, "the save panel was cancelled"))?
             .into_path()
             .map_err(|e| CommandError::invalid(e.to_string()))?;
-        // The panel itself asked before replacing a file that exists.
-        std::fs::copy(&source, &picked)?;
-        Ok(picked.to_string_lossy().into_owned())
+        let saved = crate::output::copy_picked(&picked, &source)?;
+        Ok(saved.to_string_lossy().into_owned())
     })
     .await
     .map_err(|error| CommandError::internal(error.to_string()))?

@@ -6,7 +6,7 @@
 //! reserved device name (`CON`, `NUL`, `COM1`…) can reach it, and each is neutralised before the
 //! name meets the file system.
 
-use std::fs::{self, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::io::{self, ErrorKind, Write};
 use std::path::{Path, PathBuf};
 
@@ -157,24 +157,39 @@ pub fn save_unique_titled(
     bytes: &[u8],
 ) -> io::Result<PathBuf> {
     let counts = template.contains("{counter}");
-    write_unique(folder, extension, bytes, counts, |n| file_stem_titled(template, naming, title, n))
+    write_unique(
+        folder,
+        extension,
+        counts,
+        |n| file_stem_titled(template, naming, title, n),
+        |file| file.write_all(bytes),
+    )
 }
 
 /// Writes `bytes` as `<stem>.<extension>` in `folder`, where the user picked the name (Save as):
 /// the name is kept as it is (made safe), and a taken one gets " (2)", " (3)"…
 pub fn save_named(folder: &Path, stem: &str, extension: &str, bytes: &[u8]) -> io::Result<PathBuf> {
     let stem = sanitize(stem);
-    write_unique(folder, extension, bytes, false, |_| stem.clone())
+    write_unique(folder, extension, false, |_| stem.clone(), |file| file.write_all(bytes))
+}
+
+/// [`save_named`] for bytes that are already a file (Save as of a history entry). They are
+/// streamed, so a long recording is never read into memory whole.
+pub fn copy_named(folder: &Path, stem: &str, extension: &str, source: &Path) -> io::Result<PathBuf> {
+    let stem = sanitize(stem);
+    let mut from = File::open(source)?;
+    write_unique(folder, extension, false, |_| stem.clone(), |file| io::copy(&mut from, file).map(|_| ()))
 }
 
 /// The one writer: tries `stem(1)`, `stem(2)`… (a counting template) or `stem(1)`,
-/// `stem(1) (2)`… (any other), each with `create_new`, until a name is free.
+/// `stem(1) (2)`… (any other), each with `create_new`, until a name is free, and lets `fill`
+/// write the one file it made.
 fn write_unique(
     folder: &Path,
     extension: &str,
-    bytes: &[u8],
     counts: bool,
     stem: impl Fn(u32) -> String,
+    mut fill: impl FnMut(&mut File) -> io::Result<()>,
 ) -> io::Result<PathBuf> {
     fs::create_dir_all(folder)?;
     let extension = neutralise(extension).trim_matches('.').to_string();
@@ -184,7 +199,7 @@ fn write_unique(
         let path = folder.join(name);
         match OpenOptions::new().write(true).create_new(true).open(&path) {
             Ok(mut file) => {
-                if let Err(error) = file.write_all(bytes).and_then(|_| file.sync_all()) {
+                if let Err(error) = fill(&mut file).and_then(|_| file.sync_all()) {
                     drop(file);
                     let _ = fs::remove_file(&path);
                     return Err(error);

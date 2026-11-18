@@ -40,6 +40,7 @@ use crate::windows::{Toast, ToastKind};
 use crate::{events, session, trace, windows, AppState};
 
 pub use naming::{file_stem, file_stem_titled, save_unique, save_unique_titled, Naming};
+pub(crate) use platform::bring_forward;
 
 /// The toast's thumbnail fits in this many pixels (2× its 64 × 44 point slot).
 const THUMBNAIL: (u32, u32) = (128, 88);
@@ -379,21 +380,42 @@ fn folder_error(folder: &Path, reason: &str) -> CommandError {
 
 /// Writes under the name the user picked; the `index`-th image of several gets " 2", " 3"…
 fn write_picked(path: &Path, index: usize, format: ImageFormat, bytes: &[u8]) -> CommandResult<PathBuf> {
+    let (folder, stem, extension) = split_picked(path, format_of(path).is_some(), format.extension())?;
+    let stem = if index == 0 { stem } else { format!("{stem} {}", index + 1) };
+    naming::save_named(folder, &stem, &extension, bytes).map_err(|error| folder_error(folder, &error.to_string()))
+}
+
+/// Copies the file `source` under the name the user picked (Save as of a history entry) by the
+/// rule of [`write_picked`]: a taken name gets " (2)" even when the panel asked about replacing
+/// it, so no file is ever replaced. Picking `source` itself is refused, since the panel opens on
+/// a recording's own name and a copy onto itself would empty the file.
+pub fn copy_picked(path: &Path, source: &Path) -> CommandResult<PathBuf> {
+    let same = matches!((fs::canonicalize(path), fs::canonicalize(source)), (Ok(a), Ok(b)) if a == b);
+    if same {
+        return Err(CommandError::invalid(
+            "The chosen file is this capture itself, so it was left as it was. Choose another name or folder.",
+        ));
+    }
+    let own = source.extension().map(|e| e.to_string_lossy().into_owned()).unwrap_or_else(|| "png".into());
+    let keeps = path.extension().is_some_and(|e| e.to_string_lossy().eq_ignore_ascii_case(&own));
+    let (folder, stem, extension) = split_picked(path, keeps, &own)?;
+    Ok(naming::copy_named(folder, &stem, &extension, source)?)
+}
+
+/// The folder, stem and extension of a path the save panel answered. An extension the caller
+/// keeps stays as typed; any other stays part of the stem, and `fallback` is added.
+fn split_picked<'a>(path: &'a Path, keep_extension: bool, fallback: &str) -> CommandResult<(&'a Path, String, String)> {
     let folder = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .ok_or_else(|| CommandError::invalid("the path names no folder"))?;
-    let (stem, extension) = match format_of(path) {
-        Some(_) => (
-            path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default(),
-            path.extension().map(|e| e.to_string_lossy().into_owned()).unwrap_or_else(|| format.extension().into()),
-        ),
-        None => {
-            (path.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default(), format.extension().into())
-        }
-    };
-    let stem = if index == 0 { stem } else { format!("{stem} {}", index + 1) };
-    naming::save_named(folder, &stem, &extension, bytes).map_err(|error| folder_error(folder, &error.to_string()))
+    let text = |part: Option<&std::ffi::OsStr>| part.map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    Ok(if keep_extension {
+        let extension = path.extension().map(|e| e.to_string_lossy().into_owned());
+        (folder, text(path.file_stem()), extension.unwrap_or_else(|| fallback.into()))
+    } else {
+        (folder, text(path.file_name()), fallback.into())
+    })
 }
 
 /// Asks for a path with the system's save panel, starting in the save folder with the name the
@@ -649,4 +671,38 @@ pub fn save_frame(
         None => OutputAction::Save,
     };
     deliver(app, frame, origin, action)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Save as of a history entry never loses a file. The panel opens on a recording's own name,
+    /// so picking the capture itself (and confirming Replace) is refused and leaves it whole,
+    /// whichever way the path reaches it; picking another file that exists keeps that file and
+    /// writes the copy beside it as " (2)".
+    #[test]
+    fn copying_a_capture_never_replaces_a_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("Recording 2026-11-18.mov");
+        fs::write(&source, b"the recording").unwrap();
+        fs::create_dir(dir.path().join("sub")).unwrap();
+
+        for picked in [source.clone(), dir.path().join("sub").join("..").join("Recording 2026-11-18.mov")] {
+            let refused = copy_picked(&picked, &source).unwrap_err();
+            assert_eq!(refused.code, ErrorCode::InvalidArgument, "{}", picked.display());
+            assert_eq!(fs::read(&source).unwrap(), b"the recording", "{}", picked.display());
+        }
+
+        // The same file under another case, on a volume that ignores case.
+        let _ = copy_picked(&dir.path().join("RECORDING 2026-11-18.MOV"), &source);
+        assert_eq!(fs::read(&source).unwrap(), b"the recording");
+
+        let other = dir.path().join("Clip.mov");
+        fs::write(&other, b"mine").unwrap();
+        let saved = copy_picked(&other, &source).unwrap();
+        assert_eq!(saved.file_name().unwrap().to_string_lossy(), "Clip (2).mov");
+        assert_eq!(fs::read(&other).unwrap(), b"mine");
+        assert_eq!(fs::read(&saved).unwrap(), b"the recording");
+    }
 }

@@ -22,6 +22,9 @@ export type RenderedImage = {
   height: number;
   colorSpace: ColorSpace;
   data: Uint8Array | Uint8ClampedArray;
+  /** The part of the source the pixels show, in its pixels (`renderExport` gives it). From the
+   * overlay it is the selection's crop of the frame, which Repeat Last Area captures again. */
+  area?: { x: number; y: number; width: number; height: number } | null;
 };
 
 export type EditorImage = {
@@ -41,7 +44,14 @@ export type EditorImage = {
 };
 
 async function rendered<T>(command: string, image: RenderedImage, providerId: ProviderId | null = null): Promise<T> {
-  const header = { source: image.source, width: image.width, height: image.height, colorSpace: image.colorSpace, providerId };
+  const header = {
+    source: image.source,
+    width: image.width,
+    height: image.height,
+    colorSpace: image.colorSpace,
+    providerId,
+    area: image.area ?? null,
+  };
   // A body that is a view of a larger buffer would send the whole buffer.
   const view = image.data;
   const body = view.byteOffset === 0 && view.byteLength === view.buffer.byteLength ? new Uint8Array(view.buffer) : new Uint8Array(view);
