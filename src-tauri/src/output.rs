@@ -112,7 +112,9 @@ pub fn deliver(app: &AppHandle, frame: Frame, origin: Origin, action: OutputActi
 }
 
 /// Delivers several images of one capture together (all displays): one clipboard write with an
-/// item per image, or one file per image, and one toast and one hand-off per image.
+/// item per image, or one file per image, and one toast and one hand-off per image. A file that
+/// cannot be written costs only its own image, which gets a failure toast; the answer is an error
+/// only when no image was delivered.
 pub fn deliver_many(
     app: &AppHandle,
     images: Vec<(Frame, Origin)>,
@@ -141,13 +143,13 @@ pub fn deliver_many(
         .collect();
 
     let result = match &action {
-        OutputAction::Copy => copy_images(app, &settings.output, &images),
-        OutputAction::Save => save_images(app, &settings.output, &images, None),
-        OutputAction::SaveAs(Some(path)) => save_images(app, &settings.output, &images, Some(path)),
+        OutputAction::Copy => copy_images(app, &settings.output, &images).map(|all| all.into_iter().map(Ok).collect()),
+        OutputAction::Save => Ok(save_images(app, &settings.output, &images, None)),
+        OutputAction::SaveAs(Some(path)) => Ok(save_images(app, &settings.output, &images, Some(path))),
         OutputAction::SaveAs(None) => {
             let (frame, origin) = &images[0];
             pick_path(app, &settings.output, frame, origin)
-                .and_then(|path| save_images(app, &settings.output, &images, Some(&path)))
+                .map(|path| save_images(app, &settings.output, &images, Some(&path)))
         }
     };
     report(app, &images, &first, result)
@@ -245,43 +247,78 @@ fn copy_images(app: &AppHandle, output: &Output, images: &[(Frame, Origin)]) -> 
         .collect())
 }
 
+/// One result per image: each is written on its own, because a file already on disk must still
+/// be reported and handed to the history when a later one fails.
 fn save_images(
     app: &AppHandle,
     output: &Output,
     images: &[(Frame, Origin)],
     target: Option<&Path>,
-) -> CommandResult<Vec<Delivered>> {
-    let mut delivered = Vec::with_capacity(images.len());
-    let mut clipboard = Vec::new();
+) -> Vec<CommandResult<Delivered>> {
+    let mut results = Vec::with_capacity(images.len());
+    // The PNGs for the clipboard, with their frames and the results they belong to.
+    let (mut pngs, mut frames, mut copied) = (Vec::new(), Vec::new(), Vec::new());
     for (i, (frame, origin)) in images.iter().enumerate() {
         let format = target.and_then(format_of).unwrap_or(output.format);
-        let bytes = frame.encode(encoding(output, format))?;
-        let (path, fallback_from) = match target {
-            Some(path) => (write_picked(path, i, format, &bytes)?, None),
-            None => write_in_folder(output, frame, origin, format, &bytes)?,
+        let (bytes, path, fallback_from) = match write_image(output, frame, origin, i, format, target) {
+            Ok(written) => written,
+            Err(error) => {
+                results.push(Err(error));
+                continue;
+            }
         };
         if output.copy_after_save {
-            clipboard.push(if format == ImageFormat::Png {
-                bytes.clone()
+            let png = if format == ImageFormat::Png {
+                Ok(bytes.clone())
             } else {
-                frame.encode(ImageEncoding::Png(PngEffort::Fast))?
-            });
+                frame.encode(ImageEncoding::Png(PngEffort::Fast))
+            };
+            match png {
+                Ok(png) => {
+                    pngs.push(png);
+                    frames.push(frame);
+                    copied.push(results.len());
+                }
+                Err(error) => trace::log(format!("[glimpsfy] copy after save: {error}")),
+            }
         }
-        delivered.push(Delivered {
+        results.push(Ok(Delivered {
             done: done(origin, frame, bytes.len(), Some(path), format_name(format), fallback_from),
             copied: false,
             image_path: None,
-        });
+        }));
     }
-    if output.copy_after_save {
-        let frames: Vec<&Frame> = images.iter().map(|(frame, _)| frame).collect();
-        match platform::copy_pngs(app, &clipboard, &frames) {
-            Ok(()) => delivered.iter_mut().for_each(|d| d.copied = true),
+    if !pngs.is_empty() {
+        match platform::copy_pngs(app, &pngs, &frames) {
+            Ok(()) => {
+                for index in copied {
+                    if let Some(Ok(delivered)) = results.get_mut(index) {
+                        delivered.copied = true;
+                    }
+                }
+            }
             // The files are written; a clipboard that refused is worth a line, not a failure.
             Err(error) => trace::log(format!("[glimpsfy] copy after save: {}", error.message)),
         }
     }
-    Ok(delivered)
+    results
+}
+
+/// Encodes one image and writes its file: the bytes, the path and the folder that failed.
+fn write_image(
+    output: &Output,
+    frame: &Frame,
+    origin: &Origin,
+    index: usize,
+    format: ImageFormat,
+    target: Option<&Path>,
+) -> CommandResult<(Vec<u8>, PathBuf, Option<String>)> {
+    let bytes = frame.encode(encoding(output, format))?;
+    let (path, fallback_from) = match target {
+        Some(path) => (write_picked(path, index, format, &bytes)?, None),
+        None => write_in_folder(output, frame, origin, format, &bytes)?,
+    };
+    Ok((bytes, path, fallback_from))
 }
 
 fn encoding(output: &Output, format: ImageFormat) -> ImageEncoding {
@@ -472,30 +509,34 @@ fn done(
     }
 }
 
-/// Tells the pages, the toast and the history how the delivery ended.
+/// Tells the pages, the toast and the history how the delivery ended: `result` fails as a whole
+/// (the clipboard refused, the panel was cancelled) or holds one result per image.
 fn report(
     app: &AppHandle,
     images: &[(Frame, Origin)],
     first: &Origin,
-    result: CommandResult<Vec<Delivered>>,
+    result: CommandResult<Vec<CommandResult<Delivered>>>,
 ) -> CommandResult<Vec<OutputDone>> {
-    let delivered = match result {
-        Ok(delivered) => delivered,
+    let results = match result {
+        Ok(results) => results,
         Err(error) => {
-            let _ = app.emit(
-                events::OUTPUT_FAILED,
-                OutputFailed { capture_id: first.capture_id, code: error.code, message: error.message.clone() },
-            );
-            if error.code != ErrorCode::Cancelled {
-                trace::log(format!("[glimpsfy] output failed: {}", error.message));
-                windows::toast_failure(app, first.display.as_ref().map(|d| d.id), &error);
-            }
+            report_failure(app, first, None, &error);
             return Err(error);
         }
     };
 
-    let mut dones = Vec::with_capacity(delivered.len());
-    for (delivered, (frame, origin)) in delivered.into_iter().zip(images) {
+    let mut dones = Vec::with_capacity(results.len());
+    let mut failure = None;
+    for (result, (frame, origin)) in results.into_iter().zip(images) {
+        let delivered = match result {
+            Ok(delivered) => delivered,
+            Err(error) => {
+                // Among several images, the toast shows the one that failed.
+                report_failure(app, origin, (images.len() > 1).then_some(frame), &error);
+                failure.get_or_insert(error);
+                continue;
+            }
+        };
         let done = delivered.done;
         let saved = done.path.is_some();
         let _ = app.emit(if saved { events::OUTPUT_SAVED } else { events::OUTPUT_COPIED }, done.clone());
@@ -537,7 +578,27 @@ fn report(
         let _ = app.emit(HANDOFF, handoff);
         dones.push(done);
     }
-    Ok(dones)
+    match failure {
+        Some(error) if dones.is_empty() => Err(error),
+        _ => Ok(dones),
+    }
+}
+
+/// `output://failed`, and a failure toast unless the user cancelled.
+fn report_failure(app: &AppHandle, origin: &Origin, frame: Option<&Frame>, error: &CommandError) {
+    let _ = app.emit(
+        events::OUTPUT_FAILED,
+        OutputFailed { capture_id: origin.capture_id, code: error.code, message: error.message.clone() },
+    );
+    if error.code == ErrorCode::Cancelled {
+        return;
+    }
+    trace::log(format!("[glimpsfy] output failed: {}", error.message));
+    let mut toast = Toast::new(ToastKind::Failed);
+    toast.error_code = Some(error.code);
+    toast.message = Some(error.message.clone());
+    toast.thumbnail = frame.and_then(thumbnail);
+    windows::toast(app, origin.display.as_ref().map(|d| d.id), toast);
 }
 
 /// The shutter plays once per capture, at its first delivery (a copy after an annotation counts
