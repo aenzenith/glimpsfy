@@ -130,8 +130,9 @@ pub struct Env {
     pub clock: Arc<dyn Clock>,
     pub trash: Arc<dyn Trash>,
     /// Called from a capture thread when the take failed on its own (the stream stopped, the
-    /// encoder failed, the disk ran low). The app answers with [`Recorder::finish_fault`] on a
-    /// thread of its own.
+    /// encoder failed, the disk ran low), and again from [`Recorder::begin`] when the stream
+    /// stopped while it opened. The app answers with [`Recorder::finish_fault`] on a thread of
+    /// its own, which ends a take once however often it is called.
     pub on_fault: Arc<dyn Fn(&RecordingId) + Send + Sync>,
 }
 
@@ -510,6 +511,10 @@ impl Recorder {
 
     /// Idle → countdown: checks the configuration and the disk, opens the stream and starts it.
     /// Nothing is written until [`Recorder::go`].
+    ///
+    /// Opening the stream takes a few hundred milliseconds without the lock, so the countdown can
+    /// be cancelled meanwhile; the opened stream then stops at once and this returns
+    /// [`RecordError::Cancelled`].
     pub fn begin(&self, id: RecordingId, config: RecordingConfig, path: PathBuf, own: &OwnWindows) -> Result<()> {
         config.validate()?;
         let muted = false;
@@ -518,19 +523,50 @@ impl Recorder {
             inside.machine.begin(id.clone(), config.countdown_seconds, muted)?;
             inside.machine.set_has_microphone(config.audio.microphone.is_some());
         }
-        match self.open(id.clone(), config, path, own) {
-            Ok(take) => {
-                let mut inside = lock(&self.inside);
+        let opened = self.open(id.clone(), config, path, own);
+        let mut inside = lock(&self.inside);
+        // A cancel during the open left idle (or a newer take's countdown) behind: this take is
+        // over, and storing it would keep its stream and microphone running with no one to stop
+        // them.
+        let ours =
+            inside.machine.id() == Some(&id) && matches!(inside.machine.state(), RecordingState::Countdown { .. });
+        match opened {
+            Ok(take) if ours => {
+                // Muting during the open reached only the machine.
+                take.shared.muted.store(inside.machine.microphone_muted(), Ordering::SeqCst);
+                // A stream that stopped on its own during the open found no take to fail; it
+                // fails now that there is one.
+                let faulted = lock(&take.shared.fault).is_some();
                 inside.take = Some(take);
                 inside.resume_on_keep = false;
+                drop(inside);
+                if faulted {
+                    (self.env.on_fault)(&id);
+                }
                 Ok(())
+            }
+            Ok(take) => {
+                drop(inside);
+                self.close_unused(take);
+                Err(RecordError::Cancelled)
             }
             Err(e) => {
                 // Nothing was written: the take ends here, and the error says why.
-                let mut inside = lock(&self.inside);
-                let _ = inside.machine.fault("capture", &e.to_string());
+                if ours {
+                    let _ = inside.machine.fault("capture", &e.to_string());
+                }
                 Err(e)
             }
+        }
+    }
+
+    /// Closes a take that never reached recording. Nothing is armed before [`Recorder::go`], so
+    /// no file should exist; one that does is empty of the take and goes to the Trash rather
+    /// than being left behind.
+    fn close_unused(&self, take: Take) {
+        let (result, _, _) = take.close(self.env.clock.now());
+        if let Some(result) = result {
+            let _ = self.env.trash.trash(&result.path);
         }
     }
 
@@ -591,9 +627,14 @@ impl Recorder {
         lock(&self.inside).machine.countdown_tick()
     }
 
-    /// Countdown → recording: buffers from now on belong to the take.
+    /// Countdown → recording: buffers from now on belong to the take. Refused while the stream
+    /// still opens, since nothing could be armed and the take would record nothing; the countdown
+    /// goes on and its end starts the take.
     pub fn go(&self) -> Result<()> {
         let mut inside = lock(&self.inside);
+        if inside.take.is_none() && matches!(inside.machine.state(), RecordingState::Countdown { .. }) {
+            return Err(RecordError::InvalidState { action: "start recording", state: "opening the stream" });
+        }
         inside.machine.started()?;
         if let Some(take) = &inside.take {
             let now = self.env.clock.now().0.max(1);
@@ -614,13 +655,9 @@ impl Recorder {
             let outcome = inside.machine.cancel_countdown()?;
             (outcome, inside.take.take())
         };
+        // Without a take the stream is still opening, and `begin` stops it once it is open.
         if let Some(take) = take {
-            let (result, _, _) = take.close(self.env.clock.now());
-            // Nothing is armed during the countdown, so no file should exist; one that does is
-            // empty of the take and goes to the Trash rather than being left behind.
-            if let Some(result) = result {
-                let _ = self.env.trash.trash(&result.path);
-            }
+            self.close_unused(take);
         }
         Ok(outcome)
     }
@@ -815,13 +852,25 @@ mod tests {
     #[derive(Default)]
     struct FakeStreams {
         sink: Mutex<Option<Box<dyn StreamSink>>>,
+        /// When set, the next open waits for a message, as a real stream takes a moment to open.
+        gate: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+        /// Streams opened and not stopped yet.
+        running: Arc<AtomicUsize>,
     }
-    struct FakeStream;
+    struct FakeStream {
+        running: Arc<AtomicUsize>,
+        started: bool,
+    }
     impl CaptureStream for FakeStream {
         fn start(&mut self) -> glimpsfy_capture::Result<()> {
+            self.started = true;
+            self.running.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
         fn stop(&mut self) -> glimpsfy_capture::Result<()> {
+            if std::mem::take(&mut self.started) {
+                self.running.fetch_sub(1, Ordering::SeqCst);
+            }
             Ok(())
         }
         fn update(&mut self, _: StreamConfig) -> glimpsfy_capture::Result<()> {
@@ -830,8 +879,12 @@ mod tests {
     }
     impl StreamOpener for FakeStreams {
         fn open(&self, _: StreamConfig, sink: Box<dyn StreamSink>) -> Result<Box<dyn CaptureStream>, CaptureError> {
+            let gate = lock(&self.gate).take();
+            if let Some(gate) = gate {
+                let _ = gate.recv();
+            }
             *lock(&self.sink) = Some(sink);
-            Ok(Box::new(FakeStream))
+            Ok(Box::new(FakeStream { running: self.running.clone(), started: false }))
         }
     }
 
@@ -1021,5 +1074,62 @@ mod tests {
 
         assert_eq!(rig.files(), vec!["Trash/discarded.mp4", "failed.mp4", "faulted.mp4", "saved.mp4"]);
         assert!(rig.recorder.state() == RecordingState::Idle);
+    }
+
+    /// A cancel or an early start while the stream still opens: the cancelled take's stream
+    /// stops, so the screen and the microphone are not left recording, and the early start is
+    /// refused rather than arming nothing, so the take still records when the countdown ends.
+    #[test]
+    fn a_stream_still_opening_is_never_lost() {
+        let rig = rig();
+        let open_slowly = || {
+            let (release, gate) = std::sync::mpsc::channel();
+            *lock(&rig.streams.gate) = Some(gate);
+            release
+        };
+        let begin = |name: &str| {
+            let path = rig.dir.path().join(name);
+            rig.recorder.begin(RecordingId(name.into()), config(rig.dir.path()), path, &OwnWindows::default())
+        };
+        let counting_down = || {
+            while !matches!(rig.recorder.state(), RecordingState::Countdown { .. }) {
+                std::thread::yield_now();
+            }
+        };
+
+        // Dropping `release` opens the gate; the checks wait until after it, so a failing one
+        // cannot leave the opening thread waiting forever.
+        let release = open_slowly();
+        let (cancelled, begun) = std::thread::scope(|s| {
+            let begun = s.spawn(|| begin("cancelled.mp4"));
+            counting_down();
+            let cancelled = rig.recorder.cancel();
+            drop(release);
+            (cancelled, begun.join().unwrap())
+        });
+        assert!(matches!(cancelled.unwrap(), RecordingOutcome::Cancelled { .. }));
+        assert!(matches!(begun, Err(RecordError::Cancelled)));
+        assert_eq!(rig.streams.running.load(Ordering::SeqCst), 0, "the cancelled take's stream stopped");
+        assert!(rig.recorder.state() == RecordingState::Idle);
+
+        let release = open_slowly();
+        let (early, begun) = std::thread::scope(|s| {
+            let begun = s.spawn(|| begin("early.mp4"));
+            counting_down();
+            let early = rig.recorder.go();
+            drop(release);
+            (early, begun.join().unwrap())
+        });
+        assert!(early.is_err(), "nothing can be armed before the stream is open");
+        begun.unwrap();
+        assert!(matches!(rig.recorder.state(), RecordingState::Countdown { .. }), "the countdown goes on");
+        rig.recorder.go().unwrap();
+        rig.frames(30);
+        match rig.recorder.stop().unwrap() {
+            RecordingOutcome::Saved { result } => assert_eq!(result.file_bytes, 30),
+            other => panic!("expected a saved take, got {other:?}"),
+        }
+        assert_eq!(rig.streams.running.load(Ordering::SeqCst), 0);
+        assert_eq!(rig.files(), vec!["early.mp4"]);
     }
 }

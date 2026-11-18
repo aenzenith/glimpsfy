@@ -18,7 +18,8 @@
 //! Threads: the commands' blocking calls (opening the stream, finishing the file, exports) run
 //! on worker threads; one countdown thread per take ticks the seconds; one tick thread sends
 //! `record://tick` four times a second while a take runs; one watch thread follows the pointer
-//! for the bubble's drag and hover and the keystroke overlay while a setup or a take is open.
+//! for the bubble's drag and hover and the keystroke overlay while a setup or a take is open; one
+//! thread at start removes the posters of earlier runs.
 
 pub mod media;
 pub mod setup;
@@ -49,6 +50,8 @@ pub const TARGET: &str = "rec-target";
 pub const BAR: &str = "rec-bar";
 pub const CANVAS: &str = "rec-canvas";
 pub const BUBBLE_CONTROLS: &str = "rec-bubble-ctl";
+/// Every panel of the recorder, which a capture's overlay never takes the keyboard from.
+pub const PANELS: [&str; 4] = [TARGET, BAR, CANVAS, BUBBLE_CONTROLS];
 /// The bubble's hover controls, laid over its lower edge.
 const CONTROLS_SIZE: (f64, f64) = (96.0, 44.0);
 
@@ -58,6 +61,8 @@ const TRAY_GLYPH: &[u8] = include_bytes!("../../icons/tray.png");
 /// The recorded part of a take: where it is and what the overlays draw over it.
 #[derive(Clone, Debug)]
 struct Take {
+    /// The recorder's take this is, so a start that failed late clears only its own.
+    id: RecordingId,
     mode: TargetMode,
     display: SetupDisplay,
     /// The recorded rectangle, global.
@@ -67,6 +72,9 @@ struct Take {
     has_system: bool,
     /// Whether the take came from the setup, which returns when the countdown is cancelled.
     from_setup: bool,
+    /// Return was pressed while the stream still opened, when the recorder cannot start yet: the
+    /// take starts the moment the stream is open instead of counting down.
+    skip: bool,
 }
 
 /// The webcam bubble (`record://bubble`), in global points.
@@ -176,6 +184,11 @@ pub fn setup(app: &AppHandle) {
         meter_generation: AtomicU64::new(0),
         watching: AtomicBool::new(false),
     });
+    // A poster is read only in the run that wrote it, so an earlier run's posters serve no one.
+    if let Some(dir) = poster_dir(app) {
+        let started = std::time::SystemTime::now();
+        std::thread::spawn(move || prune_posters(&dir, started));
+    }
 }
 
 /// Runs `f` on the main thread and waits for its answer (up to two seconds).
@@ -1058,6 +1071,7 @@ pub async fn start(app: AppHandle, config: Option<RecordingConfig>) -> CommandRe
     })?;
     let path = glimpsfy_record::files::free_path(&folder, &recording_name(), "mp4");
     let take = Take {
+        id: id.clone(),
         mode,
         display: display.clone(),
         rect,
@@ -1065,12 +1079,19 @@ pub async fn start(app: AppHandle, config: Option<RecordingConfig>) -> CommandRe
         has_system: config.audio.system,
         config: config.clone(),
         from_setup,
+        skip: false,
     };
 
-    // The meters let go of the microphones; the take opens its own.
-    rec.meter_generation.fetch_add(1, Ordering::SeqCst);
     {
         let mut inner = lock(&rec.inner);
+        // The take is claimed here, in one step under the lock: two starts at once (the shortcut
+        // and the button) both passed the check above, and the later one must leave the first
+        // one's windows alone. `finished` gives the claim back.
+        if inner.take.is_some() || rec.recorder.state() != RecordingState::Idle {
+            return Err(CommandError::new(ErrorCode::Busy, "a recording is already running"));
+        }
+        // The meters let go of the microphones; the take opens its own.
+        rec.meter_generation.fetch_add(1, Ordering::SeqCst);
         inner.meter = None;
         let (lift, drop) = setup::keys_offsets(mode, &display);
         inner.canvas = Some(CanvasConfig {
@@ -1097,16 +1118,29 @@ pub async fn start(app: AppHandle, config: Option<RecordingConfig>) -> CommandRe
     let (begin_id, begin_config) = (id.clone(), config.clone());
     let begun = tauri::async_runtime::spawn_blocking(move || recorder.begin(begin_id, begin_config, path, &own))
         .await
-        .map_err(|e| CommandError::internal(e.to_string()))?;
+        .map_err(|e| CommandError::internal(e.to_string()))
+        .and_then(|begun| begun.map_err(CommandError::from));
     if let Err(error) = begun {
-        // Nothing was written: back to the setup as it was.
-        lock(&rec.inner).take = None;
-        end_take_windows(&app, from_setup);
+        // Nothing was written: back to the setup as it was. A countdown cancelled while the
+        // stream opened has already ended through `finished`, and the claim may belong to a
+        // newer take by now, so only this take's own claim and windows go.
+        let ours = {
+            let mut inner = lock(&rec.inner);
+            let ours = inner.take.as_ref().is_some_and(|t| t.id == id);
+            if ours {
+                inner.take = None;
+            }
+            ours
+        };
+        if ours {
+            end_take_windows(&app, from_setup);
+        }
         emit_state(&app);
-        return Err(error.into());
+        return Err(error);
     }
     emit_state(&app);
-    if config.countdown_seconds == 0 {
+    let skipped = lock(&rec.inner).take.as_ref().is_some_and(|t| t.id == id && t.skip);
+    if config.countdown_seconds == 0 || skipped {
         go_live(&app, &id);
     } else {
         countdown(&app, id.clone());
@@ -1139,6 +1173,11 @@ pub fn skip_countdown(app: &AppHandle) -> CommandResult<()> {
     let id = state(app).recorder.current().ok_or_else(|| CommandError::not_found("no recording is running"))?;
     if !matches!(state(app).recorder.state(), RecordingState::Countdown { .. }) {
         return Err(CommandError::invalid("the countdown is over"));
+    }
+    // While the stream opens the recorder refuses to start, and Return used to be lost: the
+    // countdown then ran its full length. `start` reads this once the stream is open.
+    if let Some(take) = lock(&state(app).inner).take.as_mut().filter(|t| t.id == id) {
+        take.skip = true;
     }
     go_live(app, &id);
     Ok(())
@@ -1431,6 +1470,31 @@ fn base64(bytes: &[u8]) -> String {
     out
 }
 
+/// How long a poster stays in the cache. The history reads it once, on a thread it starts the
+/// moment the take is kept, so an hour leaves a wide margin.
+const POSTER_LIFE: Duration = Duration::from_secs(60 * 60);
+
+/// Where the posters go: one PNG per kept take, which only the history's thumbnail reads.
+fn poster_dir(app: &AppHandle) -> Option<std::path::PathBuf> {
+    crate::paths::cache_dir(app).ok().map(|dir| dir.join("recordings"))
+}
+
+/// Removes the posters written before `cutoff`. The history keeps a thumbnail of its own and
+/// never reads a poster again, so without this the folder would grow by one image per take.
+fn prune_posters(dir: &Path, cutoff: std::time::SystemTime) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        // Only plain files the recorder wrote: a link or anything else here is left alone.
+        let is_poster = entry.file_type().is_ok_and(|t| t.is_file())
+            && path.extension().is_some_and(|e| e.eq_ignore_ascii_case("png"));
+        let old = entry.metadata().and_then(|m| m.modified()).is_ok_and(|at| at < cutoff);
+        if is_poster && old {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+}
+
 /// Hands a finished (or partial) take to the history with a poster, shows the toast and opens
 /// the trim window. Off the main thread: the poster decodes a frame.
 fn keep_take(
@@ -1443,7 +1507,10 @@ fn keep_take(
     use crate::windows::{toast, toast_failure, Toast, ToastKind};
 
     state(app).library.remember(result.clone(), None);
-    let poster = crate::paths::cache_dir(app).ok().map(|dir| dir.join("recordings")).and_then(|dir| {
+    let poster = poster_dir(app).and_then(|dir| {
+        if let Some(cutoff) = std::time::SystemTime::now().checked_sub(POSTER_LIFE) {
+            prune_posters(&dir, cutoff);
+        }
         let frame = glimpsfy_record::platform::frame_at(&result.path, 0, 720).ok()?;
         let png = frame.encode(glimpsfy_capture::ImageEncoding::Png(glimpsfy_capture::PngEffort::Fast)).ok()?;
         std::fs::create_dir_all(&dir).ok()?;
@@ -1451,6 +1518,7 @@ fn keep_take(
         std::fs::write(&path, png).ok()?;
         Some(path)
     });
+    let unread = poster.clone();
     let handoff = CaptureHandoff {
         kind: Some(glimpsfy_history::EntryKind::Recording),
         name: result.path.file_stem().map(|s| s.to_string_lossy().into_owned()),
@@ -1466,10 +1534,17 @@ fn keep_take(
         created_at_ms: Some(result.created_at_ms),
         ..CaptureHandoff::default()
     };
-    match record_capture(app, handoff) {
+    let recorded = record_capture(app, handoff);
+    match &recorded {
         Ok(Some(entry)) => state(app).library.set_entry(&result.id, entry.id.0.clone()),
         Ok(None) => {}
         Err(error) => trace::log(format!("[glimpsfy] history of recording {}: {error}", result.id.0)),
+    }
+    // With the history off, or without an entry, no thumbnail will read the poster.
+    if !matches!(recorded, Ok(Some(_))) {
+        if let Some(path) = unread {
+            let _ = std::fs::remove_file(path);
+        }
     }
 
     let display = take.map(|t| t.display.id);
