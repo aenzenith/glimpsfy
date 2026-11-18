@@ -5,6 +5,13 @@
 
 const MARK = /\p{M}/u;
 const TOKEN = /[\p{L}\p{N}]/u;
+/** Han, kana and Hangul (folded into jamo), which are written without spaces between words: each
+ * character starts a word, as `is_cjk` in fold.rs makes it in the store's index. */
+const CJK_RANGES =
+  "\\u1100-\\u11FF\\u2E80-\\u2FDF\\u3005-\\u3007\\u303B\\u303C\\u3040-\\u30FF\\u3130-\\u318F\\u31F0-\\u31FF\\u3400-\\u4DBF" +
+  "\\u4E00-\\u9FFF\\uA960-\\uA97F\\uAC00-\\uD7FF\\uF900-\\uFAFF\\uFF65-\\uFFDC\\u{1B000}-\\u{1B16F}\\u{20000}-\\u{3FFFF}";
+const CJK = new RegExp(`[${CJK_RANGES}]`, "u");
+const CJK_OR_NOT = new RegExp(`[${CJK_RANGES}]+|[^${CJK_RANGES}]+`, "gu");
 
 function foldChar(c: string): string {
   if (c.length === 1 && c.charCodeAt(0) < 128) return c.toLowerCase();
@@ -45,11 +52,12 @@ export function fold(text: string): string {
 }
 
 /** The query's tokens, folded: words split on spaces and on anything that is not a letter or a
- * digit, as the store's tokenizer does. */
+ * digit, as the store's tokenizer does, and a CJK run apart from the letters around it. A CJK run
+ * stays whole, so it is marked only where its characters stand side by side. */
 export function queryTokens(query: string): string[] {
   return fold(query)
     .split(/[^\p{L}\p{N}]+/u)
-    .filter((t) => t.length > 0);
+    .flatMap((t) => t.match(CJK_OR_NOT) ?? []);
 }
 
 export type Range = { start: number; end: number };
@@ -64,7 +72,7 @@ export function matchRanges(text: string, query: string): Range[] {
     let at = folded.indexOf(token);
     while (at >= 0) {
       const before = at > 0 ? folded[at - 1] : "";
-      if (!before || !TOKEN.test(before)) {
+      if (!before || !TOKEN.test(before) || CJK.test(before) || CJK.test(token)) {
         found.push({ start: from[at], end: to[at + token.length - 1] });
       }
       at = folded.indexOf(token, at + 1);

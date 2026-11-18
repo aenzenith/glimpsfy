@@ -19,20 +19,68 @@
 //! "ISTANBUL" and "istanbul". The price is that "kır" also finds "kir", which a search box can
 //! afford. [`FOLD_VERSION`] changes whenever this mapping changes, and the store rebuilds the index
 //! when it finds an index made by another version.
+//!
+//! Chinese and Japanese leave no space between words, so `unicode61` would keep a whole run such
+//! as "明日の会議資料" as one token, and "会議" would never be found inside it. Every Han, kana and
+//! Hangul character ([`is_cjk`]) therefore stands as a token of its own in the index and in the
+//! query, and a query of several such characters is a phrase of single characters, which matches
+//! them only side by side, wherever the run holds them.
 
 use unicode_normalization::char::is_combining_mark;
 use unicode_normalization::UnicodeNormalization;
 
 /// Bumped whenever [`fold`] maps any character differently, so old indexes are rebuilt.
-pub const FOLD_VERSION: i64 = 1;
+pub const FOLD_VERSION: i64 = 2;
 
-/// The folded form of `text`, as the search index stores it and as a query is matched.
+/// The folded form of `text`, as the search index stores it and as a query is matched: folded
+/// for case, accents and the Turkish i's, with a space on both sides of every CJK character.
 pub fn fold(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        fold_char(c, &mut |f| {
+            if is_cjk(f) {
+                out.push(' ');
+                out.push(f);
+                out.push(' ');
+            } else {
+                out.push(f);
+            }
+        });
+    }
+    out
+}
+
+/// `text` folded as [`fold`] does, without the spaces around CJK characters, for sorting by name:
+/// the spaces would put every name that starts with a CJK character first.
+pub fn fold_for_sorting(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for c in text.chars() {
         fold_char(c, &mut |f| out.push(f));
     }
     out
+}
+
+/// Whether `c` belongs to a script written without spaces between words, as [`fold`] leaves it:
+/// Han ideographs, hiragana, katakana and Hangul (whose syllables fold into their jamo).
+pub fn is_cjk(c: char) -> bool {
+    matches!(
+        c,
+        '\u{1100}'..='\u{11FF}'     // Hangul jamo
+        | '\u{2E80}'..='\u{2FDF}'   // CJK and Kangxi radicals
+        | '\u{3005}'..='\u{3007}'   // 々 〆 〇
+        | '\u{303B}'..='\u{303C}'   // 〻 〼
+        | '\u{3040}'..='\u{30FF}'   // hiragana, katakana
+        | '\u{3130}'..='\u{318F}'   // Hangul compatibility jamo
+        | '\u{31F0}'..='\u{31FF}'   // katakana phonetic extensions
+        | '\u{3400}'..='\u{4DBF}'   // CJK extension A
+        | '\u{4E00}'..='\u{9FFF}'   // CJK unified ideographs
+        | '\u{A960}'..='\u{A97F}'   // Hangul jamo extended A
+        | '\u{AC00}'..='\u{D7FF}'   // Hangul syllables, jamo extended B
+        | '\u{F900}'..='\u{FAFF}'   // CJK compatibility ideographs
+        | '\u{FF65}'..='\u{FFDC}'   // half-width katakana and Hangul
+        | '\u{1B000}'..='\u{1B16F}' // kana supplement and extended A
+        | '\u{20000}'..='\u{3FFFF}' // CJK extensions B to H, compatibility supplement
+    )
 }
 
 fn fold_char(c: char, emit: &mut impl FnMut(char)) {
@@ -108,9 +156,22 @@ impl Query {
         self.groups.is_empty()
     }
 
-    /// Every token of every group, for marking matches.
-    pub fn tokens(&self) -> impl Iterator<Item = &str> {
-        self.groups.iter().flatten().map(String::as_str)
+    /// What marking looks for in the original text: every token of every group, except that the
+    /// single-character tokens of a CJK run are looked for together, as the phrase that matched.
+    pub fn needles(&self) -> Vec<String> {
+        let mut needles: Vec<String> = Vec::new();
+        for group in &self.groups {
+            let mut run_open = false;
+            for token in group {
+                let cjk = token.chars().all(is_cjk);
+                match needles.last_mut() {
+                    Some(last) if cjk && run_open => last.push_str(token),
+                    _ => needles.push(token.clone()),
+                }
+                run_open = cjk;
+            }
+        }
+        needles
     }
 
     /// The FTS5 expression: each group is a phrase whose last token matches as a prefix, so the
@@ -126,17 +187,18 @@ impl Query {
 }
 
 /// The UTF-16 ranges of `text` where a query token starts a word, as `(start, end)` pairs in
-/// order and merged where they touch.
+/// order and merged where they touch. Every CJK character starts a word, as it does in the index.
 pub fn match_ranges(text: &str, query: &Query) -> Vec<(u32, u32)> {
     let (chars, origin) = fold_mapped(text);
     let mut ranges: Vec<(u32, u32)> = Vec::new();
-    for token in query.tokens() {
+    for token in query.needles() {
         let token: Vec<char> = token.chars().collect();
         if token.is_empty() || token.len() > chars.len() {
             continue;
         }
         for start in 0..=chars.len() - token.len() {
-            let at_word_start = start == 0 || !is_token_char(chars[start - 1]);
+            let at_word_start =
+                start == 0 || !is_token_char(chars[start - 1]) || is_cjk(chars[start - 1]) || is_cjk(chars[start]);
             if at_word_start && chars[start..start + token.len()] == token[..] {
                 ranges.push((origin[start].0, origin[start + token.len() - 1].1));
             }

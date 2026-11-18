@@ -12,7 +12,7 @@
 use rusqlite::functions::FunctionFlags;
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 
-use crate::fold::{fold, FOLD_VERSION};
+use crate::fold::{fold, fold_for_sorting, FOLD_VERSION};
 use crate::{HistoryError, Result};
 
 /// One SQL batch per version; `MIGRATIONS[0]` makes version 1 from an empty database.
@@ -97,7 +97,7 @@ pub(crate) fn prepare(conn: &Connection) -> Result<()> {
         FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
         |ctx| Ok(ctx.get::<Option<String>>(0)?.map(|text| fold(&text))),
     )?;
-    conn.create_collation("FOLDED", |a, b| fold(a).cmp(&fold(b)))?;
+    conn.create_collation("FOLDED", |a, b| fold_for_sorting(a).cmp(&fold_for_sorting(b)))?;
     Ok(())
 }
 

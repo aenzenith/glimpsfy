@@ -1,6 +1,7 @@
 //! The history deletes user data, so these tests cover what would fail silently and could not be
-//! undone: what a sweep and a delete remove, migrations of older databases, the Turkish search,
-//! the crash invariant, and an edit revised by later outputs.
+//! undone: what a sweep and a delete remove, migrations of older databases, the Turkish and CJK
+//! search with its index rebuild, the crash invariant, an edit revised by later outputs, and text
+//! read from an image the entry no longer shows.
 
 use std::fs;
 use std::io;
@@ -569,6 +570,60 @@ fn search_finds_turkish_text_by_any_i_and_forgets_deleted_entries() {
         .query_row("SELECT count(*) FROM entries_fts", [], |r| r.get(0))
         .unwrap();
     assert_eq!(raw, 1, "the index holds nothing of deleted entries");
+}
+
+/// Chinese and Japanese leave no space between words, and Korean glues particles to its words, so
+/// a word is found inside a run, in the recognised text and in names, and marked on its own
+/// characters; Latin words keep matching from their start only. An index the first folding made
+/// (each run one token, which found nothing inside it) is rebuilt at the next start.
+#[test]
+fn search_finds_cjk_words_inside_a_run_and_rebuilds_an_older_index() {
+    let f = fixture(false);
+    let minutes = add_read(&f, screenshot("議事録", NOW), "明日の会議資料を送ります");
+    add_read(&f, screenshot("预算", NOW - DAY), "我们明天开会讨论预算");
+    add_read(&f, screenshot("메모", NOW - 2 * DAY), "회의실예약을확인하세요");
+    add_read(&f, screenshot("Mail", NOW - 3 * DAY), "Q3会議 notes");
+
+    let cases: &[(&str, &[&str])] = &[
+        ("会議", &["議事録", "Mail"]),
+        ("資料", &["議事録"]),
+        ("会議資料", &["議事録"]),
+        ("資会", &[]),
+        ("事録", &["議事録"]),
+        ("开会", &["预算"]),
+        ("讨论预算", &["预算"]),
+        ("예약", &["메모"]),
+        ("q3", &["Mail"]),
+        ("q3会議", &["Mail"]),
+        ("otes", &[]),
+    ];
+    for (query, expected) in cases {
+        let page = f.store.search(query, &HistoryQuery::default()).unwrap();
+        let mut found = ids(&page);
+        found.sort();
+        let mut expected: Vec<String> = expected.iter().map(|s| s.to_string()).collect();
+        expected.sort();
+        assert_eq!(found, expected, "query {query:?}");
+    }
+    let marked = |query: &str, id: &EntryId| -> Vec<String> {
+        let page = f.store.search(query, &HistoryQuery::default()).unwrap();
+        let found = page.items.iter().find(|i| &i.entry.id == id).unwrap().text_match.clone().unwrap();
+        let units: Vec<u16> = found.snippet.encode_utf16().collect();
+        found.highlights.iter().map(|h| String::from_utf16_lossy(&units[h.start as usize..h.end as usize])).collect()
+    };
+    assert_eq!(marked("会議", &minutes.id), vec!["会議".to_string()]);
+
+    let conn = Connection::open(f.store.paths().database()).unwrap();
+    conn.execute(
+        "UPDATE entries_fts SET text = ?1 WHERE rowid = (SELECT seq FROM entries WHERE id = ?2)",
+        ["明日の会議資料を送ります", &minutes.id.0],
+    )
+    .unwrap();
+    conn.execute("UPDATE meta SET value = 1 WHERE key = 'fold_version'", []).unwrap();
+    drop(conn);
+    assert_eq!(f.store.search("資料", &HistoryQuery::default()).unwrap().total, 0, "the old index misses it");
+    let reopened = HistoryStore::open(f.store.paths().clone(), f.trash.clone()).unwrap();
+    assert_eq!(ids(&reopened.search("資料", &HistoryQuery::default()).unwrap()), vec!["議事録".to_string()]);
 }
 
 /// The crash invariant: a file written for an entry whose row never got committed (or a
