@@ -665,6 +665,8 @@ impl Recorder {
     pub fn pause(&self) -> Result<()> {
         let mut inside = lock(&self.inside);
         inside.machine.pause()?;
+        // Paused by hand, the take stays paused through a later Discard and Keep.
+        inside.resume_on_keep = false;
         self.pause_take(&inside);
         Ok(())
     }
@@ -679,6 +681,8 @@ impl Recorder {
     pub fn resume(&self) -> Result<()> {
         let mut inside = lock(&self.inside);
         inside.machine.resume()?;
+        // Resuming answers the question Discard asked, so what it paused is no longer its pause.
+        inside.resume_on_keep = false;
         if let Some(take) = &inside.take {
             let now = self.env.clock.now();
             lock(&take.shared.inner).timeline.resume(now);
