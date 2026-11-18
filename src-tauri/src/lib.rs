@@ -124,6 +124,16 @@ pub fn run() {
             ));
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running Glimpsfy");
+        .build(tauri::generate_context!())
+        .expect("error while building Glimpsfy")
+        .run(|app, event| {
+            // Every quit (the menu, Settings, the dev driver) comes through here. A take still
+            // running would be cut at its last fragment and miss the history, so it ends first.
+            // A restart cannot be held; Tauri ignores `prevent_exit` for it.
+            if let tauri::RunEvent::ExitRequested { code, api, .. } = &event {
+                if *code != Some(tauri::RESTART_EXIT_CODE) && recording::hold_exit(app) {
+                    api.prevent_exit();
+                }
+            }
+        });
 }

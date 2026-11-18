@@ -19,15 +19,17 @@
 //! on worker threads; one countdown thread per take ticks the seconds; one tick thread sends
 //! `record://tick` four times a second while a take runs; one watch thread follows the pointer
 //! for the bubble's drag and hover and the keystroke overlay while a setup or a take is open; one
-//! thread at start removes the posters of earlier runs.
+//! thread at start removes the posters of earlier runs. A quit during a take holds the exit
+//! ([`hold_exit`]); one quit thread stops the take as Stop does, waits until its file is finished
+//! and in the history, and exits.
 
 pub mod media;
 pub mod setup;
 
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use glimpsfy_capture::{LogicalPoint, LogicalRect, StreamTarget};
 use glimpsfy_record::devices::Meter;
@@ -145,6 +147,27 @@ pub struct RecordingApp {
     meter_generation: AtomicU64,
     /// Whether the watch thread runs.
     watching: AtomicBool,
+    /// Takes being finished or handed to the history ([`Ending`]); a quit waits for them.
+    ending: AtomicUsize,
+    /// Until when a quit waits for the take, once one asked.
+    quitting: Mutex<Option<Instant>>,
+}
+
+/// Counts a take as being finished or handed to the history while it lives. The recorder is
+/// idle again before the hand-off starts, so its state alone would let a quit exit in between.
+struct Ending(AppHandle);
+
+impl Ending {
+    fn new(app: &AppHandle) -> Ending {
+        state(app).ending.fetch_add(1, Ordering::SeqCst);
+        Ending(app.clone())
+    }
+}
+
+impl Drop for Ending {
+    fn drop(&mut self) {
+        state(&self.0).ending.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -163,6 +186,7 @@ pub fn setup(app: &AppHandle) {
         let id = id.clone();
         // The fault arrives on a capture thread; finishing the file blocks, so it gets its own.
         std::thread::spawn(move || {
+            let _ending = Ending::new(&app);
             trace::log(format!("[glimpsfy] recording {} stopped on its own", id.0));
             if let Some(outcome) = state(&app).recorder.finish_fault() {
                 finished(&app, outcome);
@@ -183,6 +207,8 @@ pub fn setup(app: &AppHandle) {
         inner: Mutex::new(Inner::default()),
         meter_generation: AtomicU64::new(0),
         watching: AtomicBool::new(false),
+        ending: AtomicUsize::new(0),
+        quitting: Mutex::new(None),
     });
     // A poster is read only in the run that wrote it, so an earlier run's posters serve no one.
     if let Some(dir) = poster_dir(app) {
@@ -1319,6 +1345,7 @@ pub async fn cancel_countdown(app: AppHandle) -> CommandResult<()> {
 /// Stops the take and resolves when the file is complete.
 pub async fn stop(app: AppHandle) -> CommandResult<glimpsfy_record::RecordingResult> {
     let recorder = state(&app).recorder.clone();
+    let _ending = Ending::new(&app);
     let id = match recorder.state() {
         RecordingState::Recording { id, .. } | RecordingState::Paused { id, .. } => id,
         RecordingState::Countdown { .. } => {
@@ -1360,6 +1387,7 @@ pub async fn discard(app: AppHandle, confirmed: bool) -> CommandResult<&'static 
         emit_state(&app);
         return Ok("asked");
     }
+    let _ending = Ending::new(&app);
     let id = recorder.current();
     if let Some(id) = id {
         let _ = app.emit(events::STATE, RecordingState::Finishing { id });
@@ -1428,16 +1456,22 @@ pub fn finished(app: &AppHandle, outcome: RecordingOutcome) {
     let _ = app.emit(events::FINISHED, &outcome);
     match outcome {
         RecordingOutcome::Saved { result } => {
-            let app = app.clone();
-            std::thread::spawn(move || keep_take(&app, take.as_ref(), result, None));
+            let (app, ending) = (app.clone(), Ending::new(app));
+            std::thread::spawn(move || {
+                keep_take(&app, take.as_ref(), result, None);
+                drop(ending);
+            });
         }
         RecordingOutcome::Failed { code, message, partial, .. } => {
             let error = CommandError::new(error_code(&code), message);
             match partial {
                 // What was written plays to its last fragment: it is kept, in the history too.
                 Some(result) => {
-                    let app = app.clone();
-                    std::thread::spawn(move || keep_take(&app, take.as_ref(), result, Some(error)));
+                    let (app, ending) = (app.clone(), Ending::new(app));
+                    std::thread::spawn(move || {
+                        keep_take(&app, take.as_ref(), result, Some(error));
+                        drop(ending);
+                    });
                 }
                 None => windows::toast_failure(app, take.as_ref().map(|t| t.display.id), &error),
             }
@@ -1545,6 +1579,11 @@ fn keep_take(
         if let Some(path) = unread {
             let _ = std::fs::remove_file(path);
         }
+    }
+    // Quitting: the file is complete and in the history, and a toast or the trim window would
+    // only flash before the app goes.
+    if lock(&state(app).quitting).is_some() {
+        return;
     }
 
     let display = take.map(|t| t.display.id);
@@ -1688,6 +1727,68 @@ pub fn stop_from_tray(app: &AppHandle) -> bool {
         });
     }
     running
+}
+
+/// How long a quit waits for the take before the app exits anyway; finishing a file takes a
+/// second or two, and what a later exit cuts off still plays to its last fragment.
+const QUIT_WAIT: Duration = Duration::from_secs(30);
+
+/// Asked when the app is about to exit (`RunEvent::ExitRequested`). A take that is counting down,
+/// recording, paused or being finished ends first, as Stop ends it, so its file is complete and
+/// reaches the history; the exit comes again once it has, or after [`QUIT_WAIT`]. Returns whether
+/// this exit has to wait.
+pub fn hold_exit(app: &AppHandle) -> bool {
+    let Some(recording) = app.try_state::<RecordingApp>() else { return false };
+    let busy = take_running(&recording);
+    let mut quitting = lock(&recording.quitting);
+    match *quitting {
+        // The exit the quit thread asks for at the end, or another quit meanwhile, which waits
+        // for the same take.
+        Some(deadline) => busy && Instant::now() < deadline,
+        None if !busy => false,
+        None => {
+            let deadline = Instant::now() + QUIT_WAIT;
+            *quitting = Some(deadline);
+            let app = app.clone();
+            std::thread::spawn(move || end_for_quit(&app, deadline));
+            true
+        }
+    }
+}
+
+fn take_running(recording: &RecordingApp) -> bool {
+    recording.recorder.state() != RecordingState::Idle || recording.ending.load(Ordering::SeqCst) > 0
+}
+
+/// The quit thread: stops the take and exits once it has ended. A countdown that went live while
+/// it was being cancelled is stopped by the next round.
+fn end_for_quit(app: &AppHandle, deadline: Instant) {
+    let mut step: Option<std::thread::JoinHandle<()>> = None;
+    while take_running(state(app)) && Instant::now() < deadline {
+        let now = state(app).recorder.state();
+        let running = matches!(
+            now,
+            RecordingState::Countdown { .. } | RecordingState::Recording { .. } | RecordingState::Paused { .. }
+        );
+        // Finishing (a Stop, a Discard or a failure under way) ends on its own.
+        if running && step.as_ref().is_none_or(|s| s.is_finished()) {
+            let app = app.clone();
+            step = Some(std::thread::spawn(move || {
+                if let Err(error) = tauri::async_runtime::block_on(stop(app)) {
+                    if error.code != ErrorCode::Cancelled {
+                        trace::log(format!("[glimpsfy] stopping the recording to quit: {error}"));
+                    }
+                }
+            }));
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    if take_running(state(app)) {
+        trace::log("[glimpsfy] quit: the recording did not finish in time");
+    }
+    // This exit goes through whatever started meanwhile.
+    *lock(&state(app).quitting) = Some(Instant::now());
+    app.exit(0);
 }
 
 /// Whether the recording actions have their keys: always, now that recording works.
