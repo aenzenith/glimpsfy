@@ -31,6 +31,11 @@ pub enum ErrorCode {
     Capture,
     /// An upload provider refused or failed; the message carries the provider's reason.
     Provider,
+    /// The user has not confirmed uploads to this destination yet, so nothing was sent. It is the
+    /// user's own consent, not a macOS permission, so it has a code of its own.
+    NotConfirmed,
+    /// The system keychain could not be opened, or refused to read, write or delete a secret.
+    Keychain,
     /// The user cancelled.
     Cancelled,
     Internal,

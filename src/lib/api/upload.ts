@@ -3,7 +3,7 @@
 // import. Mirrors src-tauri/src/commands/upload.rs and crates/upload/src/{lib,schema,consent}.rs.
 //
 // Nothing leaves the Mac on its own: an upload, a test or a deletion starts only from a user
-// action, and the core refuses each one (`permission_denied`) until the user confirmed the
+// action, and the core refuses each one (`not_confirmed`) until the user confirmed the
 // provider's destination once in `src/upload/FirstUploadDialog.vue`. A secret is sent once with
 // `upload_set_secret` and goes to the keychain; it never comes back and is never in the settings.
 

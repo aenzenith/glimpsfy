@@ -55,13 +55,13 @@ impl From<UploadError> for CommandError {
                 ErrorCode::InvalidArgument
             }
             // The user has not allowed this destination yet: the page shows the confirmation.
-            UploadError::NotConfirmed { .. } => ErrorCode::PermissionDenied,
+            UploadError::NotConfirmed { .. } => ErrorCode::NotConfirmed,
             UploadError::Provider { .. }
             | UploadError::Network(_)
             | UploadError::FileTooLarge { .. }
             | UploadError::HostNotAllowed { .. } => ErrorCode::Provider,
             UploadError::Cancelled => ErrorCode::Cancelled,
-            UploadError::Keychain(_) => ErrorCode::Io,
+            UploadError::Keychain(_) => ErrorCode::Keychain,
             UploadError::Io(io) if io.kind() == std::io::ErrorKind::NotFound => ErrorCode::NotFound,
             UploadError::Io(_) => ErrorCode::Io,
         };
@@ -132,7 +132,7 @@ pub mod events {
 
 // ------------------------------------------------------------------------------- the engine
 
-static UPLOADER: OnceLock<Result<Uploader, String>> = OnceLock::new();
+static UPLOADER: OnceLock<Result<Uploader, CommandError>> = OnceLock::new();
 static APP: OnceLock<AppHandle> = OnceLock::new();
 
 /// Keeps the app handle for `upload_delete`, which the history calls without one.
@@ -145,7 +145,9 @@ pub fn setup(app: &AppHandle) {
 fn uploader() -> CommandResult<&'static Uploader> {
     UPLOADER
         .get_or_init(|| {
-            let mut secrets = SecretStore::system().map_err(|error| error.to_string())?;
+            // A keychain that will not open answers `keychain`; a platform without one wired in
+            // answers `not_implemented`.
+            let mut secrets = SecretStore::system().map_err(CommandError::from)?;
             if let Some(prefix) = crate::paths::keychain_prefix() {
                 secrets = secrets.with_service_prefix(&prefix);
             }
@@ -153,7 +155,7 @@ fn uploader() -> CommandResult<&'static Uploader> {
             Ok(Uploader::new(glimpsfy_upload::builtin_providers(), secrets, client))
         })
         .as_ref()
-        .map_err(|reason| CommandError::new(ErrorCode::NotImplemented, reason.clone()))
+        .map_err(Clone::clone)
 }
 
 /// The settings an engine call reads for `provider`.
@@ -289,7 +291,7 @@ pub struct UploadStarted {
 }
 
 /// Uploads the selection of a capture as a PNG to the named provider, or to the default one.
-/// Every check runs before the capture closes, so a refusal (`permission_denied` when the
+/// Every check runs before the capture closes, so a refusal (`not_confirmed` when the
 /// destination is not confirmed yet, `invalid_argument` for a missing key or no provider) leaves
 /// the overlay open. Once admitted, the capture closes as `uploaded` and the history records it
 /// with its image before the upload starts, so the link lands on that entry. Returns the upload's
@@ -764,7 +766,7 @@ pub fn delete_hosted(
 }
 
 /// Checks a provider's settings and secrets against its host ("Test the connection"). It sends a
-/// request, so it needs the confirmation like an upload (`permission_denied` until then). ImgBB
+/// request, so it needs the confirmation like an upload (`not_confirmed` until then). ImgBB
 /// and a custom uploader receive a 1 × 1 test image; an S3 bucket receives a small text file,
 /// which is deleted again.
 #[tauri::command]

@@ -23,6 +23,10 @@ export function describeError(error: unknown): string {
         return t("settings.error.notFound", { detail: error.message });
       case "provider":
         return t("settings.error.provider", { detail: error.message });
+      case "not_confirmed":
+        return t("error.not_confirmed");
+      case "keychain":
+        return t("settings.error.keychain", { detail: error.message });
       default:
         return t("settings.error.other", { detail: error.message });
     }

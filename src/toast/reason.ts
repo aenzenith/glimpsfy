@@ -12,6 +12,8 @@ const REASON: Partial<Record<ErrorCode, Key>> = {
   busy: "toast.reason.busy",
   capture: "toast.reason.capture",
   provider: "toast.reason.provider",
+  not_confirmed: "error.not_confirmed",
+  keychain: "error.keychain",
   invalid_argument: "toast.reason.invalid_argument",
   cancelled: "toast.reason.cancelled",
 };

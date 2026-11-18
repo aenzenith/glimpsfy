@@ -83,7 +83,8 @@ const BY_PLACE: Record<ErrorPlace, Partial<Record<ErrorCode, Key>>> = {
     io: "record.error.export.io",
   },
   upload: {
-    permission_denied: "record.error.upload.permission_denied",
+    not_confirmed: "record.error.upload.permission_denied",
+    keychain: "error.keychain",
     invalid_argument: "record.error.upload.invalid_argument",
     provider: "record.error.upload.provider",
     not_found: "record.error.upload.not_found",

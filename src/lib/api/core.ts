@@ -15,6 +15,8 @@ export type ErrorCode =
   | "io"
   | "capture"
   | "provider"
+  | "not_confirmed"
+  | "keychain"
   | "cancelled"
   | "internal";
 
