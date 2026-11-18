@@ -253,7 +253,7 @@ pub fn setup(app: &AppHandle) {
             };
             let app = handle.clone();
             tauri::async_runtime::spawn_blocking(move || match &done.entry_id {
-                Some(id) => record_upload(&app, id, &done.result),
+                Some(id) => record_upload(&app, id, &done.file_name, &done.result),
                 None => record_link_only(&app, &done.file_name, &done.result),
             });
         });
@@ -721,10 +721,13 @@ pub fn editor_source(entry: &Entry) -> CommandResult<EditorSource> {
     Ok(EditorSource { image, document: None, edit_of: None })
 }
 
-fn record_upload(app: &AppHandle, id: &EntryId, result: &UploadResult) {
+fn record_upload(app: &AppHandle, id: &EntryId, file_name: &str, result: &UploadResult) {
     let Ok(store) = store(app) else { return };
     match store.set_hosted(id, Some(hosted_copy(result))) {
         Ok(entry) => changed(app, HistoryChanged::Updated { entry: light(entry) }),
+        // The entry was deleted while its upload ran. The copy is public all the same, so its link
+        // and deletion handle go into a link-only entry, from which the user can still delete it.
+        Err(HistoryError::NotFound(_)) => record_link_only(app, file_name, result),
         Err(error) => trace::log(format!("[glimpsfy] history: the link of {id} was not recorded: {error}")),
     }
 }
@@ -754,7 +757,12 @@ fn record_link_only(app: &AppHandle, file_name: &str, result: &UploadResult) {
     } else {
         EntryKind::Screenshot
     };
-    let name = path.file_stem().map(|s| s.to_string_lossy().trim().to_string()).filter(|s| !s.is_empty());
+    // An entry's own copy is named after its id (`<id>.png`, `<id>-<suffix>.png`), which says
+    // nothing to the user.
+    let name = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().trim().to_string())
+        .filter(|s| !s.is_empty() && !(s.len() >= 29 && s.as_bytes()[12] == b'-' && EntryId::is_well_formed(s)));
     let new = NewEntry {
         kind: Some(kind),
         name: name.unwrap_or_else(|| result.provider.0.clone()),
