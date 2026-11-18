@@ -100,7 +100,7 @@ export function formatWhen(ms: number, now: number, lang: Language, words: { tod
 }
 
 export function extensionOf(entry: Entry): string {
-  const path = entry.savedPath ?? entry.file ?? "";
+  const path = mediaPath(entry) ?? "";
   const dot = path.lastIndexOf(".");
   return dot > path.lastIndexOf("/") && dot >= 0 ? path.slice(dot + 1).toUpperCase() : entry.kind === "recording" ? "MP4" : "PNG";
 }
@@ -110,9 +110,13 @@ export function fileName(path: string | null): string {
   return path.slice(path.lastIndexOf("/") + 1);
 }
 
-/** The file the user sees: the saved one, or the history's own copy. */
-export function mediaPath(entry: Entry): string | null {
-  return entry.savedPath ?? entry.file;
+/** The file that holds the image the entry shows, as `Entry::media_path` in the core picks it: the
+ * history's own copy when there is one, else the saved file. An entry has both after a Save
+ * followed by a Copy of more drawing, and then the saved file is the older image, which may lack a
+ * redaction made since; so uploads, copies and the format read from here. Only actions on the
+ * saved file as a place (Show in Finder, the Trash) use `savedPath` itself. */
+export function mediaPath(entry: Pick<Entry, "file" | "savedPath">): string | null {
+  return entry.file ?? entry.savedPath;
 }
 
 // ------------------------------------------------------------------------------ grid layout

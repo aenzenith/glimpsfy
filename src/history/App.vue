@@ -521,6 +521,8 @@ const act: Actions = {
   reveal(id) {
     const entry = entryOf(id);
     if (!entry) return;
+    // A place, not the picture: the user's own file first, even when a later Copy made a newer
+    // own copy (`mediaPath`), because that is the file they know and look for in Finder.
     const first = entry.savedPath ?? entry.file;
     if (!first) return toast(t("history.toast.missing"), undefined, "warn");
     output_reveal(first).catch((e) => {

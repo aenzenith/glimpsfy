@@ -19,6 +19,7 @@ import KeyCaps from "../components/KeyCaps.vue";
 import ProgressRing from "../components/ProgressRing.vue";
 import SegmentedControl from "../components/SegmentedControl.vue";
 import TipWrap from "../components/TipWrap.vue";
+import { mediaPath } from "../history/model";
 import {
   CAPTURE_COUNTDOWN,
   capture_cancel_delay,
@@ -322,8 +323,9 @@ function sub(entry: Entry): string {
   return parts.join(" · ");
 }
 
-/** The file an upload or a reveal works on: the saved copy, or the history's own. */
-const pathOf = (entry: Entry) => entry.savedPath ?? entry.file;
+/** The file an upload works on and whose format the first-upload dialog names: the image the entry
+ * shows (`mediaPath`), never an older saved file. Show in Finder goes to `savedPath` itself. */
+const pathOf = (entry: Entry) => mediaPath(entry);
 
 type ActId = "copy" | "upload" | "link" | "cancel" | "pin" | "editor" | "trim" | "folder";
 type Act = { id: ActId; icon: string; label: Key; caps: string[] };

@@ -234,9 +234,10 @@ pub fn popover_fit(app: AppHandle, height: f64) {
     popover::fit(&app, height);
 }
 
-/// Starts dragging a history entry out of the popover as a file: the saved file when there is
-/// one, the history's own copy otherwise. The page calls it once the pointer moved a few points
-/// with the button down.
+/// Starts dragging a history entry out of the popover as a file: the image the entry shows
+/// (`Entry::media_path`), which is the history's own copy when a later Copy made one after a
+/// Save. The older saved file is never handed out instead, since it may lack a redaction made
+/// since. The page calls it once the pointer moved a few points with the button down.
 #[tauri::command]
 pub async fn popover_drag_out(
     app: AppHandle,
@@ -245,10 +246,9 @@ pub async fn popover_drag_out(
 ) -> CommandResult<()> {
     let entry = super::history::history_get(app.clone(), entry_id).await?;
     let file = entry
-        .saved_path
-        .clone()
+        .media_path()
         .filter(|p| p.exists())
-        .or(entry.file.clone())
+        .map(std::path::Path::to_path_buf)
         .ok_or_else(|| CommandError::not_found("the file of this history entry"))?;
     let image = entry.thumbnail.clone().unwrap_or_else(|| file.clone());
     #[cfg(target_os = "macos")]

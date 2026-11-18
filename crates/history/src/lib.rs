@@ -276,6 +276,7 @@ pub struct Entry {
     pub created_at_ms: i64,
     /// The history's own copy of the image or video, inside the history's folder. A capture that
     /// only went to the clipboard has one; a saved capture is read from [`Entry::saved_path`].
+    /// With both set, this one is the newer image ([`Entry::media_path`]).
     pub file: Option<PathBuf>,
     /// The thumbnail the history grid shows, once it is made.
     pub thumbnail: Option<PathBuf>,
@@ -310,7 +311,12 @@ pub struct Entry {
 }
 
 impl Entry {
-    /// The file that holds the capture: the history's own copy, or the user's saved file.
+    /// The file that holds the image the entry shows: the history's own copy, or the user's saved
+    /// file. An entry has both after a Save followed by a Copy of more drawing (see
+    /// [`Revision`]), and then the own copy is the newer image: the saved file may lack a
+    /// redaction made since. Whatever shows, reads, copies, uploads or hands out the capture uses
+    /// this path (the pages mirror it as `mediaPath` in `src/history/model.ts`); only actions on
+    /// the user's file as a place (Show in Finder, moving it to the Trash) use `saved_path`.
     pub fn media_path(&self) -> Option<&Path> {
         self.file.as_deref().or(self.saved_path.as_deref())
     }
