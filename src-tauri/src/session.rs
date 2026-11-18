@@ -982,6 +982,14 @@ pub fn displays_changed(app: &AppHandle) {
     let unchanged = |entry: &SessionDisplay, display: &Display| {
         display.frame == entry.display.frame && display.pixel_size == entry.display.pixel_size
     };
+    // A display that was connected after the frames were taken has no frame, and its overlay
+    // would never show: the user would see the live desktop there and keys would skip it.
+    // One unplugged and plugged back in keeps its id, and its entry is only marked removed.
+    if let Some(added) = now.iter().find(|d| current.display(d.id).is_none_or(|e| !e.live())) {
+        trace::log(format!("[glimpsfy] capture #{} closed: display {} was added", current.id.0, added.id.0));
+        close(app, current.id, CloseReason::Cancelled);
+        return;
+    }
     let mut gone = Vec::new();
     for entry in current.displays.iter().filter(|d| d.live()) {
         match now.iter().find(|d| d.id == entry.display.id) {
