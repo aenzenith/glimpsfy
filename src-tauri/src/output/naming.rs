@@ -6,6 +6,7 @@
 //! reserved device name (`CON`, `NUL`, `COM1`…) can reach it, and each is neutralised before the
 //! name meets the file system.
 
+use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, ErrorKind, Write};
 use std::path::{Path, PathBuf};
@@ -193,9 +194,18 @@ fn write_unique(
 ) -> io::Result<PathBuf> {
     fs::create_dir_all(folder)?;
     let extension = neutralise(extension).trim_matches('.').to_string();
+    let mut tried = HashSet::new();
     for n in 1..=MAX_ATTEMPTS {
         let stem = stem(n);
-        let name = if counts || n == 1 { format!("{stem}.{extension}") } else { format!("{stem} ({n}).{extension}") };
+        // A long title can push `{counter}` past the length limit, so the counting stem comes
+        // out the same for every number; a stem met before gets the suffix, or every attempt
+        // would try the one taken name.
+        let fresh = tried.insert(stem.clone());
+        let name = if n == 1 || (counts && fresh) {
+            format!("{stem}.{extension}")
+        } else {
+            format!("{stem} ({n}).{extension}")
+        };
         let path = folder.join(name);
         match OpenOptions::new().write(true).create_new(true).open(&path) {
             Ok(mut file) => {
