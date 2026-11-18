@@ -35,6 +35,13 @@ pub struct Stored<'a> {
     pub confirmed: &'a [String],
 }
 
+/// What the keychain holds for a pair whose value is empty, such as a `.sxcu` argument that only
+/// has to be present. A name with no stored value is one whose value is missing, and an empty
+/// keychain item is not something every store keeps (`keyring-core` says so), so the empty value
+/// is written as this text, wrapped in NUL characters no header allows and no host expects, and
+/// read back as empty.
+const EMPTY_PAIR_VALUE: &str = "\u{0}glimpsfy:empty\u{0}";
+
 /// Runs the providers.
 pub struct Uploader {
     providers: Vec<Arc<dyn Provider>>,
@@ -123,6 +130,7 @@ impl Uploader {
                     for name in &names {
                         let key = pair_secret_key(&field.key, name);
                         if let Some(secret) = self.secrets.get(&id, &key)? {
+                            let secret = if secret.expose() == EMPTY_PAIR_VALUE { Secret::new("") } else { secret };
                             config.secrets.insert(key, secret);
                         }
                     }
@@ -366,7 +374,7 @@ impl Uploader {
         }
         let mut secret_keys = Vec::new();
         for (key, value) in &imported.secrets {
-            self.secrets.set(&id, key, value)?;
+            self.secrets.set(&id, key, if value.is_empty() { EMPTY_PAIR_VALUE } else { value })?;
             secret_keys.push(key.clone());
         }
         let mut config = ProviderConfig { values: imported.values.clone(), ..ProviderConfig::default() };

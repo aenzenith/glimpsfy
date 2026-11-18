@@ -132,9 +132,9 @@ pub fn read(text: &str) -> Result<Imported, SxcuError> {
                     _ => return Err(refuse(field_name(field), "upload.sxcu.pairValue")),
                 };
                 Template::parse(&value, Place::Request).map_err(|e| refuse(field_name(field), e.message))?;
-                if !value.is_empty() {
-                    secrets.push((pair_secret_key(field, &key), value));
-                }
+                // An empty value is kept too: hosts read such a field as a switch (0x0.st's
+                // `secret`), and a name without a stored value is one the form asks for again.
+                secrets.push((pair_secret_key(field, &key), value));
                 names.push(key);
             }
         }

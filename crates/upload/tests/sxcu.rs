@@ -156,3 +156,44 @@ fn deeply_nested_calls_are_refused_without_crashing() {
     // Nesting as deep as a real template goes still reads.
     assert!(Template::parse("{base64:{random:{filename}|{base64:x}}}", Place::Request).is_ok());
 }
+
+/// The request is the one the file describes: a parameter, header or argument whose value is
+/// empty is sent empty (hosts read such fields as switches), and a file name with `#`, `%`, `?`
+/// or spaces fills the request URL percent-encoded, so it cannot cut the path or start a query.
+#[test]
+fn empty_values_are_sent_and_the_file_name_is_encoded_in_the_address() {
+    let server = TestServer::start(|_| Reply::json(200, json!({ "url": "https://files.example/i/1.png" })));
+    let uploader = Uploader::new(
+        glimpsfy_upload::builtin_providers(),
+        SecretStore::with_store(keyring_core::mock::Store::new().expect("the mock keychain")),
+        HttpClient::for_tests(),
+    );
+    let id = ProviderId::new(providers::CUSTOM);
+    let text = json!({
+        "RequestURL": format!("{}/put/{{filename}}?name={{filename}}", server.origin()),
+        "FileFormName": "file", "URL": "{json:url}",
+        "Parameters": { "flag": "" }, "Headers": { "X-Switch": "" }, "Arguments": { "secret": "", "kind": "png" }
+    });
+    let imported = uploader.import_sxcu(&text.to_string(), None).expect("the file imports");
+    // The form asks for no value it would then refuse.
+    for key in ["parameters:flag", "headers:X-Switch", "arguments:secret"] {
+        assert!(uploader.secret_status(&id, key).expect("the keychain answers"), "{key} has no value");
+    }
+    let values: Value = serde_json::to_value(&imported.values).expect("values serialize");
+    let confirmed = [uploader.consent_key(&id, Some(&values)).expect("a consent key")];
+    let stored = Stored { values: Some(&values), confirmed: &confirmed };
+    let pending = uploader
+        .begin(&id, stored, UploadData::Bytes(b"png".to_vec().into()), "Issue #42 50%?.png", "image/png")
+        .expect("an admitted upload");
+    uploader.run(pending, &|_| {}).expect("the upload went through");
+
+    let requests = server.requests();
+    let request = requests.first().expect("one request");
+    let name = "Issue%20%2342%2050%25%3F.png";
+    assert_eq!(request.target, format!("/put/{name}?name={name}&flag="));
+    assert_eq!(request.header("x-switch"), Some(""));
+    let body = String::from_utf8_lossy(&request.body);
+    assert!(body.contains("name=\"secret\"\r\n\r\n\r\n"), "the empty argument was not sent: {body}");
+    assert!(body.contains("name=\"kind\"\r\n\r\npng\r\n"));
+    assert!(body.contains("filename=\"Issue #42 50%?.png\""), "the form lost the file's own name: {body}");
+}

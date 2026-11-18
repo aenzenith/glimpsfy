@@ -46,7 +46,10 @@ impl Custom {
         let url_template = Custom::template(config, "requestUrl", Place::Request)
             .ok_or_else(|| invalid("requestUrl", "the request URL is missing"))?
             .map_err(|m| invalid("requestUrl", m))?;
-        let mut url = parse_http_url(&url_template.fill(file_name))
+        // A file name keeps `#`, `?`, `%`, `&` and spaces, which would cut the path or start a
+        // query, so it enters the address percent-encoded; headers and the form get it as it is.
+        let url_name = crate::sigv4::encode(file_name, true);
+        let mut url = parse_http_url(&url_template.fill(&url_name))
             .ok_or_else(|| invalid("requestUrl", "the request URL is not an http or https address"))?;
         let fill = |value: &str| -> Result<String> {
             Ok(Template::parse(value, Place::Request).map_err(|e| invalid("headers", e.message))?.fill(file_name))
