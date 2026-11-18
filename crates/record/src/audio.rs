@@ -102,8 +102,10 @@ impl Placer {
     /// it at, the silence to write before it, and how many frames to drop from its start.
     pub fn place(&mut self, at: u64, frames: u64) -> Placement {
         let Some(next) = self.next else {
+            // A source that starts late begins its track with silence from 0, the same way a
+            // gap later on is filled, so the buffer itself still lands at `at`.
             self.next = Some(at + frames);
-            return Placement { position: at, silence: at, skip: 0 };
+            return Placement { position: 0, silence: at, skip: 0 };
         };
         let placement = if at > next + SLACK_FRAMES {
             Placement { position: next, silence: at - next, skip: 0 }
@@ -198,4 +200,25 @@ pub fn level(samples: &[f32]) -> f32 {
         return 0.0;
     }
     ((20.0 * peak.log10() + 60.0) / 60.0).clamp(0.0, 1.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A buffer's sound lands at `position + silence` on its track. A source heard first half a
+    /// second into the take lands there, with silence before it from 0, and its next buffer
+    /// follows it without overwriting its tail.
+    #[test]
+    fn a_late_source_lands_where_it_was_heard() {
+        let mut placer = Placer::new();
+        let late = frames_at(500_000_000);
+        let first = placer.place(late, 480);
+        assert_eq!(first, Placement { position: 0, silence: late, skip: 0 });
+        assert_eq!(placer.place(late + 480, 480), Placement { position: late + 480, silence: 0, skip: 0 });
+        assert_eq!(placer.end(), late + 960);
+
+        let mut placer = Placer::new();
+        assert_eq!(placer.place(0, 480), Placement { position: 0, silence: 0, skip: 0 });
+    }
 }
