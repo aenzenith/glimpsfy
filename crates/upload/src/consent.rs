@@ -3,9 +3,10 @@
 //! Consent is kept in the settings as a list of keys (`settings.upload.confirmedProviders`). A
 //! host whose address is fixed is confirmed under its provider id (`litterbox`); a destination
 //! the user configures is confirmed with its address (`custom@share.example.dev`,
-//! `s3@s3.eu-central-1.amazonaws.com/team-captures`), so pointing the provider somewhere new asks
-//! again. Only the `upload_confirm_provider` command adds a key, after the user pressed Upload in
-//! the dialog; `engine` refuses every request whose key is missing.
+//! `s3@s3.eu-central-1.amazonaws.com/team-captures`, and `custom@http://share.example.dev` for
+//! plain `http`), so pointing the provider somewhere new, or dropping to `http`, asks again. Only
+//! the `upload_confirm_provider` command adds a key, after the user pressed Upload in the dialog;
+//! `engine` refuses every request whose key is missing.
 
 use serde::{Deserialize, Serialize};
 
@@ -16,9 +17,13 @@ pub fn consent_key(provider: &ProviderId, destination: &Destination) -> String {
     if destination.fixed {
         return provider.to_string();
     }
+    // The dialog warns about plain `http` only for a destination that uses it, so confirming
+    // the `https` address must not cover the `http` one. An `https` key keeps the bare address,
+    // so the consents recorded before the scheme was part of the key stay valid.
+    let scheme = if destination.origins.iter().any(|origin| origin.scheme == "http") { "http://" } else { "" };
     match &destination.bucket {
-        Some(bucket) => format!("{provider}@{}/{bucket}", destination.domain),
-        None => format!("{provider}@{}", destination.domain),
+        Some(bucket) => format!("{provider}@{scheme}{}/{bucket}", destination.domain),
+        None => format!("{provider}@{scheme}{}", destination.domain),
     }
 }
 

@@ -130,6 +130,45 @@ fn no_request_leaves_before_the_user_confirms_the_destination() {
     assert!(f.canary.requests().is_empty(), "another host heard {:?}", f.canary.requests());
 }
 
+/// Consent to a host over `https` does not cover the same host over plain `http`: the dialog
+/// that warns about unencrypted requests (with keychain headers in them) must show again for
+/// every provider whose address the user sets. A consent recorded for `https` keeps its key.
+#[test]
+fn consent_to_https_does_not_cover_the_same_host_over_plain_http() {
+    let uploader = Uploader::new(
+        glimpsfy_upload::builtin_providers(),
+        SecretStore::with_store(keyring_core::mock::Store::new().expect("the mock keychain")),
+        HttpClient::for_tests(),
+    );
+    let values = |provider: &str, scheme: &str| match provider {
+        providers::S3 => json!({
+            "endpoint": format!("{scheme}://minio.example.dev:9000"), "region": "us-east-1",
+            "bucket": "team", "addressing": "path", "accessKeyId": "AKIDTEST"
+        }),
+        providers::ZERO_X_ZERO => json!({ "instance": format!("{scheme}://0x0.example.dev/") }),
+        _ => json!({ "requestUrl": format!("{scheme}://share.example.dev/up"), "urlTemplate": "{json:url}" }),
+    };
+    for (provider, https_key) in [
+        (providers::CUSTOM, "custom@share.example.dev"),
+        (providers::S3, "s3@minio.example.dev:9000/team"),
+        (providers::ZERO_X_ZERO, "0x0@0x0.example.dev"),
+    ] {
+        let pid = id(provider);
+        let (secure, plain) = (values(provider, "https"), values(provider, "http"));
+        let secure_key = uploader.consent_key(&pid, Some(&secure)).expect("a consent key");
+        let plain_key = uploader.consent_key(&pid, Some(&plain)).expect("a consent key");
+        assert_eq!(secure_key, https_key, "{provider}'s https consents were invalidated");
+        assert_ne!(secure_key, plain_key, "{provider} shares a consent between http and https");
+
+        let confirmed = [secure_key];
+        let stored = Stored { values: Some(&plain), confirmed: &confirmed };
+        let begun = uploader.begin(&pid, stored, png(), "shot.png", "image/png");
+        assert!(matches!(begun, Err(UploadError::NotConfirmed { .. })), "{provider} began over http: {begun:?}");
+        let info = uploader.consent_info(&pid, stored).expect("the dialog's facts");
+        assert!(!info.confirmed && info.plain_http, "{provider} would skip the plain http warning");
+    }
+}
+
 #[test]
 fn confirmed_requests_reach_the_chosen_host_and_no_other() {
     let f = fixture();
