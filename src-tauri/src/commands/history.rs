@@ -1232,13 +1232,14 @@ pub async fn history_export(app: AppHandle, entry_ids: Vec<EntryId>) -> CommandR
             let extension =
                 source.extension().map(|e| e.to_string_lossy().into_owned()).unwrap_or_else(|| "png".into());
             let stem = file_stem_of(&app, &entry);
-            let target = (1..1000)
-                .map(|n| if n == 1 { format!("{stem}.{extension}") } else { format!("{stem} ({n}).{extension}") })
-                .map(|name| folder.join(name))
-                .find(|path| !path.exists());
-            match target.map(|target| std::fs::copy(&source, target)) {
-                Some(Ok(_)) => report.exported += 1,
-                _ => report.skipped.push(entry.id),
+            // The shared writer cuts a long name to what a file system takes and claims the name
+            // in the same step as it creates the file, so a file made meanwhile is never replaced.
+            match crate::output::copy_picked(&folder.join(format!("{stem}.{extension}")), &source) {
+                Ok(_) => report.exported += 1,
+                Err(error) => {
+                    trace::log(format!("[glimpsfy] history: {} was not exported: {}", entry.id, error.message));
+                    report.skipped.push(entry.id);
+                }
             }
         }
         Ok(report)
