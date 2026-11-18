@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.2.1](https://github.com/aenzenith/glimpsfy/compare/v0.2.0...v0.2.1) (2026-11-18)
+
+
+### Bug Fixes
+
+* **capture:** a display plugged in during a capture showed the live desktop ([d64024a](https://github.com/aenzenith/glimpsfy/commit/d64024aa7ad4b2b655bb7f31135f5aee27c26cb4))
+* **macos:** a Space switch froze the selection and slowed later captures ([3addc5f](https://github.com/aenzenith/glimpsfy/commit/3addc5f5717f41e342b66e5d2dd91601beb949ec))
+* **output:** Save as could replace an existing file ([d0412c2](https://github.com/aenzenith/glimpsfy/commit/d0412c292448f19c229d869f297dafae4a1caa44))
+* **record:** a cancel while the stream opened left it recording ([6578ef9](https://github.com/aenzenith/glimpsfy/commit/6578ef9f6abc729669beb4931c893a27019a6e17))
+
+
+### Performance
+
+* **overlay:** the selection moved without repainting the display ([bfec5e3](https://github.com/aenzenith/glimpsfy/commit/bfec5e39bc40563d674465791edb978dea19eff0))
+* **webview:** pages loaded one language and woke less often ([478c42a](https://github.com/aenzenith/glimpsfy/commit/478c42ac03daaf7908851a3b875901fff19fe1cf))
+
 ## [0.2.0](https://github.com/aenzenith/glimpsfy/compare/v0.1.0...v0.2.0) (2026-11-17)
 
 
