@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.2.2](https://github.com/aenzenith/glimpsfy/compare/v0.2.1...v0.2.2) (2026-11-18)
+
+
+### Bug Fixes
+
+* **capture:** a display whose page failed closed the capture later ([3f726fa](https://github.com/aenzenith/glimpsfy/commit/3f726fa259d7e5b988347492d15e4bcc76e2edb6))
+* **firstrun:** replacing the macOS keys could leave Capture area keyless ([333ae74](https://github.com/aenzenith/glimpsfy/commit/333ae748265eedccd9fe36cf1329099820c1bb37))
+* **history:** an upload ending after its entry was deleted lost its link ([e596300](https://github.com/aenzenith/glimpsfy/commit/e59630050069bc285bd51b72862a796c8d530a07))
+* **history:** background text recognition kept an old image's text ([56e9c65](https://github.com/aenzenith/glimpsfy/commit/56e9c65f7153e372f31bb5492eb80625b77ecccc))
+* **history:** export skipped long names and could replace a file ([05c1fdf](https://github.com/aenzenith/glimpsfy/commit/05c1fdf5b6629dc1ce8f938576fea239b490e471))
+* **history:** search missed Chinese and Japanese words inside a sentence ([66c8a16](https://github.com/aenzenith/glimpsfy/commit/66c8a169137b9c568c2bd2f28756b986b1bd5176))
+* **history:** upload and drag-out sent the older saved file of an entry ([edad402](https://github.com/aenzenith/glimpsfy/commit/edad402bd8f20707c978833af950f2f5d2799e09))
+* **ocr:** the text layer could show text read before a redaction ([a1297fa](https://github.com/aenzenith/glimpsfy/commit/a1297fa497e072eaa4ddc25c9b83bce55caac629))
+* **output:** a long title pushed {counter} out and later saves failed ([f4f6fe1](https://github.com/aenzenith/glimpsfy/commit/f4f6fe1a11934f9398eabf0da3f2122695854d20))
+* **output:** saving all displays stopped at the first file that failed ([4d6cd66](https://github.com/aenzenith/glimpsfy/commit/4d6cd6666975d3b0f3baa40750ce721ee15030be))
+* **pin:** saved captures did not pin and editor pins took a wrong scale ([867d46d](https://github.com/aenzenith/glimpsfy/commit/867d46d8bdaac3ae8b722e3b55dd1de66d22f10a))
+* **record:** a quit during a take cut its file and kept it from history ([719623a](https://github.com/aenzenith/glimpsfy/commit/719623a72ea4c3c213136e82b478f3e46dc0d9ef))
+* **record:** a source first heard late in a take landed twice as late ([aa3d065](https://github.com/aenzenith/glimpsfy/commit/aa3d065039c00f3724697a051510211f1b39cc73))
+* **recorder:** the End key left the tail of a take out of the trim ([dd9952f](https://github.com/aenzenith/glimpsfy/commit/dd9952f2f3078488494f65d76832454dc166e800))
+* **record:** Keep resumed a take the user had paused ([ce679cb](https://github.com/aenzenith/glimpsfy/commit/ce679cbe2cf18ab84a2e8f32960083c121311f5f))
+* **settings:** an object where a plain value belongs reset all settings ([13811ea](https://github.com/aenzenith/glimpsfy/commit/13811ea2b5627c4d2a8907d0c3f75f302e842fbf))
+* **shortcuts:** a key pressed as a countdown ended could freeze the app ([bc49b67](https://github.com/aenzenith/glimpsfy/commit/bc49b67824bb3ae5a5c4f84abce9075de5683945))
+* **upload:** a .sxcu file with deeply nested calls crashed the app ([ea67fae](https://github.com/aenzenith/glimpsfy/commit/ea67fae6e66b8bd3cdda3f9c54057b93c2c0e514))
+* **upload:** an untouched URL template blocked the custom uploader ([f9aecd2](https://github.com/aenzenith/glimpsfy/commit/f9aecd27f52a2d9dd3280fc51fc0c94cc12000cb))
+* **upload:** consent to an https host covered the same host over http ([b7cb7fe](https://github.com/aenzenith/glimpsfy/commit/b7cb7fe7b7ba3985791633ef263473518117ef82))
+* **upload:** empty .sxcu values went unsent and file names broke URLs ([5d69a4c](https://github.com/aenzenith/glimpsfy/commit/5d69a4ca38ed3470983c38114a03cc15447746fa))
+* **upload:** keychain and consent failures showed the wrong error ([92dfaab](https://github.com/aenzenith/glimpsfy/commit/92dfaab0e125459b393eb5f43723ae07b3d16cb1))
+
 ## [0.2.1](https://github.com/aenzenith/glimpsfy/compare/v0.2.0...v0.2.1) (2026-11-18)
 
 
