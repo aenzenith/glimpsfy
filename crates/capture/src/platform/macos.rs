@@ -7,8 +7,12 @@
 //!   which is two to three times faster than the filtered capture that leaves windows out.
 //! - Every capture is requested in an explicit colour space (Display P3 for wide-gamut panels,
 //!   sRGB otherwise) and in 32-bit BGRA, so the frame is tagged without guessing.
+//! - A capture has one deadline for all of its requests (`DEADLINE`). A slow answer is waited
+//!   for instead of being asked for again on the other path, because every app's requests wait
+//!   in the same ScreenCaptureKit queue; only a refused rectangle falls back to the filter.
 //! - `SCShareableContent` is fetched once and kept until the display layout changes
-//!   (`invalidate`), because asking for it costs tens of milliseconds on every capture.
+//!   (`invalidate`), because asking for it costs tens of milliseconds on every capture. It is
+//!   fetched without holding the cache's lock, and `prepare` waits longer for it than a capture.
 //! - The window list comes from `CGWindowListCopyWindowInfo`, which is fast and returns windows
 //!   front to back, the order snapping needs. Titles are there only while the screen recording
 //!   permission is granted; bundle ids come from the cached ScreenCaptureKit content. macOS
@@ -18,11 +22,12 @@
 //! - Display names come from `NSScreen.localizedName`, which only the main thread may read; a
 //!   worker thread asks the main queue once per display layout and keeps the answer.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ptr::NonNull;
-use std::sync::mpsc;
+use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use block2::RcBlock;
 use dispatch2::DispatchQueue;
@@ -45,7 +50,9 @@ use objc2_screen_capture_kit::{
     SCStreamConfiguration, SCStreamErrorCode, SCWindow,
 };
 
-use crate::backend::{CaptureBackend, CaptureOptions, PermissionState, WindowCaptureOptions};
+use crate::backend::{
+    CaptureBackend, CaptureOptions, CapturePath, CaptureReport, PermissionState, WindowCaptureOptions,
+};
 use crate::display::{Display, DisplayId, WindowId, WindowInfo, WindowListOptions};
 use crate::error::{CaptureError, Result};
 use crate::frame::{ColorInfo, ColorSpace, Frame, PixelFormat};
@@ -60,32 +67,88 @@ const PIXEL_FORMAT_BGRA: u32 = u32::from_be_bytes(*b"BGRA");
 /// 35 points out and further down.
 const SHADOW_MARGIN: f64 = 100.0;
 
-/// How long a ScreenCaptureKit request may take before the capture gives up.
-const TIMEOUT: Duration = Duration::from_secs(3);
+/// How long a still capture may take, from the call to its last frame. All of its requests share
+/// this time, so a slow answer is waited for instead of being asked for again: ScreenCaptureKit
+/// queues every app's requests in one daemon (`replayd`), and an app that captures windows in
+/// bursts (a window switcher's thumbnails) has held captures back for 2 to 17 seconds. A second
+/// request would only join the end of the same queue.
+const DEADLINE: Duration = Duration::from_secs(10);
+
+/// How long `prepare` waits for the content. Nobody waits for it, and right after a wake the
+/// daemon has taken 3.6 seconds; a fetch given up on would leave the cache empty for the next
+/// capture to fill.
+const PREPARE_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// How long a worker thread waits for the main thread to read the screens' names. A main thread
 /// that is busy (or not running an event loop, as in tests) costs this once and the names fall
 /// back to generic ones.
 const NAMES_TIMEOUT: Duration = Duration::from_millis(500);
 
+thread_local! {
+    /// The report of the last still capture made on this thread, until `take_report` takes it.
+    static REPORT: RefCell<Option<CaptureReport>> = const { RefCell::new(None) };
+}
+
 /// ScreenCaptureKit objects are immutable once made and documented as usable from any queue;
 /// objc2 does not mark them `Send`, so this wrapper carries them between threads.
+#[derive(Clone)]
 struct Shared<T>(T);
 // SAFETY: see above; the wrapped objects are only read after they are created.
 unsafe impl<T> Send for Shared<T> {}
 
 /// The content ScreenCaptureKit lists, kept until the layout changes.
+#[derive(Clone)]
 struct Content {
     content: Retained<SCShareableContent>,
     /// Glimpsfy itself, so its own windows can be left out of a frame.
     own_app: Option<Retained<SCRunningApplication>>,
 }
 
+/// The cached content and the display layout it belongs to.
+#[derive(Default)]
+struct ContentCache {
+    content: Option<Shared<Content>>,
+    /// Counts the layout changes, so content fetched before one is not kept after it.
+    layout: u64,
+}
+
 /// The displays to capture and Glimpsfy's own app, taken from the cached content.
 type Targets = (Vec<Retained<SCDisplay>>, Option<Retained<SCRunningApplication>>);
 
+/// The moment a capture (or a background fetch) gives up, shared by all of its requests.
+#[derive(Clone, Copy)]
+struct Deadline {
+    at: Instant,
+    limit: Duration,
+}
+
+impl Deadline {
+    fn after(limit: Duration) -> Deadline {
+        Deadline { at: Instant::now() + limit, limit }
+    }
+
+    fn timed_out(self) -> CaptureError {
+        CaptureError::Timeout(self.limit.as_millis() as u64)
+    }
+
+    /// The next answer on `rx`, waited for until the deadline.
+    fn wait<T>(self, rx: &mpsc::Receiver<T>) -> Result<T> {
+        rx.recv_timeout(self.at.saturating_duration_since(Instant::now())).map_err(|error| match error {
+            RecvTimeoutError::Timeout => self.timed_out(),
+            RecvTimeoutError::Disconnected => {
+                CaptureError::Backend("ScreenCaptureKit dropped a request without answering it".into())
+            }
+        })
+    }
+}
+
+/// Keeps `report` for `take_report` on this thread.
+fn keep_report(report: CaptureReport) {
+    REPORT.with(|slot| *slot.borrow_mut() = Some(report));
+}
+
 pub struct MacBackend {
-    content: Mutex<Option<Shared<Content>>>,
+    content: Mutex<ContentCache>,
     /// `NSScreen.localizedName` by display id, kept until the layout changes.
     names: Mutex<HashMap<u32, String>>,
     /// Displays whose rectangle capture did not match their pixel size, kept until the layout
@@ -96,7 +159,7 @@ pub struct MacBackend {
 impl MacBackend {
     pub fn new() -> Self {
         MacBackend {
-            content: Mutex::new(None),
+            content: Mutex::new(ContentCache::default()),
             names: Mutex::new(HashMap::new()),
             rect_refused: Mutex::new(Vec::new()),
         }
@@ -128,28 +191,62 @@ impl MacBackend {
         names.clone()
     }
 
-    /// A ScreenCaptureKit window from the cached content, fetched again once when it is missing
-    /// (a window opened after the content was cached).
-    fn window_for(&self, id: WindowId) -> Result<Shared<Retained<SCWindow>>> {
+    /// The cached content, if any.
+    fn cached(&self) -> Option<Shared<Content>> {
+        self.content.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).content.clone()
+    }
+
+    /// Fetches the content and keeps it, unless the layout changed meanwhile. The lock is not
+    /// held while ScreenCaptureKit answers, so a slow answer never holds up the window list.
+    fn refresh(&self, deadline: Deadline) -> Result<Shared<Content>> {
+        let layout = self.content.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).layout;
+        let content = Shared(fetch_content(deadline)?);
         let mut cache = self.content.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        for attempt in 0..2 {
-            if cache.is_none() || attempt == 1 {
-                *cache = Some(Shared(fetch_content()?));
-            }
-            let Some(Shared(content)) = cache.as_ref() else { continue };
-            let windows = unsafe { content.content.windows() };
-            if let Some(window) = windows.iter().find(|w| unsafe { w.windowID() } == id.0) {
-                return Ok(Shared(window));
+        if cache.layout == layout {
+            cache.content = Some(content.clone());
+        }
+        Ok(content)
+    }
+
+    /// Looks `find` up in the cached content, and in a fresh one when nothing is cached or the
+    /// cached one lacks it (a window opened or a display added since). A fetch adds its time to
+    /// `fetched`.
+    fn find_in_content<T>(
+        &self,
+        deadline: Deadline,
+        fetched: &mut Option<Duration>,
+        find: impl Fn(&Content) -> Option<T>,
+    ) -> Result<Option<T>> {
+        if let Some(Shared(content)) = self.cached() {
+            if let Some(found) = find(&content) {
+                return Ok(Some(found));
             }
         }
-        Err(CaptureError::WindowNotFound(id))
+        let started = Instant::now();
+        let fresh = self.refresh(deadline);
+        *fetched = Some(fetched.unwrap_or_default() + started.elapsed());
+        let Shared(content) = fresh?;
+        Ok(find(&content))
+    }
+
+    /// A ScreenCaptureKit window from the content.
+    fn window_for(
+        &self,
+        id: WindowId,
+        deadline: Deadline,
+        fetched: &mut Option<Duration>,
+    ) -> Result<Shared<Retained<SCWindow>>> {
+        self.find_in_content(deadline, fetched, |content| {
+            unsafe { content.content.windows() }.iter().find(|w| unsafe { w.windowID() } == id.0).map(Shared)
+        })?
+        .ok_or(CaptureError::WindowNotFound(id))
     }
 
     /// Bundle ids by process, from the cached content only (never a fetch, so the window list
     /// stays fast); empty until the content is cached.
     fn bundle_ids(&self) -> HashMap<i32, String> {
         let cache = self.content.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        let Some(Shared(content)) = cache.as_ref() else {
+        let Some(Shared(content)) = cache.content.as_ref() else {
             return HashMap::new();
         };
         unsafe { content.content.applications() }
@@ -159,23 +256,157 @@ impl MacBackend {
             .collect()
     }
 
-    /// The cached content, fetched again when it is missing or lacks one of `displays`.
-    fn content_for(&self, displays: &[DisplayId]) -> Result<Shared<Targets>> {
-        let mut cache = self.content.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        for attempt in 0..2 {
-            if cache.is_none() || attempt == 1 {
-                *cache = Some(Shared(fetch_content()?));
-            }
-            let Some(Shared(content)) = cache.as_ref() else { continue };
+    /// The ScreenCaptureKit displays of `displays` and Glimpsfy's own app, from the content.
+    fn content_for(
+        &self,
+        displays: &[DisplayId],
+        deadline: Deadline,
+        fetched: &mut Option<Duration>,
+    ) -> Result<Shared<Targets>> {
+        self.find_in_content(deadline, fetched, |content| {
             let all = unsafe { content.content.displays() };
             let found: Vec<Retained<SCDisplay>> =
                 displays.iter().filter_map(|id| all.iter().find(|d| unsafe { d.displayID() } == id.0)).collect();
-            if found.len() == displays.len() {
-                return Ok(Shared((found, content.own_app.clone())));
+            (found.len() == displays.len()).then(|| Shared((found, content.own_app.clone())))
+        })?
+        .ok_or_else(|| CaptureError::DisplayNotFound(displays.first().copied().unwrap_or(DisplayId(0))))
+    }
+}
+
+impl MacBackend {
+    /// `capture_displays` until `deadline`, filling in `report` on the way.
+    fn displays_until(
+        &self,
+        displays: &[DisplayId],
+        options: &CaptureOptions,
+        deadline: Deadline,
+        report: &mut CaptureReport,
+    ) -> Result<Vec<(DisplayId, Frame)>> {
+        if !CGPreflightScreenCaptureAccess() {
+            return Err(CaptureError::PermissionDenied);
+        }
+        let described = self.displays()?;
+        if self.rect_capture_fits(displays, options) {
+            let started = Instant::now();
+            report.path = CapturePath::Rect;
+            match capture_rects(displays, &described, deadline, &mut report.frames) {
+                Ok(frames) => return Ok(frames),
+                // The filtered capture would wait in the same queue, behind the requests just
+                // made, so a late answer ends the capture instead of starting another one.
+                Err(RectFailure::TimedOut) => return Err(deadline.timed_out()),
+                Err(RectFailure::Refused(display)) => {
+                    if let Some(display) = display {
+                        self.rect_refused.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).push(display.0);
+                    }
+                    report.path = CapturePath::RectThenFiltered;
+                    report.rect = Some(started.elapsed());
+                    report.frames.iter_mut().for_each(|(_, arrived)| *arrived = None);
+                }
             }
         }
-        let missing = displays.first().copied().unwrap_or(DisplayId(0));
-        Err(CaptureError::DisplayNotFound(missing))
+        let Shared((sc_displays, own_app)) = self.content_for(displays, deadline, &mut report.content)?;
+
+        let requested = Instant::now();
+        let (tx, rx) = mpsc::channel::<(usize, Result<Frame>)>();
+        for (index, (id, sc_display)) in displays.iter().zip(sc_displays.iter()).enumerate() {
+            let info = described.iter().find(|d| d.id == *id).ok_or(CaptureError::DisplayNotFound(*id))?;
+            let excluded: Vec<&SCRunningApplication> =
+                if options.exclude_own_windows { own_app.iter().map(|a| &**a).collect() } else { Vec::new() };
+            let excluded = NSArray::from_slice(&excluded);
+            let none = NSArray::new();
+            // SAFETY: a fresh filter from a display of the current content.
+            let filter = unsafe {
+                SCContentFilter::initWithDisplay_excludingApplications_exceptingWindows(
+                    SCContentFilter::alloc(),
+                    sc_display,
+                    &excluded,
+                    &none,
+                )
+            };
+            let config = stream_configuration(info.pixel_size, info.color_space, options.shows_cursor);
+            let tx = tx.clone();
+            screenshot(&filter, &config, info.color_space, info.scale, false, move |result| {
+                let _ = tx.send((index, result));
+            });
+        }
+        drop(tx);
+
+        let mut frames: Vec<Option<Frame>> = displays.iter().map(|_| None).collect();
+        for _ in 0..displays.len() {
+            let (index, frame) = deadline.wait(&rx)?;
+            report.frames[index].1 = Some(requested.elapsed());
+            frames[index] = Some(frame?);
+        }
+        displays
+            .iter()
+            .zip(frames)
+            .map(|(id, frame)| frame.map(|f| (*id, f)).ok_or(CaptureError::DisplayNotFound(*id)))
+            .collect()
+    }
+
+    /// `capture_window` until `deadline`, filling in `report` on the way.
+    fn window_until(
+        &self,
+        window: WindowId,
+        options: &WindowCaptureOptions,
+        deadline: Deadline,
+        report: &mut CaptureReport,
+    ) -> Result<Frame> {
+        if !CGPreflightScreenCaptureAccess() {
+            return Err(CaptureError::PermissionDenied);
+        }
+        let Shared(sc_window) = self.window_for(window, deadline, &mut report.content)?;
+        let described = self.displays()?;
+        let bounds = unsafe { sc_window.frame() };
+        let bounds = LogicalRect::new(bounds.origin.x, bounds.origin.y, bounds.size.width, bounds.size.height);
+        // The window's colour space and scale are those of the display that shows most of it.
+        let display = described
+            .iter()
+            .filter_map(|d| d.frame.intersection(&bounds).map(|common| (d, common.width * common.height)))
+            .max_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|(d, _)| d)
+            .or(described.first())
+            .ok_or(CaptureError::WindowNotFound(window))?;
+        report.frames.push((display.id, None));
+
+        // SAFETY: a fresh filter from a window of the current content.
+        let filter = unsafe { SCContentFilter::initWithDesktopIndependentWindow(SCContentFilter::alloc(), &sc_window) };
+        // The filter knows the window's size and pixel scale (macOS 14), without its shadow.
+        let (rect, pixel_scale) = unsafe { (filter.contentRect(), filter.pointPixelScale() as f64) };
+        let scale = if pixel_scale > 0.0 { pixel_scale } else { display.scale.0 };
+        // ScreenCaptureKit draws the shadow too and shrinks window and shadow together into the
+        // image's size, so an image of the window's own size holds a window about 9 % too small
+        // and blurred. The image gets room for the shadow instead, the window stays at its own
+        // pixels, and the empty margin is cut away afterwards.
+        let margin = if options.include_shadow { SHADOW_MARGIN } else { 0.0 };
+        let size = PhysicalSize::new(
+            ((rect.size.width + 2.0 * margin) * scale).round().max(1.0) as u32,
+            ((rect.size.height + 2.0 * margin) * scale).round().max(1.0) as u32,
+        );
+        let config = stream_configuration(size, display.color_space, options.shows_cursor);
+        // SAFETY: plain property setters on a configuration this function owns; the one added
+        // after macOS 14.0 is guarded.
+        unsafe {
+            config.setIgnoreShadowsSingleWindow(!options.include_shadow);
+            config.setShouldBeOpaque(false);
+            config.setIgnoreGlobalClipSingleWindow(true);
+            config.setPreservesAspectRatio(true);
+            if config.respondsToSelector(sel!(setIncludeChildWindows:)) {
+                config.setIncludeChildWindows(true);
+            }
+        }
+
+        let requested = Instant::now();
+        let (tx, rx) = mpsc::sync_channel::<Result<Frame>>(1);
+        screenshot(&filter, &config, display.color_space, ScaleFactor(scale), true, move |result| {
+            let _ = tx.send(result);
+        });
+        let frame = deadline.wait(&rx)??;
+        if let Some((_, arrived)) = report.frames.last_mut() {
+            *arrived = Some(requested.elapsed());
+        }
+        let frame = if margin > 0.0 { crop_to_visible(frame)? } else { frame };
+        Ok(finish_window(frame, options))
     }
 }
 
@@ -244,109 +475,33 @@ impl CaptureBackend for MacBackend {
     }
 
     fn capture_displays(&self, displays: &[DisplayId], options: &CaptureOptions) -> Result<Vec<(DisplayId, Frame)>> {
-        if !CGPreflightScreenCaptureAccess() {
-            return Err(CaptureError::PermissionDenied);
-        }
-        let described = self.displays()?;
-        if self.rect_capture_fits(displays, options) {
-            match capture_rects(displays, &described) {
-                Ok(frames) => return Ok(frames),
-                Err(RectRefused(Some(display))) => {
-                    self.rect_refused.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).push(display.0);
-                }
-                Err(RectRefused(None)) => {}
-            }
-        }
-        let Shared((sc_displays, own_app)) = self.content_for(displays)?;
-
-        let (tx, rx) = mpsc::channel::<(usize, Result<Frame>)>();
-        for (index, (id, sc_display)) in displays.iter().zip(sc_displays.iter()).enumerate() {
-            let info = described.iter().find(|d| d.id == *id).ok_or(CaptureError::DisplayNotFound(*id))?;
-            let excluded: Vec<&SCRunningApplication> =
-                if options.exclude_own_windows { own_app.iter().map(|a| &**a).collect() } else { Vec::new() };
-            let excluded = NSArray::from_slice(&excluded);
-            let none = NSArray::new();
-            // SAFETY: a fresh filter from a display of the current content.
-            let filter = unsafe {
-                SCContentFilter::initWithDisplay_excludingApplications_exceptingWindows(
-                    SCContentFilter::alloc(),
-                    sc_display,
-                    &excluded,
-                    &none,
-                )
-            };
-            let config = stream_configuration(info.pixel_size, info.color_space, options.shows_cursor);
-            let tx = tx.clone();
-            screenshot(&filter, &config, info.color_space, info.scale, false, move |result| {
-                let _ = tx.send((index, result));
-            });
-        }
-        drop(tx);
-
-        let mut frames: Vec<Option<Frame>> = displays.iter().map(|_| None).collect();
-        for _ in 0..displays.len() {
-            let (index, frame) =
-                rx.recv_timeout(TIMEOUT).map_err(|_| CaptureError::Timeout(TIMEOUT.as_millis() as u64))?;
-            frames[index] = Some(frame?);
-        }
-        displays
-            .iter()
-            .zip(frames)
-            .map(|(id, frame)| frame.map(|f| (*id, f)).ok_or(CaptureError::DisplayNotFound(*id)))
-            .collect()
+        let started = Instant::now();
+        let mut report = CaptureReport {
+            path: CapturePath::Filtered,
+            rect: None,
+            content: None,
+            frames: displays.iter().map(|id| (*id, None)).collect(),
+            total: Duration::ZERO,
+        };
+        let result = self.displays_until(displays, options, Deadline::after(DEADLINE), &mut report);
+        report.total = started.elapsed();
+        keep_report(report);
+        result
     }
 
     fn capture_window(&self, window: WindowId, options: &WindowCaptureOptions) -> Result<Frame> {
-        if !CGPreflightScreenCaptureAccess() {
-            return Err(CaptureError::PermissionDenied);
-        }
-        let Shared(sc_window) = self.window_for(window)?;
-        let described = self.displays()?;
-        let bounds = unsafe { sc_window.frame() };
-        let bounds = LogicalRect::new(bounds.origin.x, bounds.origin.y, bounds.size.width, bounds.size.height);
-        // The window's colour space and scale are those of the display that shows most of it.
-        let display = described
-            .iter()
-            .filter_map(|d| d.frame.intersection(&bounds).map(|common| (d, common.width * common.height)))
-            .max_by(|a, b| a.1.total_cmp(&b.1))
-            .map(|(d, _)| d)
-            .or(described.first())
-            .ok_or(CaptureError::WindowNotFound(window))?;
-
-        // SAFETY: a fresh filter from a window of the current content.
-        let filter = unsafe { SCContentFilter::initWithDesktopIndependentWindow(SCContentFilter::alloc(), &sc_window) };
-        // The filter knows the window's size and pixel scale (macOS 14), without its shadow.
-        let (rect, pixel_scale) = unsafe { (filter.contentRect(), filter.pointPixelScale() as f64) };
-        let scale = if pixel_scale > 0.0 { pixel_scale } else { display.scale.0 };
-        // ScreenCaptureKit draws the shadow too and shrinks window and shadow together into the
-        // image's size, so an image of the window's own size holds a window about 9 % too small
-        // and blurred. The image gets room for the shadow instead, the window stays at its own
-        // pixels, and the empty margin is cut away afterwards.
-        let margin = if options.include_shadow { SHADOW_MARGIN } else { 0.0 };
-        let size = PhysicalSize::new(
-            ((rect.size.width + 2.0 * margin) * scale).round().max(1.0) as u32,
-            ((rect.size.height + 2.0 * margin) * scale).round().max(1.0) as u32,
-        );
-        let config = stream_configuration(size, display.color_space, options.shows_cursor);
-        // SAFETY: plain property setters on a configuration this function owns; the one added
-        // after macOS 14.0 is guarded.
-        unsafe {
-            config.setIgnoreShadowsSingleWindow(!options.include_shadow);
-            config.setShouldBeOpaque(false);
-            config.setIgnoreGlobalClipSingleWindow(true);
-            config.setPreservesAspectRatio(true);
-            if config.respondsToSelector(sel!(setIncludeChildWindows:)) {
-                config.setIncludeChildWindows(true);
-            }
-        }
-
-        let (tx, rx) = mpsc::sync_channel::<Result<Frame>>(1);
-        screenshot(&filter, &config, display.color_space, ScaleFactor(scale), true, move |result| {
-            let _ = tx.send(result);
-        });
-        let frame = rx.recv_timeout(TIMEOUT).map_err(|_| CaptureError::Timeout(TIMEOUT.as_millis() as u64))??;
-        let frame = if margin > 0.0 { crop_to_visible(frame)? } else { frame };
-        Ok(finish_window(frame, options))
+        let started = Instant::now();
+        let mut report = CaptureReport {
+            path: CapturePath::Window,
+            rect: None,
+            content: None,
+            frames: Vec::new(),
+            total: Duration::ZERO,
+        };
+        let result = self.window_until(window, options, Deadline::after(DEADLINE), &mut report);
+        report.total = started.elapsed();
+        keep_report(report);
+        result
     }
 
     fn permission(&self) -> PermissionState {
@@ -366,7 +521,11 @@ impl CaptureBackend for MacBackend {
     }
 
     fn invalidate(&self) {
-        *self.content.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        {
+            let mut cache = self.content.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            cache.content = None;
+            cache.layout += 1;
+        }
         self.names.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clear();
         self.rect_refused.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clear();
     }
@@ -377,8 +536,12 @@ impl CaptureBackend for MacBackend {
         let displays = self.displays().unwrap_or_default();
         if CGPreflightScreenCaptureAccess() {
             let ids: Vec<DisplayId> = displays.iter().map(|d| d.id).collect();
-            let _ = self.content_for(&ids);
+            let _ = self.content_for(&ids, Deadline::after(PREPARE_TIMEOUT), &mut None);
         }
+    }
+
+    fn take_report(&self) -> Option<CaptureReport> {
+        REPORT.with(|slot| slot.borrow_mut().take())
     }
 
     fn open_stream(&self, config: StreamConfig, sink: Box<dyn StreamSink>) -> Result<Box<dyn CaptureStream>> {
@@ -519,29 +682,37 @@ fn own_window_showing() -> bool {
     })
 }
 
-/// Why the rectangle capture gave up; the display is named when it will never fit (its image
-/// does not have the display's pixel size), so it is not tried again until the layout changes.
-struct RectRefused(Option<DisplayId>);
+/// Why the rectangle capture gave up.
+enum RectFailure {
+    /// ScreenCaptureKit refused a display; it is named when it will never fit (its image does
+    /// not have the display's pixel size), so it is not tried again until the layout changes.
+    Refused(Option<DisplayId>),
+    /// Not every answer came before the deadline.
+    TimedOut,
+}
 
 /// Takes each display with `captureImageInRect:`, which composites the screen as it is shown
 /// instead of rebuilding it without some windows. ScreenCaptureKit answers the requests one after
 /// another either way, but a rectangle takes 15 to 20 ms (35 to 50 ms for the first), where a
 /// filtered display takes 60 to 75 ms. The image comes in the display's own colour space and is
 /// converted to the frame's explicit one (1 to 4 ms) on a thread of its own, so the frame holds
-/// the same values as one from the filtered path.
+/// the same values as one from the filtered path. `arrivals` gets each display's answer time.
 fn capture_rects(
     displays: &[DisplayId],
     described: &[Display],
-) -> std::result::Result<Vec<(DisplayId, Frame)>, RectRefused> {
-    let (tx, rx) = mpsc::channel::<(usize, std::result::Result<Frame, RectRefused>)>();
+    deadline: Deadline,
+    arrivals: &mut [(DisplayId, Option<Duration>)],
+) -> std::result::Result<Vec<(DisplayId, Frame)>, RectFailure> {
+    let requested = Instant::now();
+    let (tx, rx) = mpsc::channel::<(usize, std::result::Result<Frame, RectFailure>)>();
     for (index, id) in displays.iter().enumerate() {
-        let info = described.iter().find(|d| d.id == *id).ok_or(RectRefused(None))?.clone();
+        let info = described.iter().find(|d| d.id == *id).ok_or(RectFailure::Refused(None))?.clone();
         let tx = tx.clone();
         let handler = RcBlock::new(move |image: *mut CGImage, _error: *mut NSError| {
             // SAFETY: ScreenCaptureKit hands over a valid image for the call; it is retained so
             // the conversion can run on another thread.
             let Some(image) = NonNull::new(image).map(|image| Shared(unsafe { CFRetained::retain(image) })) else {
-                let _ = tx.send((index, Err(RectRefused(None))));
+                let _ = tx.send((index, Err(RectFailure::Refused(None))));
                 return;
             };
             let tx = tx.clone();
@@ -551,14 +722,14 @@ fn capture_rects(
                 let width = CGImage::width(Some(&image)) as u32;
                 let height = CGImage::height(Some(&image)) as u32;
                 let result = if width != info.pixel_size.width || height != info.pixel_size.height {
-                    Err(RectRefused(Some(info.id)))
+                    Err(RectFailure::Refused(Some(info.id)))
                 } else {
-                    converted_frame(&image, info.color_space, info.scale).map_err(|_| RectRefused(None))
+                    converted_frame(&image, info.color_space, info.scale).map_err(|_| RectFailure::Refused(None))
                 };
                 let _ = tx.send((index, result));
             });
         });
-        let f = info_frame(described, *id).ok_or(RectRefused(None))?;
+        let f = info_frame(described, *id).ok_or(RectFailure::Refused(None))?;
         // SAFETY: the handler is retained by ScreenCaptureKit until it runs.
         unsafe { SCScreenshotManager::captureImageInRect_completionHandler(f, Some(&handler)) };
     }
@@ -566,7 +737,14 @@ fn capture_rects(
 
     let mut frames: Vec<Option<Frame>> = displays.iter().map(|_| None).collect();
     for _ in 0..displays.len() {
-        let (index, frame) = rx.recv_timeout(TIMEOUT).map_err(|_| RectRefused(None))?;
+        let (index, frame) = match deadline.wait(&rx) {
+            Ok(answer) => answer,
+            Err(CaptureError::Timeout(_)) => return Err(RectFailure::TimedOut),
+            Err(_) => return Err(RectFailure::Refused(None)),
+        };
+        if let Some((_, arrived)) = arrivals.get_mut(index) {
+            *arrived = Some(requested.elapsed());
+        }
         frames[index] = Some(frame?);
     }
     Ok(displays.iter().zip(frames).filter_map(|(id, frame)| frame.map(|f| (*id, f))).collect())
@@ -782,7 +960,7 @@ fn frame_from_image(image: &CGImage, space: ColorSpace, scale: ScaleFactor, alph
     Frame::new(PhysicalSize::new(width, height), bytes_per_row, PixelFormat::Bgra8, color, scale, bytes)
 }
 
-fn fetch_content() -> Result<Content> {
+fn fetch_content(deadline: Deadline) -> Result<Content> {
     let (tx, rx) = mpsc::sync_channel::<Result<Shared<Retained<SCShareableContent>>>>(1);
     let handler = RcBlock::new(move |content: *mut SCShareableContent, error: *mut NSError| {
         // SAFETY: the content, when there is one, is valid for the call and retained here.
@@ -798,7 +976,7 @@ fn fetch_content() -> Result<Content> {
             false, true, &handler,
         );
     }
-    let Shared(content) = rx.recv_timeout(TIMEOUT).map_err(|_| CaptureError::Timeout(TIMEOUT.as_millis() as u64))??;
+    let Shared(content) = deadline.wait(&rx)??;
     let own = std::process::id() as i32;
     let own_app = unsafe { content.applications() }.iter().find(|app| unsafe { app.processID() } == own);
     Ok(Content { content, own_app })
