@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/aenzenith/glimpsfy/compare/v0.2.3...v0.3.0) (2026-11-20)
+
+
+### Features
+
+* **popover:** the picked capture got a large preview and labelled actions ([2574ef3](https://github.com/aenzenith/glimpsfy/commit/2574ef36389e024be98e737245a40908bc07c1c9))
+
 ## [0.2.3](https://github.com/aenzenith/glimpsfy/compare/v0.2.2...v0.2.3) (2026-11-20)
 
 
