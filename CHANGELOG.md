@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.3](https://github.com/aenzenith/glimpsfy/compare/v0.2.2...v0.2.3) (2026-11-20)
+
+
+### Bug Fixes
+
+* **capture:** captures failed while ScreenCaptureKit was busy ([#7](https://github.com/aenzenith/glimpsfy/issues/7)) ([da871f2](https://github.com/aenzenith/glimpsfy/commit/da871f2c1f88742b438ace075ef9d830ec4ebd4b))
+
 ## [0.2.2](https://github.com/aenzenith/glimpsfy/compare/v0.2.1...v0.2.2) (2026-11-18)
 
 
