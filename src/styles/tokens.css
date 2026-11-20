@@ -254,6 +254,7 @@
   --win-content: #ffffff;
   --win-raised: #ffffff;                        /* cards and fields that sit on the ground */
   --win-sunken: #f0f0f4;                        /* thumbnail wells, image placeholders */
+  --win-stage: #f0f0f4;                         /* behind a whole capture shown contained */
   --win-group: rgba(0, 0, 0, 0.028);            /* settings groups */
   --win-group-edge: rgba(0, 0, 0, 0.06);
   /* translucent material: sidebar, popover, context menu.
@@ -288,6 +289,12 @@
   --win-button-press: #ebebef;
   --win-button-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.18), 0 0.5px 1.5px rgba(0, 0, 0, 0.12);
   --win-raised-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.12), 0 1px 2px rgba(0, 0, 0, 0.12); /* segment thumb */
+  /* A flat, darker well in the window and the lit key that rides in it (the popover's capture
+     modes): the window-theme twin of the glass layer's --control-on lens. */
+  --win-well: rgba(0, 0, 0, 0.045);
+  --win-lens: linear-gradient(180deg, #ffffff, #f7f7fa);
+  --win-lens-press: linear-gradient(180deg, #f3f3f6, #ececf0);
+  --win-lens-edge: 0 0 0 var(--hairline) rgba(0, 0, 0, 0.10), 0 1px 2px rgba(0, 0, 0, 0.12), 0 2px 6px rgba(0, 0, 0, 0.05);
   --win-track: rgba(0, 0, 0, 0.14);             /* switch off, slider rail */
   --win-thumb-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.16), 0 1px 3px rgba(0, 0, 0, 0.22);
   /* status, text on its own soft fill holds 4.5:1 */
@@ -314,6 +321,7 @@
   --win-content: #1c1c21;
   --win-raised: #2b2b31;
   --win-sunken: #26262c;
+  --win-stage: #111016;                         /* near black, so a letterboxed capture reads as lit */
   --win-group: rgba(255, 255, 255, 0.04);
   --win-group-edge: rgba(255, 255, 255, 0.06);
   /* A white desktop arrives at rgb(49 48 57), a black one at rgb(29 27 37). */
@@ -343,6 +351,11 @@
   --win-button-press: rgba(255, 255, 255, 0.22);
   --win-button-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.10), 0 0 0 0.5px rgba(0, 0, 0, 0.40), 0 1px 2px rgba(0, 0, 0, 0.25);
   --win-raised-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.10), 0 1px 2px rgba(0, 0, 0, 0.35);
+  --win-well: rgba(0, 0, 0, 0.24);
+  --win-lens: linear-gradient(180deg, rgba(255, 255, 255, 0.18), rgba(255, 255, 255, 0.10));
+  --win-lens-press: linear-gradient(180deg, rgba(255, 255, 255, 0.12), rgba(255, 255, 255, 0.07));
+  --win-lens-edge: inset 0 var(--hairline) 0 rgba(255, 255, 255, 0.26), inset 0 0 0 var(--hairline) rgba(255, 255, 255, 0.08),
+    0 1px 2px rgba(0, 0, 0, 0.45);
   --win-track: rgba(255, 255, 255, 0.18);
   --win-thumb-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.30), 0 1px 3px rgba(0, 0, 0, 0.40);
   --win-ok: #5fd68e;
