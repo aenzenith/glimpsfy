@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.1](https://github.com/aenzenith/glimpsfy/compare/v0.3.0...v0.3.1) (2026-11-20)
+
+
+### Bug Fixes
+
+* **popover:** the panel eased between heights and its surfaces were refined ([dd5b3bb](https://github.com/aenzenith/glimpsfy/commit/dd5b3bbd97b35475471d60158d8569f4eb4c6f38))
+
 ## [0.3.0](https://github.com/aenzenith/glimpsfy/compare/v0.2.3...v0.3.0) (2026-11-20)
 
 
