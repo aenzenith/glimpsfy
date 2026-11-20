@@ -36,6 +36,14 @@ pub fn cache_dir<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<PathBuf> {
     }
 }
 
+/// The app's logs (on macOS, `~/Library/Logs/<identifier>`).
+pub fn log_dir<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<PathBuf> {
+    match dev_home() {
+        Some(home) => Ok(home.join("logs")),
+        None => app.path().app_log_dir(),
+    }
+}
+
 /// The default save folder: Pictures › Glimpsfy.
 pub fn default_pictures() -> PathBuf {
     match dev_home() {

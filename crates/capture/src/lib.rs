@@ -27,7 +27,7 @@ pub mod window;
 
 mod platform;
 
-pub use backend::{CaptureBackend, CaptureOptions, PermissionState, WindowCaptureOptions};
+pub use backend::{CaptureBackend, CaptureOptions, CapturePath, CaptureReport, PermissionState, WindowCaptureOptions};
 pub use display::{Display, DisplayId, WindowId, WindowInfo, WindowListOptions};
 pub use encode::ImageEncoding;
 pub use error::{CaptureError, Result};

@@ -4,6 +4,7 @@
 //!
 //! - `commands/`: the `#[tauri::command]` API, one file per area, one handler list.
 //! - `session`: the capture flow from the shortcut to the closed overlay.
+//! - `capture_log`: the log of slow and failed still captures, in release builds too.
 //! - `frames`: the URI scheme that serves frozen frames to the overlays.
 //! - `windows`: the overlay pool, the toast and the ordinary windows.
 //! - `output`: crop, PNG, clipboard and files.
@@ -11,6 +12,7 @@
 //! - `macos`: AppKit glue (panels, levels, pasteboard, display changes).
 //! - `trace`, `dev`: latency marks and the dev-only measurement switches.
 
+mod capture_log;
 pub mod commands;
 mod dev;
 #[cfg(debug_assertions)]

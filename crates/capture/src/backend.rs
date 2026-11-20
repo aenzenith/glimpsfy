@@ -1,5 +1,7 @@
 //! The trait every platform implements for stills, plus the permission check.
 
+use std::time::Duration;
+
 use serde::{Deserialize, Serialize};
 
 use crate::display::{Display, DisplayId, WindowId, WindowInfo, WindowListOptions};
@@ -57,6 +59,47 @@ impl Default for WindowCaptureOptions {
     fn default() -> Self {
         WindowCaptureOptions { shows_cursor: false, include_shadow: true, keep_rounded_corners: true, background: None }
     }
+}
+
+/// The way a still capture took its frames.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CapturePath {
+    /// Rectangles of the composited screen (macOS 15.2 and later, nothing of Glimpsfy showing).
+    Rect,
+    /// A display filter that leaves Glimpsfy's own windows out.
+    Filtered,
+    /// The rectangles were refused, so the displays were taken with the filter after all.
+    RectThenFiltered,
+    /// One window on its own.
+    Window,
+}
+
+impl CapturePath {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CapturePath::Rect => "rect",
+            CapturePath::Filtered => "filtered",
+            CapturePath::RectThenFiltered => "rect refused, then filtered",
+            CapturePath::Window => "window",
+        }
+    }
+}
+
+/// How one still capture went, for the log of slow and failed captures: which path it took and
+/// how long the system took to answer each request.
+#[derive(Clone, Debug)]
+pub struct CaptureReport {
+    pub path: CapturePath,
+    /// The time spent on refused rectangles before the filtered capture.
+    pub rect: Option<Duration>,
+    /// The time spent fetching the system's list of displays, windows and apps, when it was not
+    /// cached.
+    pub content: Option<Duration>,
+    /// When each display's frame arrived after its request, in the order asked; `None` when it
+    /// never did. A window capture names the display that shows most of the window.
+    pub frames: Vec<(DisplayId, Option<Duration>)>,
+    /// From the call to its return.
+    pub total: Duration,
 }
 
 /// One platform's way of reading the screen.
@@ -117,6 +160,12 @@ pub trait CaptureBackend: Send + Sync {
     /// Loads what the first capture needs, so it is as fast as the later ones. Does nothing
     /// while the permission is missing, so it never shows a system prompt.
     fn prepare(&self) {}
+
+    /// The report of the last `capture_displays` or `capture_window` call made on the calling
+    /// thread, which this call takes; `None` on platforms that keep none.
+    fn take_report(&self) -> Option<CaptureReport> {
+        None
+    }
 
     /// A stream of frames and audio for recording. The stream is created stopped.
     fn open_stream(&self, config: StreamConfig, sink: Box<dyn StreamSink>) -> Result<Box<dyn CaptureStream>>;

@@ -44,15 +44,17 @@ use crate::frames::{self, FrameFormat};
 use crate::output::{Origin, OutputAction};
 use crate::settings::{self, WindowBackground};
 use crate::trace::{self, Mark, Trace};
-use crate::{dev, events, output, permissions, windows, AppState};
+use crate::{capture_log, dev, events, output, permissions, windows, AppState};
 
 /// A capture whose overlay never reported ready is closed after this, so a dead page cannot
 /// leave an invisible session that blocks the next shortcut.
 const READY_TIMEOUT: Duration = Duration::from_secs(5);
 /// A second trigger closes an open capture none of whose overlays is ready after this long.
 const STUCK_AFTER: Duration = Duration::from_millis(1500);
-/// A capture thread that has not finished after this long no longer blocks a new capture.
-const START_STUCK_AFTER: Duration = Duration::from_secs(10);
+/// A capture thread that has not finished after this long no longer blocks a new capture. It is
+/// longer than the backend's 10 s deadline, so a trigger never starts a second capture while the
+/// first one still waits in ScreenCaptureKit's queue, which would only make that queue longer.
+const START_STUCK_AFTER: Duration = Duration::from_secs(12);
 /// A capture from the menu waits for the menu to fade, so it is not in the frame.
 const MENU_FADE: Duration = Duration::from_millis(200);
 
@@ -481,7 +483,9 @@ fn capture_frozen(
     let frames: Vec<(DisplayId, Arc<Frame>)> = if synthetic {
         synthetic_frames(&displays)
     } else {
-        backend.capture_displays(&ids, &options)?.into_iter().map(|(id, frame)| (id, Arc::new(frame))).collect()
+        let taken = backend.capture_displays(&ids, &options);
+        capture_log::record(app, &format!("{mode:?}"), at.elapsed(), backend.take_report(), taken.as_ref().err());
+        taken?.into_iter().map(|(id, frame)| (id, Arc::new(frame))).collect()
     };
     let taken_at = SystemTime::now();
     trace.mark(Mark::Captured);
@@ -653,7 +657,7 @@ fn start_direct(app: &AppHandle, kind: Direct, at: Instant) -> CommandResult<()>
     }
     let app = app.clone();
     let spawned = thread::Builder::new().name("glimpsfy-capture".into()).spawn(move || {
-        let result = capture_direct(&app, kind, synthetic);
+        let result = capture_direct(&app, kind, synthetic, at);
         release(&app, generation);
         match result {
             Ok(Some(images)) => {
@@ -688,6 +692,7 @@ fn capture_direct(
     app: &AppHandle,
     kind: Direct,
     synthetic: bool,
+    at: Instant,
 ) -> Result<Option<Vec<(Frame, Origin)>>, CaptureError> {
     let state = app.state::<AppState>();
     let settings = state.settings.get();
@@ -729,7 +734,10 @@ fn capture_direct(
     let mut frames: Vec<(DisplayId, Frame)> = if synthetic {
         synthetic_frames(&targets).into_iter().map(|(id, frame)| (id, (*frame).clone())).collect()
     } else {
-        backend.capture_displays(&ids, &options)?
+        let taken = backend.capture_displays(&ids, &options);
+        let what = format!("{:?}", kind.mode());
+        capture_log::record(app, &what, at.elapsed(), backend.take_report(), taken.as_ref().err());
+        taken?
     };
     let taken_at = SystemTime::now();
     let front = front_window(&listing.join().ok().and_then(Result::ok).unwrap_or_default());
@@ -938,7 +946,11 @@ pub fn pick_window(
                 WindowBackground::Transparent => None,
             },
         };
-        state.backend.capture_window(window, &options)?
+        let started = Instant::now();
+        let taken = state.backend.capture_window(window, &options);
+        let report = state.backend.take_report();
+        capture_log::record(app, "Window pick", started.elapsed(), report, taken.as_ref().err());
+        taken?
     };
 
     let picked = PickedWindow { window_id: window, width: frame.size.width, height: frame.size.height };
