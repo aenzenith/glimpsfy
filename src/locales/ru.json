@@ -1135,6 +1135,8 @@
   "popover.act.editor": "Открыть в редакторе",
   "popover.act.trim": "Обрезать и экспортировать",
   "popover.act.folder": "Показать в Finder",
+  "popover.act.editShort": "Изменить",
+  "popover.act.trimShort": "Обрезать",
   "popover.act.copied": "Снимок лежит в буфере обмена.",
   "popover.act.linkCopied": "Ссылка лежит в буфере обмена.",
   "popover.item.today": "Сегодня {time}",

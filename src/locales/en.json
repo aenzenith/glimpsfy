@@ -1135,6 +1135,8 @@
   "popover.act.editor": "Open in editor",
   "popover.act.trim": "Trim and export",
   "popover.act.folder": "Show in Finder",
+  "popover.act.editShort": "Edit",
+  "popover.act.trimShort": "Trim",
   "popover.act.copied": "The capture is on the clipboard.",
   "popover.act.linkCopied": "The link is on the clipboard.",
   "popover.item.today": "Today {time}",

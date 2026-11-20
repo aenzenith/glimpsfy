@@ -1135,6 +1135,8 @@
   "popover.act.editor": "在编辑器中打开",
   "popover.act.trim": "修剪并导出",
   "popover.act.folder": "在访达中显示",
+  "popover.act.editShort": "编辑",
+  "popover.act.trimShort": "修剪",
   "popover.act.copied": "截取已复制到剪贴板。",
   "popover.act.linkCopied": "链接已复制到剪贴板。",
   "popover.item.today": "今天 {time}",

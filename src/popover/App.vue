@@ -1,6 +1,8 @@
 <script setup lang="ts">
-// The menu bar popover (DESIGN.md "Popover"): the capture rows with their live shortcuts, the
-// one-shot delay, the five latest captures with a shelf of actions, and History, Settings and
+// The menu bar popover (DESIGN.md "Popover"): a strip of capture modes with a line that names the
+// one under the pointer or the focus and its live shortcut, the one-shot delay at that line's end,
+// a large preview of the picked capture over a strip of the five latest, the picked capture's
+// actions (Copy and its own second action labelled, the rest as icons), and History, Settings and
 // Quit. The window is a transparent native panel that is made once at launch and stays alive,
 // so this page hears every event while it is hidden; `popover://opened` tells it to refresh.
 // The page draws the panel itself (the kit's `g-popover` on its solid material, since a
@@ -17,7 +19,6 @@ import { computed, nextTick, onMounted, onUnmounted, onUpdated, reactive, ref, w
 import GIcon from "../components/GIcon.vue";
 import KeyCaps from "../components/KeyCaps.vue";
 import ProgressRing from "../components/ProgressRing.vue";
-import SegmentedControl from "../components/SegmentedControl.vue";
 import TipWrap from "../components/TipWrap.vue";
 import { mediaPath } from "../history/model";
 import {
@@ -83,7 +84,7 @@ import {
 } from "../lib/api/windows";
 import { PERMISSIONS_CHANGED, SETTINGS_CHANGED } from "../lib/events";
 import { language, t, type Key } from "../lib/i18n";
-import { capsOf, capsText, type ShortcutAction } from "../lib/keys";
+import { capsOf, type ShortcutAction } from "../lib/keys";
 import type { Settings, Shortcuts } from "../lib/settings";
 import { useUpdate } from "../lib/update";
 import { codeOf, reasonText } from "../toast/reason";
@@ -95,15 +96,14 @@ const RECENT = 5;
 /** How far the pointer moves with the button held before a thumbnail is dragged out as a file. */
 const DRAG_SLOP = 4;
 
-/** A capture mode, or `record`, which opens the recording's setup. */
-type Row = { mode: CaptureMode | "record"; icon: string; label: Key; shortcut: ShortcutAction };
-const ROWS: (Row | null)[] = [
+/** A capture mode, or `record`, which opens the recording's setup; `sep` draws a line before it. */
+type Row = { mode: CaptureMode | "record"; icon: string; label: Key; shortcut: ShortcutAction; sep?: true };
+const ROWS: Row[] = [
   { mode: "area", icon: "area", label: "popover.capture.area", shortcut: "captureArea" },
   { mode: "window", icon: "window", label: "popover.capture.window", shortcut: "captureWindow" },
   { mode: "display", icon: "display", label: "popover.capture.display", shortcut: "captureDisplay" },
   { mode: "repeatLastArea", icon: "repeat", label: "popover.capture.repeat", shortcut: "repeatLastArea" },
-  null,
-  { mode: "copyText", icon: "ocr", label: "popover.capture.copyText", shortcut: "copyText" },
+  { mode: "copyText", icon: "ocr", label: "popover.capture.copyText", shortcut: "copyText", sep: true },
   { mode: "record", icon: "record", label: "popover.capture.record", shortcut: "recordScreen" },
 ];
 
@@ -143,9 +143,23 @@ const recordingNow = computed(() => recording.value.kind !== "idle");
 const selected = computed<Entry | null>(() => entries.value[sel.value] ?? null);
 const slots = computed(() => Array.from({ length: RECENT }, (_, i) => entries.value[i] ?? null));
 
-const delayOptions = computed(() =>
-  DELAYS.map((value) => ({ value, label: value === 0 ? t("popover.delay.off") : t("popover.delay.seconds", { n: value }) })),
-);
+/** The mode under the pointer, and the one with the keyboard focus: the line under the strip
+ * names the first of them, or Capture area. `lastMode` is where ↑ returns from the thumbnails. */
+const pointMode = ref<number | null>(null);
+const focusMode = ref<number | null>(null);
+const lastMode = ref(0);
+const shownMode = computed(() => ROWS[pointMode.value ?? focusMode.value ?? 0]!);
+
+const delayOpen = ref(false);
+const delayName = (seconds: number) => (seconds === 0 ? t("popover.delay.off") : t("popover.delay.seconds", { n: seconds }));
+/** The delay's button shows the chosen value, and only its icon while there is none: a long mode
+ * name, its keys and a worded "no delay" do not share 320 px in every language. */
+const delayButton = computed(() => (delay.value.pendingSeconds === 0 ? "" : t("popover.delay.seconds", { n: delay.value.pendingSeconds })));
+
+/** The first lines of each text copy the preview has shown: a page of the history leaves the text
+ * out, so the preview asks for the entry once. */
+const texts = reactive(new Map<EntryId, string>());
+const TEXT_LINES = 5;
 
 // ---------------------------------------------------------------------------------- loading
 
@@ -200,8 +214,10 @@ async function loadRecording(): Promise<void> {
 
 async function opened(): Promise<void> {
   notice.value = null;
-  // A question left open when the panel closed is not asked again on its own.
+  // A question or a menu left open when the panel closed is not shown again on its own.
   asking.value = null;
+  delayOpen.value = false;
+  pointMode.value = null;
   sel.value = 0;
   await Promise.all([loadSettings(), loadHistory(), loadPermissions(), loadDelay(), loadRecording()]);
   await nextTick();
@@ -234,8 +250,6 @@ function fail(error: unknown): void {
 
 // --------------------------------------------------------------------------------- capturing
 
-const caps = (row: Row) => capsText(shortcuts.value?.[row.shortcut]);
-
 async function capture(row: Row): Promise<void> {
   if (blocked.value || recordingNow.value) return;
   try {
@@ -250,11 +264,34 @@ async function capture(row: Row): Promise<void> {
 }
 
 async function setDelay(seconds: number): Promise<void> {
+  // The chosen item goes away with the menu, so the focus returns to the button that opened it
+  // and the panel's keys keep working.
+  closeDelayMenu(true);
   try {
     delay.value = await capture_set_delay(seconds);
   } catch (error) {
     fail(error);
   }
+}
+
+const delayToggle = ref<HTMLElement | null>(null);
+
+/** Opens the delay's menu with the focus on the chosen value, so ↑↓ and Return pick another. */
+function openDelayMenu(): void {
+  if (blocked.value) return;
+  delayOpen.value = true;
+  void nextTick(() => root.value?.querySelector<HTMLElement>(".s-delay-menu [aria-checked='true']")?.focus());
+}
+
+function closeDelayMenu(refocus = false): void {
+  if (!delayOpen.value) return;
+  delayOpen.value = false;
+  if (refocus) delayToggle.value?.focus();
+}
+
+/** A press anywhere outside the delay's menu and its button closes the menu. */
+function pressOutside(event: PointerEvent): void {
+  if (delayOpen.value && !(event.target as Element | null)?.closest(".s-delay-pick")) closeDelayMenu();
 }
 
 async function cancelDelay(): Promise<void> {
@@ -328,16 +365,17 @@ function sub(entry: Entry): string {
 const pathOf = (entry: Entry) => mediaPath(entry);
 
 type ActId = "copy" | "upload" | "link" | "cancel" | "pin" | "editor" | "trim" | "folder";
-type Act = { id: ActId; icon: string; label: Key; caps: string[] };
+/** `short` is the name a labelled button shows; the tip keeps the full name and the keys. */
+type Act = { id: ActId; icon: string; label: Key; caps: string[]; short?: Key };
 
 const ACT: Record<ActId, Omit<Act, "id">> = {
-  copy: { icon: "copy", label: "popover.act.copy", caps: ["⌘", "C"] },
+  copy: { icon: "copy", label: "popover.act.copy", caps: ["⌘", "C"], short: "popover.act.copy" },
   upload: { icon: "upload", label: "popover.act.upload", caps: ["⌘", "U"] },
   link: { icon: "link", label: "popover.act.link", caps: ["⇧", "⌘", "L"] },
   cancel: { icon: "close", label: "popover.act.cancel", caps: ["⌘", "."] },
   pin: { icon: "pin", label: "popover.act.pin", caps: ["⌘", "P"] },
-  editor: { icon: "external-link", label: "popover.act.editor", caps: ["⌘", "O"] },
-  trim: { icon: "trim", label: "popover.act.trim", caps: ["⌘", "T"] },
+  editor: { icon: "external-link", label: "popover.act.editor", caps: ["⌘", "O"], short: "popover.act.editShort" },
+  trim: { icon: "trim", label: "popover.act.trim", caps: ["⌘", "T"], short: "popover.act.trimShort" },
   folder: { icon: "folder", label: "popover.act.folder", caps: ["⌥", "⌘", "R"] },
 };
 
@@ -353,6 +391,13 @@ function actionsFor(entry: Entry): Act[] {
   if (entry.savedPath) ids.push("folder");
   return ids.map((id) => ({ id, ...ACT[id] }));
 }
+
+/** Copy and the capture's own second action (the editor, or Trim for a recording) as labelled
+ * buttons, every other action as an icon at the row's end. */
+const shelf = computed(() => {
+  const all = selected.value ? actionsFor(selected.value) : [];
+  return { labelled: all.filter((a) => a.short), icons: all.filter((a) => !a.short) };
+});
 
 async function learnProviders(): Promise<void> {
   if (providerNames.size) return;
@@ -548,6 +593,19 @@ function open(entry: Entry): void {
   else void run("copy", entry);
 }
 
+watch(selected, async (entry) => {
+  if (!entry || entry.kind !== "textCopy" || texts.has(entry.id)) return;
+  texts.set(entry.id, "");
+  try {
+    const full = await history_get(entry.id);
+    const lines = (full.text ?? "").split(/\r?\n/).filter((line) => line.trim());
+    texts.set(entry.id, lines.slice(0, TEXT_LINES).join("\n"));
+  } catch (error) {
+    // The preview stays empty; Copy still reads the text when it is pressed.
+    console.warn("history_get", error);
+  }
+});
+
 // -------------------------------------------------------------------------------- recording
 
 async function recordAction(action: "pause" | "resume" | "stop" | "discard"): Promise<void> {
@@ -601,14 +659,32 @@ async function openWindow(kind: WindowKind): Promise<void> {
 
 // ---------------------------------------------------------------------------------- keyboard
 
-function rowButtons(): HTMLElement[] {
-  return [...(root.value?.querySelectorAll<HTMLElement>(".g-menu-item[data-row]:not([aria-disabled='true'])") ?? [])];
+function modeButtons(): HTMLElement[] {
+  return [...(root.value?.querySelectorAll<HTMLElement>(".s-mode:not([aria-disabled='true'])") ?? [])];
+}
+
+/** ↑↓ move through the delay's menu while it is open, Esc closes it and nothing else. */
+function onDelayMenuKey(event: KeyboardEvent): boolean {
+  if (event.key === "Escape") {
+    event.preventDefault();
+    closeDelayMenu(true);
+    return true;
+  }
+  if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return false;
+  event.preventDefault();
+  const items = [...(root.value?.querySelectorAll<HTMLElement>(".s-delay-menu .g-menu-item") ?? [])];
+  const at = items.indexOf(document.activeElement as HTMLElement);
+  const next = at === -1 ? 0 : Math.max(0, Math.min(items.length - 1, at + (event.key === "ArrowDown" ? 1 : -1)));
+  items[next]?.focus();
+  return true;
 }
 
 function onKey(event: KeyboardEvent): void {
   const active = document.activeElement as HTMLElement | null;
   const onThumb = !!active?.closest(".s-thumb");
   const mod = event.metaKey || event.ctrlKey;
+
+  if (delayOpen.value && onDelayMenuKey(event)) return;
 
   if (event.key === "Escape") {
     event.preventDefault();
@@ -637,33 +713,36 @@ function onKey(event: KeyboardEvent): void {
     return;
   }
 
+  const modes = modeButtons();
+  const atMode = active ? modes.indexOf(active) : -1;
+  // The panel itself holds the focus when it opens, and an arrow from there enters the modes.
+  const onPanel = active === root.value;
+  const onDelay = !!active?.closest(".s-delay-pick");
+
   if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
-    if (!onThumb) return;
-    event.preventDefault();
-    select(sel.value + (event.key === "ArrowRight" ? 1 : -1), true);
+    const step = event.key === "ArrowRight" ? 1 : -1;
+    if (onThumb) {
+      event.preventDefault();
+      select(sel.value + step, true);
+    } else if (atMode !== -1 || onPanel) {
+      event.preventDefault();
+      modes[atMode === -1 ? 0 : Math.max(0, Math.min(modes.length - 1, atMode + step))]?.focus();
+    }
     return;
   }
 
-  if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-    const rows = rowButtons();
-    const down = event.key === "ArrowDown";
-    const at = active ? rows.indexOf(active) : -1;
-    if (onThumb) {
-      if (!down && rows.length) {
-        event.preventDefault();
-        rows[rows.length - 1]!.focus();
-      }
-      return;
-    }
-    if (at === -1 && active?.closest(".g-seg")) return;
+  if (event.key === "ArrowDown") {
+    if (atMode === -1 && !onPanel && !onDelay) return;
     event.preventDefault();
-    if (at === -1) {
-      rows[down ? 0 : rows.length - 1]?.focus();
-    } else if (down && at === rows.length - 1) {
-      if (entries.value.length) select(sel.value, true);
-    } else {
-      rows[Math.max(0, Math.min(rows.length - 1, at + (down ? 1 : -1)))]?.focus();
-    }
+    if (onPanel && modes.length) modes[Math.min(lastMode.value, modes.length - 1)]!.focus();
+    else if (entries.value.length) select(sel.value, true);
+    return;
+  }
+
+  if (event.key === "ArrowUp") {
+    if (!onThumb && !onPanel && !onDelay) return;
+    event.preventDefault();
+    modes[Math.min(lastMode.value, modes.length - 1)]?.focus();
     return;
   }
 
@@ -734,7 +813,16 @@ const emptyParts = computed(() => {
       @stale="consentStale"
     />
   </div>
-  <div v-else ref="root" class="g-popover solid s-pop" role="dialog" aria-label="Glimpsfy" tabindex="-1" @keydown="onKey">
+  <div
+    v-else
+    ref="root"
+    class="g-popover solid s-pop"
+    role="dialog"
+    aria-label="Glimpsfy"
+    tabindex="-1"
+    @keydown="onKey"
+    @pointerdown.capture="pressOutside"
+  >
     <!-- the screen recording permission is missing, or works only after a restart -->
     <div v-if="restartNeeded" class="g-popover-section">
       <div class="s-note" role="alert">
@@ -819,47 +907,70 @@ const emptyParts = computed(() => {
       </p>
     </div>
 
-    <!-- capture rows and the one-shot delay -->
-    <template v-else>
-      <div class="g-popover-section" role="menu" :aria-label="t('popover.capture.label')">
-        <template v-for="(row, i) in ROWS" :key="row ? row.mode : `sep-${i}`">
-          <div v-if="!row" class="g-menu-separator" role="separator" />
+    <!-- the capture modes, the line that names one, and the one-shot delay -->
+    <div v-else class="g-popover-section">
+      <div class="s-modes" role="menu" :aria-label="t('popover.capture.label')" @pointerleave="pointMode = null">
+        <template v-for="(row, i) in ROWS" :key="row.mode">
+          <span v-if="row.sep" class="s-modes-sep" role="separator" />
           <button
-            v-else
             type="button"
-            class="g-menu-item"
+            class="s-mode"
             role="menuitem"
-            data-row
+            :aria-label="t(row.label)"
             :aria-disabled="blocked ? 'true' : undefined"
+            @pointerenter="pointMode = i"
+            @focus="(focusMode = i), (lastMode = i)"
+            @blur="focusMode = null"
             @click="capture(row)"
           >
-            <GIcon :name="row.icon" :size="16" />
-            <span>{{ t(row.label) }}</span>
-            <span v-if="caps(row)" class="g-menu-key">{{ caps(row) }}</span>
+            <GIcon :name="row.icon" :size="20" />
           </button>
         </template>
       </div>
-      <div class="g-popover-section">
-        <div v-if="delay.remainingSeconds !== null" class="s-delay" role="status">
-          <span class="s-delay-label"><GIcon name="timer" :size="16" />{{ t("popover.delay.counting", { n: delay.remainingSeconds }) }}</span>
-          <button type="button" class="g-button" data-variant="plain" @click="cancelDelay">{{ t("popover.delay.cancel") }}</button>
-        </div>
-        <div v-else class="s-delay" :aria-disabled="blocked ? 'true' : undefined">
-          <span id="pop-delay" class="s-delay-label"><GIcon name="timer" :size="16" />{{ t("popover.delay.label") }}</span>
-          <SegmentedControl
-            :model-value="delay.pendingSeconds"
-            :options="delayOptions"
-            labelledby="pop-delay"
-            :disabled="blocked"
-            @update:model-value="setDelay"
-          />
+      <div v-if="delay.remainingSeconds !== null" class="s-line" role="status">
+        <span class="s-line-count"><GIcon name="timer" :size="16" />{{ t("popover.delay.counting", { n: delay.remainingSeconds }) }}</span>
+        <button type="button" class="g-button" data-variant="plain" @click="cancelDelay">{{ t("popover.delay.cancel") }}</button>
+      </div>
+      <div v-else class="s-line" :aria-disabled="blocked ? 'true' : undefined">
+        <b class="s-line-name">{{ t(shownMode.label) }}</b>
+        <KeyCaps :accelerator="shortcuts?.[shownMode.shortcut]" />
+        <div class="s-delay-pick">
+          <TipWrap :tip="`${t('popover.delay.label')}: ${delayName(delay.pendingSeconds)}`" align="end">
+            <button
+              ref="delayToggle"
+              type="button"
+              class="g-button"
+              data-variant="plain"
+              aria-haspopup="menu"
+              :aria-expanded="delayOpen"
+              :aria-label="`${t('popover.delay.aria')}: ${delayName(delay.pendingSeconds)}`"
+              :disabled="blocked"
+              :data-on="delay.pendingSeconds ? '' : undefined"
+              @click="delayOpen ? closeDelayMenu() : openDelayMenu()"
+            >
+              <GIcon name="timer" :size="16" />{{ delayButton }}<GIcon name="chevron-down" :size="12" />
+            </button>
+          </TipWrap>
+          <div v-if="delayOpen" class="g-menu solid s-delay-menu" role="menu" :aria-label="t('popover.delay.aria')">
+            <button
+              v-for="seconds in DELAYS"
+              :key="seconds"
+              type="button"
+              class="g-menu-item"
+              role="menuitemradio"
+              :aria-checked="seconds === delay.pendingSeconds"
+              @click="setDelay(seconds)"
+            >
+              <span class="g-menu-check"><GIcon name="check" :size="16" /></span>
+              <span>{{ delayName(seconds) }}</span>
+            </button>
+          </div>
         </div>
       </div>
-    </template>
+    </div>
 
-    <!-- recent captures -->
-    <div class="g-popover-section">
-      <div class="g-popover-label">{{ t("popover.recent") }}</div>
+    <!-- the picked capture large, the five latest under it, and the picked one's actions -->
+    <div class="g-popover-section" @pointermove="thumbMove" @pointerup="thumbUp" @pointercancel="thumbUp">
       <p v-if="historyState === 'unavailable'" class="s-empty-note">
         <span>{{ t("popover.recent.unavailable") }}</span>
       </p>
@@ -868,15 +979,52 @@ const emptyParts = computed(() => {
         <button type="button" class="g-button" data-variant="plain" @click="loadHistory">{{ t("popover.recent.retry") }}</button>
       </div>
       <template v-else>
+        <div v-if="historyState === 'ready' && !entries.length" class="s-hero" data-empty>
+          <div class="s-empty-note">
+            <GIcon name="area" :size="24" />
+            <b>{{ t("popover.empty.title") }}</b>
+            <span v-if="emptyKeys.length">
+              {{ emptyParts.before }}<KeyCaps :caps="emptyKeys" />{{ emptyParts.after }}
+            </span>
+            <span v-else>{{ t("popover.empty.noKeys") }}</span>
+          </div>
+        </div>
         <div
-          class="s-strip"
-          role="listbox"
-          :aria-label="t('popover.recent.aria')"
-          aria-orientation="horizontal"
-          @pointermove="thumbMove"
-          @pointerup="thumbUp"
-          @pointercancel="thumbUp"
+          v-else-if="selected"
+          class="s-hero"
+          :data-kind="selected.kind"
+          role="img"
+          :aria-label="`${title(selected)}, ${sub(selected)}`"
+          :title="t('popover.hint')"
+          @pointerdown="thumbDown($event, selected, sel)"
+          @dblclick="open(selected)"
         >
+          <div v-if="selected.kind === 'textCopy'" class="s-hero-text">
+            <b><GIcon name="ocr" :size="12" />{{ selected.source.appName ?? t("popover.item.text") }}</b>
+            <span>{{ texts.get(selected.id) }}</span>
+          </div>
+          <img v-else-if="thumbUrl(selected)" :src="thumbUrl(selected)!" alt="" draggable="false" />
+          <button
+            v-if="selected.kind === 'recording'"
+            type="button"
+            class="g-glass s-play"
+            :aria-label="t('popover.act.trim')"
+            @pointerdown.stop
+            @click="run('trim', selected)"
+          >
+            <GIcon name="play" :size="20" />
+          </button>
+          <span v-if="selected.kind === 'recording' && selected.durationMs !== null" class="g-tag s-hero-dur">
+            <GIcon name="film" :size="12" />{{ duration(selected.durationMs) }}
+          </span>
+          <span v-if="uploads.has(selected.id)" class="g-status" data-status="progress">
+            <ProgressRing :progress="uploadPercent(selected)" :label="sub(selected)" :size="22" />
+          </span>
+          <span v-else-if="selected.hosted" class="g-status" data-status="ok"><GIcon name="link" :size="12" /></span>
+        </div>
+        <div v-else class="s-hero" aria-hidden="true" />
+
+        <div class="s-strip" role="listbox" :aria-label="t('popover.recent.aria')" aria-orientation="horizontal">
           <template v-for="(entry, i) in slots" :key="entry ? entry.id : `empty-${i}`">
             <button
               v-if="entry"
@@ -887,13 +1035,13 @@ const emptyParts = computed(() => {
               :aria-selected="i === sel"
               :tabindex="i === sel ? 0 : -1"
               :aria-label="`${title(entry)}, ${sub(entry)}`"
+              :title="t('popover.hint')"
               :data-badge="uploads.has(entry.id) || entry.hosted ? '' : undefined"
-              @pointerenter="select(i)"
               @pointerdown="thumbDown($event, entry, i)"
               @focus="select(i)"
               @dblclick="open(entry)"
             >
-              <span v-if="entry.kind === 'textCopy'" class="s-thumb-media s-thumb-text"><GIcon name="ocr" :size="20" /></span>
+              <span v-if="entry.kind === 'textCopy'" class="s-thumb-media s-thumb-text"><GIcon name="ocr" :size="16" /></span>
               <span v-else class="s-thumb-media">
                 <img v-if="thumbUrl(entry)" :src="thumbUrl(entry)!" alt="" draggable="false" />
               </span>
@@ -909,34 +1057,35 @@ const emptyParts = computed(() => {
           </template>
         </div>
 
-        <p v-if="historyState === 'ready' && !entries.length" class="s-empty-note">
-          <b>{{ t("popover.empty.title") }}</b>
-          <span v-if="emptyKeys.length">
-            {{ emptyParts.before }}<KeyCaps :caps="emptyKeys" />{{ emptyParts.after }}
-          </span>
-          <span v-else>{{ t("popover.empty.noKeys") }}</span>
-        </p>
-        <template v-else-if="selected">
-          <div class="s-shelf">
-            <div class="s-shelf-text">
-              <span class="s-shelf-title">{{ title(selected) }}</span>
-              <span class="s-shelf-sub" :data-kind="selected.hosted && !uploads.has(selected.id) ? 'link' : undefined">{{ sub(selected) }}</span>
-            </div>
-            <div class="s-shelf-actions" role="toolbar" :aria-label="t('popover.actions.aria')">
-              <TipWrap
-                v-for="(act, j) in actionsFor(selected)"
-                :key="act.id"
-                :tip="t(act.label)"
-                :caps="act.caps"
-                :align="j >= actionsFor(selected).length - 2 ? 'end' : undefined"
-              >
-                <button type="button" class="g-btn" data-size="small" :aria-label="t(act.label)" @click="run(act.id, selected)">
-                  <GIcon :name="act.icon" :size="16" />
-                </button>
-              </TipWrap>
-            </div>
+        <template v-if="selected">
+          <div class="s-info">
+            <span class="s-info-title">{{ title(selected) }}</span>
+            <span class="s-info-sub" :data-kind="selected.hosted && !uploads.has(selected.id) ? 'link' : undefined">{{ sub(selected) }}</span>
           </div>
-          <p class="s-hint"><GIcon name="drop" :size="14" /><span>{{ t("popover.hint") }}</span></p>
+          <div class="s-acts" role="toolbar" :aria-label="t('popover.actions.aria')">
+            <TipWrap v-for="act in shelf.labelled" :key="act.id" :tip="t(act.label)" :caps="act.caps" align="start">
+              <button
+                type="button"
+                class="g-button"
+                :data-variant="act.id === 'copy' ? 'primary' : undefined"
+                @click="run(act.id, selected)"
+              >
+                <GIcon :name="act.icon" :size="16" />{{ t(act.short!) }}
+              </button>
+            </TipWrap>
+            <span class="g-spacer" />
+            <TipWrap
+              v-for="(act, j) in shelf.icons"
+              :key="act.id"
+              :tip="t(act.label)"
+              :caps="act.caps"
+              :align="j >= shelf.icons.length - 2 ? 'end' : undefined"
+            >
+              <button type="button" class="g-btn" data-size="small" :aria-label="t(act.label)" @click="run(act.id, selected)">
+                <GIcon :name="act.icon" :size="16" />
+              </button>
+            </TipWrap>
+          </div>
         </template>
       </template>
       <p v-if="notice" class="s-notice" :data-tone="notice.tone" role="status">
@@ -977,8 +1126,9 @@ const emptyParts = computed(() => {
 </template>
 
 <style>
-/* Page-local parts of the popover, ported from design/round-2/small-surfaces (s-*). Every value
-   is a kit token. The popover window is its own page, so these rules reach nothing else. */
+/* Page-local parts of the popover, from design/canvas row 06 (Y2) and design/round-2/small-surfaces
+   (s-*). Every value is a kit token. The popover window is its own page, so these rules reach
+   nothing else. */
 .s-pop {
   width: 340px;
   /* The window draws the shadow natively; the panel keeps only its rim. */
@@ -989,27 +1139,65 @@ const emptyParts = computed(() => {
    instead of floating over a scrim, and the window takes its height. */
 .s-consent .g-scrim { position: static; padding: 0; background: none; }
 .s-consent .g-dialog { width: auto; box-shadow: none; background: none; }
-.s-pop :where(.s-thumb, .s-shelf, .s-note, .s-delay, .s-strip) {
+.s-pop :where(.s-thumb, .s-hero, .s-note, .s-line, .s-strip, .s-modes, .s-mode) {
   box-sizing: border-box;
 }
-.s-delay { display: flex; align-items: center; gap: 12px; min-height: 32px; padding-left: 8px; }
-.s-delay-label { flex: 1; display: inline-flex; align-items: center; gap: 8px; font: var(--type-text); color: var(--win-text); white-space: nowrap; }
-.s-delay-label > g-icon { color: var(--win-text-2); }
-.s-delay[aria-disabled="true"] .s-delay-label,
-.s-delay[aria-disabled="true"] .s-delay-label > g-icon { color: var(--win-text-disabled); }
+button:is(.s-thumb, .s-mode) { margin: 0; padding: 0; border: 0; font: inherit; color: inherit; background: none; -webkit-appearance: none; appearance: none; }
 
-.s-strip { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px; padding: 2px 4px 0; }
-button.s-thumb { margin: 0; padding: 0; border: 0; font: inherit; color: inherit; -webkit-appearance: none; appearance: none; }
+/* The capture modes: one sunken track of icon buttons, the way the system's own capture bar
+   draws them, with a raised key under the pointer or the focus. */
+.s-modes { display: flex; align-items: center; gap: 2px; height: 44px; padding: 3px; border-radius: 13px; background: var(--win-fill); }
+.s-mode {
+  flex: 1; display: grid; place-items: center; height: 38px; border-radius: 10px; color: var(--win-text-2);
+  transition: background-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+.s-mode:hover, .s-mode:focus-visible { background: var(--win-button); box-shadow: var(--win-raised-shadow); color: var(--win-text); outline: 0; }
+.s-mode:active { background: var(--win-button-press); }
+.s-mode[aria-disabled="true"] { color: var(--win-text-disabled); background: none; box-shadow: none; --rec: currentColor; }
+.s-modes-sep { flex: none; width: 1px; height: 20px; margin: 0 2px; background: var(--win-line); }
+
+/* The line under the modes names the one under the pointer and ends with the delay. */
+.s-line { position: relative; display: flex; align-items: center; gap: 8px; min-height: 32px; margin-top: 4px; padding-left: 6px; }
+.s-line-name { font: var(--type-label); color: var(--win-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.s-line[aria-disabled="true"] .s-line-name { color: var(--win-text-disabled); }
+.s-line-count { flex: 1; display: inline-flex; align-items: center; gap: 8px; font: var(--type-text); color: var(--win-text); }
+.s-line-count > g-icon { color: var(--win-text-2); }
+.s-delay-pick { position: relative; margin-left: auto; }
+.s-delay-pick .g-button { gap: 4px; padding-right: 9px; color: var(--win-text-2); }
+/* A chosen delay is the line's one live setting, so it reads in iris. */
+.s-delay-pick .g-button[data-on] { color: var(--win-iris-text); }
+.s-delay-pick .g-tipwrap:has(> .g-button[aria-expanded="true"]) > .g-tip { display: none; }
+.s-delay-menu { position: absolute; right: 0; top: calc(100% + 4px); z-index: 5; min-width: 150px; }
+
+/* The picked capture, whole: a contained image keeps a tall or a wide capture recognisable. */
+.s-hero {
+  position: relative; display: block; height: 172px; border-radius: var(--radius-group);
+  background: var(--win-sunken); cursor: grab; overflow: hidden;
+}
+.s-hero > img { display: block; width: 100%; height: 100%; object-fit: contain; }
+.s-hero::after { content: ""; position: absolute; inset: 0; border-radius: inherit; box-shadow: inset 0 0 0 var(--hairline) var(--win-media-rim); pointer-events: none; }
+.s-hero[data-empty] { display: grid; place-items: center; padding: 0 28px; background: none; cursor: default; text-align: center; }
+.s-hero[data-empty]::after { box-shadow: none; border: 1px dashed var(--win-line-strong); }
+.s-hero[data-empty] .s-empty-note { margin: 0; padding: 0; }
+.s-hero[data-empty] .s-empty-note > g-icon { display: block; margin: 0 auto 8px; color: var(--win-text-3); }
+.s-hero-text { position: absolute; inset: 0; padding: 12px 14px; background: var(--win-raised); color: var(--win-text-2); font: 500 11px/17px var(--font-mono); white-space: pre-line; overflow: hidden; }
+.s-hero-text > b { display: flex; align-items: center; gap: 5px; margin-bottom: 6px; font: var(--type-caption-strong); font-family: var(--font); color: var(--win-iris-text); }
+.s-play { position: absolute; left: 50%; top: 50%; z-index: 1; display: grid; place-items: center; width: 44px; height: 44px; margin: -22px 0 0 -22px; padding: 0; border: 0; border-radius: 50%; font: inherit; }
+.s-play:focus-visible { outline: 2px solid var(--surface-focus); outline-offset: 2px; }
+.s-hero-dur { position: absolute; left: 8px; bottom: 8px; z-index: 1; pointer-events: none; }
+.s-hero > .g-status { position: absolute; right: 8px; top: 8px; z-index: 1; }
+
+.s-strip { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px; margin-top: 8px; }
 .s-thumb {
-  position: relative; display: block; width: 100%; height: 40px; border-radius: var(--radius-thumb);
+  position: relative; display: block; width: 100%; height: 36px; border-radius: var(--radius-thumb);
   background: var(--win-sunken); cursor: grab;
   transition: box-shadow var(--dur-fast) var(--ease-out);
 }
 .s-thumb-media { position: absolute; inset: 0; border-radius: inherit; overflow: hidden; }
 .s-thumb-media > img { display: block; width: 100%; height: 100%; object-fit: cover; }
 .s-thumb::after { content: ""; position: absolute; inset: 0; border-radius: inherit; box-shadow: inset 0 0 0 0.5px var(--win-line-strong); pointer-events: none; }
-/* Passing over a thumbnail picks it, so the pick shows as the ring alone and nothing moves under
-   the pointer. */
+/* A press picks a thumbnail (passing over it would swap the preview while the pointer travels
+   from the preview to the actions), and the pick shows as the ring alone. */
 .s-thumb[aria-selected="true"] { box-shadow: 0 0 0 2px var(--iris); }
 .s-thumb:focus { outline: 0; }
 .s-thumb:focus-visible { outline: 2px solid var(--surface-focus); outline-offset: 3px; }
@@ -1027,13 +1215,12 @@ button.s-thumb { margin: 0; padding: 0; border: 0; font: inherit; color: inherit
 .s-thumb[data-empty]::after { box-shadow: none; border: 1px dashed var(--win-line-strong); }
 .s-thumb-text { display: grid; place-items: center; background: var(--win-raised); color: var(--win-iris-text); }
 
-.s-shelf { display: flex; align-items: center; gap: 8px; min-height: 40px; margin-top: 10px; padding-left: 8px; }
-.s-shelf-text { flex: 1; min-width: 0; }
-.s-shelf-title { display: block; font: var(--type-button); color: var(--win-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.s-shelf-sub { display: block; margin-top: 1px; font: var(--type-body); color: var(--win-text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
-.s-shelf-sub[data-kind="link"] { font: 500 11.5px/16px var(--font-mono); color: var(--win-iris-text); }
-.s-shelf-actions { display: inline-flex; flex: none; }
-.s-hint { display: flex; align-items: center; gap: 6px; margin: 4px 0 0; padding: 0 8px; font: var(--type-caption); color: var(--win-text-3); }
+.s-info { margin-top: 12px; padding: 0 4px; }
+.s-info-title { display: block; font: var(--type-title); color: var(--win-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.s-info-sub { display: block; margin-top: 1px; font: var(--type-body); color: var(--win-text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
+.s-info-sub[data-kind="link"] { font: 500 11.5px/16px var(--font-mono); color: var(--win-iris-text); }
+.s-acts { display: flex; align-items: center; gap: 6px; margin-top: 10px; }
+.s-acts > .g-spacer { flex: 1; }
 .s-empty-note { margin: 10px 0 2px; padding: 0 8px; }
 .s-empty-note b { display: block; font: var(--type-button); color: var(--win-text); }
 .s-empty-note > span { display: block; margin-top: 2px; font: var(--type-body); color: var(--win-text-2); }

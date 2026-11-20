@@ -1135,6 +1135,8 @@
   "popover.act.editor": "エディタで開く",
   "popover.act.trim": "トリミングして書き出す",
   "popover.act.folder": "Finderで表示",
+  "popover.act.editShort": "編集",
+  "popover.act.trimShort": "トリミング",
   "popover.act.copied": "キャプチャをクリップボードにコピーしました。",
   "popover.act.linkCopied": "リンクをクリップボードにコピーしました。",
   "popover.item.today": "今日 {time}",

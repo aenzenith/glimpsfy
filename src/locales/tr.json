@@ -1135,6 +1135,8 @@
   "popover.act.editor": "Düzenleyicide aç",
   "popover.act.trim": "Kırp ve dışa aktar",
   "popover.act.folder": "Finder’da göster",
+  "popover.act.editShort": "Düzenle",
+  "popover.act.trimShort": "Kırp",
   "popover.act.copied": "Yakalama panoya kopyalandı.",
   "popover.act.linkCopied": "Bağlantı panoya kopyalandı.",
   "popover.item.today": "Bugün {time}",

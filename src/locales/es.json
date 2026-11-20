@@ -1135,6 +1135,8 @@
   "popover.act.editor": "Abrir en el editor",
   "popover.act.trim": "Recortar y exportar",
   "popover.act.folder": "Mostrar en el Finder",
+  "popover.act.editShort": "Editar",
+  "popover.act.trimShort": "Recortar",
   "popover.act.copied": "La captura está en el portapapeles.",
   "popover.act.linkCopied": "El enlace está en el portapapeles.",
   "popover.item.today": "Hoy {time}",

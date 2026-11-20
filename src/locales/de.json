@@ -1135,6 +1135,8 @@
   "popover.act.editor": "Im Editor öffnen",
   "popover.act.trim": "Kürzen und exportieren",
   "popover.act.folder": "Im Finder zeigen",
+  "popover.act.editShort": "Bearbeiten",
+  "popover.act.trimShort": "Kürzen",
   "popover.act.copied": "Die Aufnahme liegt in der Zwischenablage.",
   "popover.act.linkCopied": "Der Link liegt in der Zwischenablage.",
   "popover.item.today": "Heute {time}",
