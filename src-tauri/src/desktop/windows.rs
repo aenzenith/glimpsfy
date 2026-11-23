@@ -137,6 +137,7 @@ pub fn capabilities() -> Capabilities {
         send_to_app: false,
         agents: false,
         scroll_capture: false,
+        clean_desktop: false,
     }
 }
 

@@ -31,11 +31,15 @@ pub struct CaptureOptions {
     pub shows_cursor: bool,
     /// Leaves Glimpsfy's own windows (toasts, pins) out of the frame.
     pub exclude_own_windows: bool,
+    /// Leaves the desktop icons, notification banners and widgets out of the frame (Settings ›
+    /// Output › Hide desktop icons and notifications); only macOS can, the others ignore it.
+    #[serde(default)]
+    pub clean_desktop: bool,
 }
 
 impl Default for CaptureOptions {
     fn default() -> Self {
-        CaptureOptions { shows_cursor: false, exclude_own_windows: true }
+        CaptureOptions { shows_cursor: false, exclude_own_windows: true, clean_desktop: false }
     }
 }
 

@@ -265,6 +265,10 @@ pub struct RecordingConfig {
     pub countdown_seconds: u32,
     /// The folder the MP4 is written to (Settings › Recording › Recordings folder).
     pub output_folder: PathBuf,
+    /// Leaves the desktop icons, notification banners and widgets out of a display or area take
+    /// (Settings › Recording › Hide desktop icons and notifications).
+    #[serde(default)]
+    pub clean_desktop: bool,
 }
 
 impl RecordingConfig {

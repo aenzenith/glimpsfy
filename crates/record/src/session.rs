@@ -213,6 +213,7 @@ pub fn stream_config(config: &RecordingConfig, own: &OwnWindows) -> StreamConfig
         color_space: ColorSpace::Srgb,
         pixel_format: StreamPixelFormat::Nv12,
         queue_depth: 6,
+        clean_desktop: config.clean_desktop,
     }
 }
 
@@ -1029,6 +1030,7 @@ mod tests {
             webcam: WebcamOverlay::default(),
             countdown_seconds: 3,
             output_folder: dir.to_path_buf(),
+            clean_desktop: false,
         }
     }
 

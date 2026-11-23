@@ -526,7 +526,8 @@ fn take_backdrop(app: &AppHandle, display: DisplayId) -> Option<String> {
     let hidden = crate::desktop::hide_for_capture(app, &[]);
     #[cfg(not(target_os = "macos"))]
     hidden.settle();
-    let taken = backend.capture_display(display, &CaptureOptions { shows_cursor: false, exclude_own_windows: true });
+    // The setup's backdrop stands for the live screen, so it shows the desktop as it is.
+    let taken = backend.capture_display(display, &CaptureOptions::default());
     #[cfg(not(target_os = "macos"))]
     drop(hidden);
     match taken {

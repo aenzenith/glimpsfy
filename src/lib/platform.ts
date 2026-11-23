@@ -35,6 +35,7 @@ export const platform: Platform = {
     subjectLift: true,
     agents: true,
     scrollCapture: true,
+    cleanDesktop: true,
   },
   videoBase: null,
 };

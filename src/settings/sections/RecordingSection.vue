@@ -33,6 +33,7 @@ import FolderRow from "./FolderRow.vue";
 
 const props = defineProps<{ settings: Settings }>();
 const r = computed(() => props.settings.recording);
+const cleanDesktopId = uid("clean");
 
 const ids = {
   codec: uid("codec"), fps: uid("fps"), resolution: uid("res"), system: uid("sys"), mic: uid("mic"), micDevice: uid("micdev"), tracks: uid("tracks"),
@@ -306,6 +307,9 @@ function swatchKey(event: KeyboardEvent): void {
   <div class="g-group">
     <FormRow :label="t('settings.recording.countdown')" :label-id="ids.countdown">
       <SegmentedControl :labelledby="ids.countdown" :model-value="r.countdownSeconds" :options="countdowns" @update:model-value="(v) => update((s) => (s.recording.countdownSeconds = v))" />
+    </FormRow>
+    <FormRow v-if="can('cleanDesktop')" :label="t('settings.recording.cleanDesktop')" :for="cleanDesktopId" :help="t('settings.recording.cleanDesktopHelp')">
+      <SwitchControl :id="cleanDesktopId" :model-value="r.cleanDesktop" @update:model-value="(v) => update((s) => (s.recording.cleanDesktop = v))" />
     </FormRow>
     <template v-if="can('inputOverlays')">
     <FormRow :label="t('settings.recording.clicks')" :for="ids.clicks">

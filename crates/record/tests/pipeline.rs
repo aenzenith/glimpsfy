@@ -205,6 +205,7 @@ fn config(dir: &Path, codec: VideoCodec) -> RecordingConfig {
         webcam: WebcamOverlay::default(),
         countdown_seconds: 3,
         output_folder: dir.to_path_buf(),
+        clean_desktop: false,
     }
 }
 

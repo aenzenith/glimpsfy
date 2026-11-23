@@ -349,6 +349,10 @@ pub struct Capabilities {
     /// The scrolling capture (⌘↓ in the overlay, `capture_start_scroll`): a live stream of the
     /// selection while the page under it scrolls. Only macOS has it for now.
     pub scroll_capture: bool,
+    /// Captures and recordings can leave the desktop icons, notification banners and widgets
+    /// out (Settings › Output and Settings › Recording). ScreenCaptureKit's filter does it on
+    /// macOS; the other systems have no such filter, so the switches are hidden there.
+    pub clean_desktop: bool,
 }
 
 /// What `app_platform` answers.
@@ -398,6 +402,7 @@ pub fn app_platform() -> Platform {
                 send_to_app: true,
                 agents: true,
                 scroll_capture: true,
+                clean_desktop: true,
             },
             video_base: None,
         }

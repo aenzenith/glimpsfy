@@ -600,5 +600,6 @@ pub fn config(
         },
         countdown_seconds: r.countdown_seconds.min(10),
         output_folder: r.recordings_folder.clone(),
+        clean_desktop: r.clean_desktop,
     }
 }

@@ -57,7 +57,7 @@ use crate::display::{Display, DisplayId, WindowId, WindowInfo, WindowListOptions
 use crate::error::{CaptureError, Result};
 use crate::frame::{ColorInfo, ColorSpace, Frame, PixelFormat};
 use crate::geometry::{LogicalRect, PhysicalRect, PhysicalSize, ScaleFactor};
-use crate::stream::{CaptureStream, StreamConfig, StreamSink};
+use crate::stream::{CaptureStream, FilterPlan, ListedWindow, StreamConfig, StreamSink, FINDER};
 use crate::window::{finish_window, BodyHint};
 
 /// `kCVPixelFormatType_32BGRA`, spelled out to keep Core Video out of the dependencies.
@@ -119,6 +119,9 @@ struct ContentCache {
 /// The displays to capture and Glimpsfy's own app, taken from the cached content.
 type Targets = (Vec<Retained<SCDisplay>>, Option<Retained<SCRunningApplication>>);
 
+/// The apps a clean desktop leaves out and the windows of theirs that show anyway.
+type Exceptions = (Vec<Retained<SCRunningApplication>>, Vec<Retained<SCWindow>>);
+
 /// The moment a capture (or a background fetch) gives up, shared by all of its requests.
 #[derive(Clone, Copy)]
 struct Deadline {
@@ -171,9 +174,10 @@ impl MacBackend {
 
     /// Whether the displays can be taken with the rectangle capture: it needs macOS 15.2, it
     /// never draws the pointer, and it cannot leave windows out, so it is used only while none
-    /// of Glimpsfy's windows shows on screen (the warm overlays are on screen but fully clear).
+    /// of Glimpsfy's windows shows on screen (the warm overlays are on screen but fully clear)
+    /// and never for a clean desktop.
     fn rect_capture_fits(&self, displays: &[DisplayId], options: &CaptureOptions) -> bool {
-        if options.shows_cursor || !rect_capture_available() {
+        if options.shows_cursor || options.clean_desktop || !rect_capture_available() {
             return false;
         }
         let refused = self.rect_refused.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -275,6 +279,36 @@ impl MacBackend {
         })?
         .ok_or_else(|| CaptureError::DisplayNotFound(displays.first().copied().unwrap_or(DisplayId(0))))
     }
+
+    /// What a still capture leaves out besides Glimpsfy (`FilterPlan::desktop_exceptions`):
+    /// nothing unless `options` asks for a clean desktop. The content must list every Finder
+    /// window on screen, or a window opened since it was cached would drop with the icons, so a
+    /// missing one is fetched first; the check reads the window list, about a millisecond.
+    fn desktop_exceptions(
+        &self,
+        options: &CaptureOptions,
+        deadline: Deadline,
+        fetched: &mut Option<Duration>,
+    ) -> Result<Shared<Exceptions>> {
+        if !options.clean_desktop {
+            return Ok(Shared((Vec::new(), Vec::new())));
+        }
+        let content = match self.cached() {
+            Some(Shared(content)) if !finder_window_unlisted(&content.content) => content,
+            _ => {
+                let started = Instant::now();
+                let fresh = self.refresh(deadline);
+                *fetched = Some(fetched.unwrap_or_default() + started.elapsed());
+                fresh?.0
+            }
+        };
+        let plan = FilterPlan::still(options.exclude_own_windows, true);
+        let exceptions = plan.desktop_exceptions(&listed_windows(&content.content));
+        Ok(Shared((
+            apps_by_bundle(&content.content, &exceptions.excluded_bundles),
+            windows_by_id(&content.content, &exceptions.excepted_windows),
+        )))
+    }
 }
 
 impl MacBackend {
@@ -308,23 +342,28 @@ impl MacBackend {
                 }
             }
         }
+        // First, so a fetch it needs leaves the fresh content in the cache for the displays.
+        let Shared((desktop_apps, desktop_windows)) =
+            self.desktop_exceptions(options, deadline, &mut report.content)?;
         let Shared((sc_displays, own_app)) = self.content_for(displays, deadline, &mut report.content)?;
 
         let requested = Instant::now();
         let (tx, rx) = mpsc::channel::<(usize, Result<Frame>)>();
         for (index, (id, sc_display)) in displays.iter().zip(sc_displays.iter()).enumerate() {
             let info = described.iter().find(|d| d.id == *id).ok_or(CaptureError::DisplayNotFound(*id))?;
-            let excluded: Vec<&SCRunningApplication> =
+            let mut excluded: Vec<&SCRunningApplication> =
                 if options.exclude_own_windows { own_app.iter().map(|a| &**a).collect() } else { Vec::new() };
+            excluded.extend(desktop_apps.iter().map(|a| &**a));
             let excluded = NSArray::from_slice(&excluded);
-            let none = NSArray::new();
+            let excepted: Vec<&SCWindow> = desktop_windows.iter().map(|w| &**w).collect();
+            let excepted = NSArray::from_slice(&excepted);
             // SAFETY: a fresh filter from a display of the current content.
             let filter = unsafe {
                 SCContentFilter::initWithDisplay_excludingApplications_exceptingWindows(
                     SCContentFilter::alloc(),
                     sc_display,
                     &excluded,
-                    &none,
+                    &excepted,
                 )
             };
             let config = stream_configuration(info.pixel_size, info.color_space, options.shows_cursor);
@@ -714,6 +753,92 @@ fn rect_capture_available() -> bool {
     *AVAILABLE.get_or_init(|| {
         SCScreenshotManager::class().metaclass().responds_to(sel!(captureImageInRect:completionHandler:))
     })
+}
+
+/// Every window of `content` with its owner's bundle and its level, for
+/// `FilterPlan::desktop_exceptions`.
+pub(super) fn listed_windows(content: &SCShareableContent) -> Vec<ListedWindow> {
+    // SAFETY: reading the immutable lists and properties of fetched content.
+    unsafe { content.windows() }
+        .iter()
+        .map(|window| unsafe {
+            ListedWindow {
+                id: WindowId(window.windowID()),
+                bundle_id: window.owningApplication().map(|app| app.bundleIdentifier().to_string()),
+                layer: window.windowLayer().clamp(i32::MIN as isize, i32::MAX as isize) as i32,
+            }
+        })
+        .collect()
+}
+
+/// The running apps of `content` whose bundle is one of `bundles`.
+pub(super) fn apps_by_bundle(content: &SCShareableContent, bundles: &[&str]) -> Vec<Retained<SCRunningApplication>> {
+    if bundles.is_empty() {
+        return Vec::new();
+    }
+    // SAFETY: reading the immutable lists and properties of fetched content.
+    unsafe { content.applications() }
+        .iter()
+        .filter(|app| bundles.contains(&unsafe { app.bundleIdentifier() }.to_string().as_str()))
+        .collect()
+}
+
+/// The windows of `content` among `ids`.
+pub(super) fn windows_by_id(content: &SCShareableContent, ids: &[WindowId]) -> Vec<Retained<SCWindow>> {
+    if ids.is_empty() {
+        return Vec::new();
+    }
+    // SAFETY: reading the immutable lists of fetched content.
+    unsafe { content.windows() }.iter().filter(|w| ids.contains(&WindowId(unsafe { w.windowID() }))).collect()
+}
+
+/// The processes of Finder in `content`.
+pub(super) fn finder_pids(content: &SCShareableContent) -> Vec<i32> {
+    // SAFETY: reading the immutable lists and properties of fetched content.
+    unsafe { content.applications() }
+        .iter()
+        .filter(|app| unsafe { app.bundleIdentifier() }.to_string() == FINDER)
+        .map(|app| unsafe { app.processID() })
+        .collect()
+}
+
+/// The windows at level 0 or above that the processes `pids` show on screen, from the window
+/// list (about a millisecond): the Finder windows a clean desktop must keep. A fully clear window
+/// and one that keeps itself out of captures are skipped: ScreenCaptureKit may never list them,
+/// and a window it never lists would fetch the content again on every capture.
+pub(super) fn windows_on_screen(pids: &[i32]) -> Vec<WindowId> {
+    if pids.is_empty() {
+        return Vec::new();
+    }
+    let flags = CGWindowListOption::OptionOnScreenOnly | CGWindowListOption::ExcludeDesktopElements;
+    let Some(list) = CGWindowListCopyWindowInfo(flags, kCGNullWindowID) else {
+        return Vec::new();
+    };
+    // SAFETY: a CFArray of CFDictionary is toll-free bridged to NSArray of NSDictionary.
+    let list: &NSArray<NSDictionary<NSString, AnyObject>> = unsafe { &*(CFRetained::as_ptr(&list).as_ptr().cast()) };
+    list.iter()
+        .filter(|dict| {
+            number(dict, unsafe { kCGWindowOwnerPID }).is_some_and(|n| pids.contains(&n.as_i32()))
+                && number(dict, unsafe { kCGWindowLayer }).is_some_and(|n| n.as_i32() >= 0)
+                && number(dict, unsafe { kCGWindowAlpha }).map_or(1.0, |n| n.as_f64()) > 0.0
+                && number(dict, unsafe { kCGWindowSharingState })
+                    .is_none_or(|n| n.as_u32() != CGWindowSharingType::None.0)
+        })
+        .filter_map(|dict| number(&dict, unsafe { kCGWindowNumber }).map(|n| WindowId(n.as_u32())))
+        .collect()
+}
+
+/// Whether Finder shows a window on screen that `content` does not list (opened, or brought
+/// in from another Space, since it was fetched).
+fn finder_window_unlisted(content: &SCShareableContent) -> bool {
+    let shown = windows_on_screen(&finder_pids(content));
+    if shown.is_empty() {
+        return false;
+    }
+    // SAFETY: reading the immutable lists of fetched content.
+    let listed: Vec<WindowId> =
+        unsafe { content.windows() }.iter().map(|w| WindowId(unsafe { w.windowID() })).collect();
+    shown.iter().any(|id| !listed.contains(id))
 }
 
 /// Whether one of Glimpsfy's windows is on screen and not fully clear (a toast, a pin, the

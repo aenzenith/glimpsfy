@@ -523,7 +523,11 @@ fn capture_frozen(
 
     let displays = backend.displays()?;
     let ids: Vec<DisplayId> = displays.iter().map(|d| d.id).collect();
-    let options = CaptureOptions { shows_cursor: settings.general.include_pointer, exclude_own_windows: true };
+    let options = CaptureOptions {
+        shows_cursor: settings.general.include_pointer,
+        exclude_own_windows: true,
+        clean_desktop: settings.output.clean_desktop,
+    };
 
     // The window list for snapping is read while the frames are taken.
     let lister = backend.clone();
@@ -800,7 +804,11 @@ fn capture_direct(
     let lister = backend.clone();
     let listing = thread::spawn(move || lister.windows(WindowListOptions::default()));
     let ids: Vec<DisplayId> = targets.iter().map(|d| d.id).collect();
-    let options = CaptureOptions { shows_cursor: settings.general.include_pointer, exclude_own_windows: true };
+    let options = CaptureOptions {
+        shows_cursor: settings.general.include_pointer,
+        exclude_own_windows: true,
+        clean_desktop: settings.output.clean_desktop,
+    };
     let mut frames: Vec<(DisplayId, Frame)> = if synthetic {
         synthetic_frames(&targets).into_iter().map(|(id, frame)| (id, (*frame).clone())).collect()
     } else {

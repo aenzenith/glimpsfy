@@ -597,7 +597,11 @@ fn take(app: &AppHandle, target: Target) -> Result<Frame, CaptureError> {
     let settings = state.settings.get();
     let backend = state.backend.clone();
     let synthetic = dev::options().synthetic;
-    let options = CaptureOptions { shows_cursor: settings.general.include_pointer, exclude_own_windows: true };
+    let options = CaptureOptions {
+        shows_cursor: settings.general.include_pointer,
+        exclude_own_windows: true,
+        clean_desktop: settings.output.clean_desktop,
+    };
     let display_frame = |id: DisplayId| -> Result<(Display, Frame), CaptureError> {
         let display = backend.displays()?.into_iter().find(|d| d.id == id).ok_or(CaptureError::DisplayNotFound(id))?;
         let frame = if synthetic {

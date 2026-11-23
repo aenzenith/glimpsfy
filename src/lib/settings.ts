@@ -87,6 +87,8 @@ export type Output = Extra & {
   copyAfterSave: boolean;
   /** A saved PNG is compressed again (oxipng) before it is written; the pixels stay the same. */
   optimisePng: boolean;
+  /** Leaves the desktop icons, notification banners and widgets out of screenshots (macOS). */
+  cleanDesktop: boolean;
   windowShadow: boolean;
   windowCorners: boolean;
   /** Fills a captured window's translucent parts with the system's window colour (on by default). */
@@ -140,6 +142,9 @@ export type Recording = Extra & {
   separateTracks: boolean;
   /** 0 is off; otherwise 3 or 5. */
   countdownSeconds: number;
+  /** Leaves the desktop icons, notification banners and widgets out of display and area takes
+   * (macOS). */
+  cleanDesktop: boolean;
   highlightClicks: boolean;
   clickRingColor: RingColor;
   clickRingSize: Size2;

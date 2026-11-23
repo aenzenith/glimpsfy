@@ -150,7 +150,7 @@ mod smoke {
     fn stills(backend: &dyn CaptureBackend, displays: &[Display], windows: &[WindowInfo], folder: &Path) {
         println!("\n== stills ==");
         let ids: Vec<_> = displays.iter().map(|d| d.id).collect();
-        let options = CaptureOptions { shows_cursor: true, exclude_own_windows: true };
+        let options = CaptureOptions { shows_cursor: true, exclude_own_windows: true, clean_desktop: false };
         let started = Instant::now();
         match backend.capture_displays(&ids, &options) {
             Ok(frames) => {
@@ -288,6 +288,7 @@ mod smoke {
             color_space: ColorSpace::Srgb,
             pixel_format: StreamPixelFormat::Bgra,
             queue_depth: 3,
+            clean_desktop: false,
         };
         let seen = Arc::new(Mutex::new(Seen::default()));
         let opened = backend.open_stream(config(true), Box::new(Sink(seen.clone()))).or_else(|error| {

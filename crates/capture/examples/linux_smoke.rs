@@ -121,6 +121,7 @@ mod linux {
             color_space: ColorSpace::Srgb,
             pixel_format: StreamPixelFormat::Bgra,
             queue_depth: 6,
+            clean_desktop: false,
         }
     }
 
@@ -299,8 +300,10 @@ mod linux {
                 );
             }
             // The pointer: the same display with and without it differs only where it is drawn.
-            let with =
-                backend.capture_display(ids[0], &CaptureOptions { shows_cursor: true, exclude_own_windows: true })?;
+            let with = backend.capture_display(
+                ids[0],
+                &CaptureOptions { shows_cursor: true, exclude_own_windows: true, clean_desktop: false },
+            )?;
             let without = backend.capture_display(ids[0], &CaptureOptions::default())?;
             let differing = with.data.chunks_exact(4).zip(without.data.chunks_exact(4)).filter(|(a, b)| a != b).count();
             println!("pointer: {differing} pixels differ between a capture with it and one without");

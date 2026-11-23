@@ -87,6 +87,11 @@ pub struct StreamConfig {
     pub pixel_format: StreamPixelFormat,
     /// How many frames the system may queue before it drops one.
     pub queue_depth: u32,
+    /// Leaves the desktop icons, notification banners and widgets out of a display or area
+    /// stream (Settings › Recording › Hide desktop icons and notifications). A window stream
+    /// shows its window alone either way.
+    #[serde(default)]
+    pub clean_desktop: bool,
 }
 
 fn one() -> u32 {
@@ -110,9 +115,72 @@ pub struct FilterPlan {
     pub shown_windows: Vec<WindowId>,
     /// The part of the display to record, display-local and logical; `None` is all of it.
     pub source_rect: Option<LogicalRect>,
+    /// Leaves the desktop's icons, banners and widgets out (`desktop_exceptions`).
+    pub clean_desktop: bool,
+}
+
+/// The bundle of Finder, whose window at the desktop icon level holds the desktop's icons.
+pub const FINDER: &str = "com.apple.finder";
+/// The bundle of Notification Center, which draws the notification banners and the desktop's
+/// widgets.
+pub const NOTIFICATION_CENTER: &str = "com.apple.notificationcenterui";
+
+/// A window as the system lists it, for working out a clean desktop.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ListedWindow {
+    pub id: WindowId,
+    /// The owning app's bundle identifier, when it has one.
+    pub bundle_id: Option<String>,
+    /// The window level: 0 for ordinary windows, far below 0 for the desktop's own windows.
+    pub layer: i32,
+}
+
+/// The apps a filter leaves out on top of this app, and the windows that show anyway.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct DesktopExceptions {
+    /// Bundle identifiers whose every window is left out.
+    pub excluded_bundles: Vec<&'static str>,
+    /// Windows that show although their app is left out: this app's shown windows and, on a
+    /// clean desktop, Finder's ordinary windows.
+    pub excepted_windows: Vec<WindowId>,
 }
 
 impl FilterPlan {
+    /// The plan of a still capture, the same for each display it takes; a still has no shown
+    /// windows of this app.
+    pub fn still(exclude_own_app: bool, clean_desktop: bool) -> FilterPlan {
+        FilterPlan {
+            display: None,
+            window: None,
+            exclude_own_app,
+            excluded_windows: Vec::new(),
+            shown_windows: Vec::new(),
+            source_rect: None,
+            clean_desktop,
+        }
+    }
+
+    /// What a display filter leaves out besides this app, given the windows the system lists.
+    ///
+    /// A clean desktop leaves out Finder and Notification Center as apps, because a filter can
+    /// leave out apps or windows but not both. Finder's windows at level 0 and above (its
+    /// browser windows, Get Info, the copy progress) are taken back as exceptions, so only the
+    /// icon window below them drops; Notification Center stays out as a whole, so a banner that
+    /// appears later is left out too. Without a clean desktop, or for a window recording, the
+    /// plan is the one a filter had before.
+    pub fn desktop_exceptions(&self, windows: &[ListedWindow]) -> DesktopExceptions {
+        let mut excepted = self.shown_windows.clone();
+        if !self.clean_desktop || self.window.is_some() {
+            return DesktopExceptions { excluded_bundles: Vec::new(), excepted_windows: excepted };
+        }
+        for window in windows {
+            if window.layer >= 0 && window.bundle_id.as_deref() == Some(FINDER) && !excepted.contains(&window.id) {
+                excepted.push(window.id);
+            }
+        }
+        DesktopExceptions { excluded_bundles: vec![FINDER, NOTIFICATION_CENTER], excepted_windows: excepted }
+    }
+
     /// The plan for `config`. A window recording takes the display that shows the window
     /// (`window_display`) and crops to the window's frame (`window_frame`, display-local), so
     /// the click ring and the webcam bubble are recorded over it as well.
@@ -127,6 +195,7 @@ impl FilterPlan {
                 excluded_windows: excluded,
                 shown_windows: shown,
                 source_rect: None,
+                clean_desktop: config.clean_desktop,
             },
             StreamTarget::Area { display, rect } => FilterPlan {
                 display: Some(*display),
@@ -135,6 +204,7 @@ impl FilterPlan {
                 excluded_windows: excluded,
                 shown_windows: shown,
                 source_rect: Some(*rect),
+                clean_desktop: config.clean_desktop,
             },
             StreamTarget::Window { window } => FilterPlan {
                 display: window_display.map(|(d, _)| d),
@@ -143,6 +213,8 @@ impl FilterPlan {
                 excluded_windows: excluded,
                 shown_windows: shown,
                 source_rect: window_display.map(|(_, r)| r),
+                // The window shows alone, with no desktop behind it.
+                clean_desktop: false,
             },
         }
     }
@@ -314,6 +386,7 @@ mod tests {
                 color_space: ColorSpace::Srgb,
                 pixel_format: StreamPixelFormat::Nv12,
                 queue_depth: 6,
+                clean_desktop: false,
             };
             let plan = FilterPlan::new(&config, Some((DisplayId(1), rect)));
             assert!(plan.exclude_own_app, "{target:?}");
@@ -326,5 +399,69 @@ mod tests {
                 assert!(plan.shows(window, true), "{target:?} hides {window:?}");
             }
         }
+    }
+
+    /// A clean desktop drops Finder's icon window and everything of Notification Center, and
+    /// nothing else: every Finder window at level 0 or above and the app's shown windows stay in,
+    /// since a window wrongly left out is missing from a take that cannot be recorded again.
+    /// With the switch off, and for a window recording, the filter stays as it was.
+    #[test]
+    fn clean_desktop_leaves_out_only_desktop_icons_and_notifications() {
+        let listed = |id: u32, bundle: Option<&str>, layer: i32| ListedWindow {
+            id: WindowId(id),
+            bundle_id: bundle.map(str::to_string),
+            layer,
+        };
+        let icons = listed(1, Some(FINDER), -2_147_483_603);
+        let browser = listed(2, Some(FINDER), 0);
+        let copying = listed(3, Some(FINDER), 3);
+        let banner = listed(4, Some(NOTIFICATION_CENTER), 23);
+        let widget = listed(5, Some(NOTIFICATION_CENTER), -2_147_483_603);
+        let safari = listed(6, Some("com.apple.Safari"), 0);
+        let unnamed = listed(7, None, 0);
+        let wallpaper = listed(8, Some("com.apple.dock"), -2_147_483_624);
+        let windows = [icons, browser.clone(), copying.clone(), banner, widget, safari, unnamed, wallpaper];
+        let shown = [WindowId(911), WindowId(912)];
+        let rect = LogicalRect { x: 10.0, y: 20.0, width: 300.0, height: 200.0 };
+        let config = |target: StreamTarget, clean_desktop: bool| StreamConfig {
+            target,
+            fps: 30,
+            output_size: None,
+            size_divisor: 1,
+            shows_cursor: true,
+            capture_system_audio: true,
+            microphone: None,
+            excluded_windows: vec![WindowId(901)],
+            shown_windows: shown.to_vec(),
+            color_space: ColorSpace::Srgb,
+            pixel_format: StreamPixelFormat::Nv12,
+            queue_depth: 6,
+            clean_desktop,
+        };
+        let unchanged = DesktopExceptions { excluded_bundles: Vec::new(), excepted_windows: shown.to_vec() };
+
+        let screens =
+            [StreamTarget::Display { display: DisplayId(1) }, StreamTarget::Area { display: DisplayId(1), rect }];
+        for target in screens {
+            let plan = FilterPlan::new(&config(target.clone(), true), None);
+            let clean = plan.desktop_exceptions(&windows);
+            assert_eq!(clean.excluded_bundles, vec![FINDER, NOTIFICATION_CENTER], "{target:?}");
+            let mut excepted = clean.excepted_windows.clone();
+            excepted.sort_by_key(|w| w.0);
+            assert_eq!(excepted, vec![browser.id, copying.id, shown[0], shown[1]], "{target:?}");
+
+            let off = FilterPlan::new(&config(target.clone(), false), None);
+            assert_eq!(off.desktop_exceptions(&windows), unchanged, "{target:?} changes with the switch off");
+        }
+
+        let window = StreamTarget::Window { window: WindowId(42) };
+        let plan = FilterPlan::new(&config(window, true), Some((DisplayId(1), rect)));
+        assert_eq!(plan.desktop_exceptions(&windows), unchanged, "a window recording changes");
+
+        let still = FilterPlan::still(true, true).desktop_exceptions(&windows);
+        assert_eq!(still.excluded_bundles, vec![FINDER, NOTIFICATION_CENTER]);
+        assert_eq!(still.excepted_windows, vec![browser.id, copying.id]);
+        let still_off = FilterPlan::still(true, false).desktop_exceptions(&windows);
+        assert_eq!(still_off, DesktopExceptions::default());
     }
 }

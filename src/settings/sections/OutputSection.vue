@@ -25,6 +25,7 @@ const props = defineProps<{ settings: Settings }>();
 const o = computed(() => props.settings.output);
 
 const ids = { template: uid("tpl"), templateError: uid("tpl-err"), format: uid("fmt"), quality: uid("q"), retina: uid("ret"), copy: uid("copy"), shadow: uid("shadow"), corners: uid("corners"), backing: uid("backing"), border: uid("border"), background: uid("bg"), keep: uid("keep"), trash: uid("trash") };
+const cleanDesktopId = uid("clean");
 
 // ------------------------------------------------------------------ file name template
 // `{title}` is the captured window's title; an area or display capture leaves it empty. `{text}`
@@ -308,6 +309,9 @@ function cancelClear(): void {
     </FormRow>
     <FormRow :label="t('settings.output.copyAfterSave')" :for="ids.copy">
       <SwitchControl :id="ids.copy" :model-value="o.copyAfterSave" @update:model-value="(v) => update((s) => (s.output.copyAfterSave = v))" />
+    </FormRow>
+    <FormRow v-if="can('cleanDesktop')" :label="t('settings.output.cleanDesktop')" :for="cleanDesktopId" :help="t('settings.output.cleanDesktopHelp')">
+      <SwitchControl :id="cleanDesktopId" :model-value="o.cleanDesktop" @update:model-value="(v) => update((s) => (s.output.cleanDesktop = v))" />
     </FormRow>
   </div>
 

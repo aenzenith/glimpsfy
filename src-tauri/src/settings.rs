@@ -558,6 +558,9 @@ pub struct Output {
     /// Whether a saved PNG is compressed again (oxipng) before it is written: the same pixels in
     /// a smaller file, for a save that may take a second or two longer.
     pub optimise_png: bool,
+    /// Leaves the desktop icons, notification banners and widgets out of screenshots (macOS,
+    /// `CaptureOptions::clean_desktop`); the screen and the system's settings stay as they are.
+    pub clean_desktop: bool,
     pub window_shadow: bool,
     pub window_corners: bool,
     /// Fills the translucent parts of a captured window with the system's window colour (on by
@@ -610,6 +613,7 @@ impl Default for Output {
             retina: RetinaScale::Keep2x,
             copy_after_save: false,
             optimise_png: true,
+            clean_desktop: false,
             window_shadow: true,
             window_corners: true,
             window_backing: true,
@@ -770,6 +774,9 @@ pub struct Recording {
     pub separate_tracks: bool,
     /// 0 turns the countdown off; otherwise 3 or 5.
     pub countdown_seconds: u32,
+    /// Leaves the desktop icons, notification banners and widgets out of display and area takes
+    /// (macOS, `RecordingConfig::clean_desktop`).
+    pub clean_desktop: bool,
     pub highlight_clicks: bool,
     pub click_ring_color: RingColor,
     pub click_ring_size: Size2,
@@ -814,6 +821,7 @@ impl Default for Recording {
             microphone_device: None,
             separate_tracks: true,
             countdown_seconds: 3,
+            clean_desktop: false,
             highlight_clicks: true,
             click_ring_color: RingColor::Yellow,
             click_ring_size: Size2::Small,

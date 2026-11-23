@@ -68,6 +68,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         webcam: WebcamOverlay::default(),
         countdown_seconds: 0,
         output_folder: folder.clone(),
+        clean_desktop: false,
     };
     let path = glimpsfy_record::files::free_path(&folder, "Screen", "mp4");
     let started = Instant::now();

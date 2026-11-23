@@ -211,6 +211,8 @@ pub fn start(app: &AppHandle, selection: Selection) -> CommandResult<ScrollProgr
         color_space: entry.frame.color.space,
         pixel_format: StreamPixelFormat::Bgra,
         queue_depth: 4,
+        // As the still the selection was made on, so a banner never lands in the stitched image.
+        clean_desktop: state.settings.get().output.clean_desktop,
     };
     let mut stream = state
         .backend

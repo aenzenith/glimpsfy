@@ -136,7 +136,11 @@ impl AppHost {
     fn take(&self, ask: &Ask) -> Result<(Frame, Option<String>), ToolError> {
         let state = self.app.state::<AppState>();
         let backend = state.backend.clone();
-        let options = CaptureOptions { shows_cursor: false, exclude_own_windows: true };
+        let options = CaptureOptions {
+            shows_cursor: false,
+            exclude_own_windows: true,
+            clean_desktop: state.settings.get().output.clean_desktop,
+        };
         match ask {
             Ask::Window { app, title, .. } => {
                 let windows = backend.windows(WindowListOptions::default()).map_err(capture_error)?;

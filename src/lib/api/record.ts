@@ -71,6 +71,8 @@ export type RecordingConfig = {
   /** 0 starts at once. */
   countdownSeconds: number;
   outputFolder: string;
+  /** Leaves the desktop icons, notification banners and widgets out of a display or area take. */
+  cleanDesktop: boolean;
 };
 
 /** Where the recorder is (`record://state`). `finishing` is the stopping step: the file is being

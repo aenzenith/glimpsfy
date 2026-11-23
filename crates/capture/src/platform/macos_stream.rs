@@ -10,10 +10,15 @@
 //! - The filter comes from [`FilterPlan`]: a display or area recording leaves out every window
 //!   of this app except the shown ones (the webcam bubble, the click ring), and a window
 //!   recording crops the display to the window and shows only it and those windows.
+//! - A clean desktop also leaves out Finder and Notification Center except Finder's ordinary
+//!   windows. Those exceptions name windows one by one, so a watcher thread looks for a Finder
+//!   window opened during the take every 250 ms and gives the stream a new filter that keeps it.
+//!   Nothing on the screen or in the system's settings changes; only the frames do.
 //! - Samples arrive on one serial dispatch queue per stream, so the sink sees them in order.
 
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{RecvTimeoutError, TryRecvError};
 use std::sync::{mpsc, Arc};
 use std::time::Duration;
 
@@ -45,11 +50,12 @@ use objc2_core_video::{
 };
 use objc2_foundation::{NSArray, NSDictionary, NSError, NSNumber, NSObject, NSString};
 use objc2_screen_capture_kit::{
-    SCCaptureResolutionType, SCContentFilter, SCDisplay, SCFrameStatus, SCShareableContent, SCStream,
-    SCStreamConfiguration, SCStreamDelegate, SCStreamErrorCode, SCStreamFrameInfoStatus, SCStreamOutput,
-    SCStreamOutputType, SCWindow,
+    SCCaptureResolutionType, SCContentFilter, SCDisplay, SCFrameStatus, SCRunningApplication, SCShareableContent,
+    SCStream, SCStreamConfiguration, SCStreamDelegate, SCStreamErrorCode, SCStreamFrameInfoStatus, SCStreamOutput,
+    SCStreamOutputType,
 };
 
+use super::macos::{self, windows_by_id};
 use crate::display::{DisplayId, WindowId};
 use crate::error::{CaptureError, Result};
 use crate::frame::{ColorInfo, ColorSpace, Frame, PixelFormat};
@@ -63,6 +69,8 @@ use crate::stream::{
 const TIMEOUT: Duration = Duration::from_secs(5);
 /// How long the list of displays and windows may take.
 const CONTENT_TIMEOUT: Duration = Duration::from_secs(3);
+/// How often a clean-desktop recording looks for a Finder window its filter does not keep.
+const WATCH_INTERVAL: Duration = Duration::from_millis(250);
 
 /// Now on the host clock (`CMClockGetHostTimeClock`), in nanoseconds.
 pub fn host_now() -> HostTime {
@@ -438,14 +446,6 @@ fn display_by_id(content: &SCShareableContent, id: DisplayId) -> Result<Retained
         .ok_or(CaptureError::DisplayNotFound(id))
 }
 
-fn windows_by_id(content: &SCShareableContent, ids: &[WindowId]) -> Vec<Retained<SCWindow>> {
-    if ids.is_empty() {
-        return Vec::new();
-    }
-    // SAFETY: reading the immutable lists of fetched content.
-    unsafe { content.windows() }.iter().filter(|w| ids.contains(&WindowId(unsafe { w.windowID() }))).collect()
-}
-
 fn intersection(a: CGRect, b: CGRect) -> f64 {
     let w = (a.origin.x + a.size.width).min(b.origin.x + b.size.width) - a.origin.x.max(b.origin.x);
     let h = (a.origin.y + a.size.height).min(b.origin.y + b.size.height) - a.origin.y.max(b.origin.y);
@@ -503,6 +503,55 @@ struct Source {
     source_rect: Option<LogicalRect>,
     points: CGSize,
     scale: f64,
+    /// What the watcher of a clean desktop needs; `None` when the desktop is recorded as it is.
+    desktop: Option<DesktopWatch>,
+}
+
+/// A clean-desktop stream's plan and the Finder windows its filter keeps.
+#[derive(Clone)]
+struct DesktopWatch {
+    plan: FilterPlan,
+    display: DisplayId,
+    /// Finder's processes, whose windows on screen the watcher reads.
+    finder: Vec<i32>,
+    /// The windows the filter keeps, and those a fetch was already spent on.
+    known: Vec<WindowId>,
+}
+
+/// The filter of a display or area stream: this app left out except its shown windows and, on a
+/// clean desktop, Finder and Notification Center left out except Finder's ordinary windows.
+/// Also answers the windows it keeps as exceptions.
+fn display_filter(
+    content: &SCShareableContent,
+    display: &SCDisplay,
+    plan: &FilterPlan,
+) -> (Retained<SCContentFilter>, Vec<WindowId>) {
+    let own_pid = std::process::id() as i32;
+    let listed = if plan.clean_desktop { macos::listed_windows(content) } else { Vec::new() };
+    let desktop = plan.desktop_exceptions(&listed);
+    // SAFETY: reading the immutable lists of fetched content.
+    let mut apps: Vec<Retained<SCRunningApplication>> = unsafe { content.applications() }
+        .iter()
+        .filter(|app| plan.exclude_own_app && unsafe { app.processID() } == own_pid)
+        .collect();
+    apps.extend(macos::apps_by_bundle(content, &desktop.excluded_bundles));
+    // SAFETY: the filter initialisers take lists of objects from the same content.
+    let filter = unsafe {
+        if apps.is_empty() {
+            let excluded = NSArray::from_retained_slice(&windows_by_id(content, &plan.excluded_windows));
+            SCContentFilter::initWithDisplay_excludingWindows(SCContentFilter::alloc(), display, &excluded)
+        } else {
+            let apps = NSArray::from_retained_slice(&apps);
+            let except = NSArray::from_retained_slice(&windows_by_id(content, &desktop.excepted_windows));
+            SCContentFilter::initWithDisplay_excludingApplications_exceptingWindows(
+                SCContentFilter::alloc(),
+                display,
+                &apps,
+                &except,
+            )
+        }
+    };
+    (filter, desktop.excepted_windows)
 }
 
 fn resolve(config: &StreamConfig) -> Result<Source> {
@@ -524,34 +573,25 @@ fn resolve(config: &StreamConfig) -> Result<Source> {
         }
     };
     let plan = FilterPlan::new(config, window_display);
-    let own_pid = std::process::id() as i32;
-    // SAFETY: the filter initialisers take lists of objects from the same content.
-    let filter = unsafe {
-        if plan.window.is_some() {
-            let mut ids = Vec::with_capacity(plan.shown_windows.len() + 1);
-            ids.extend(plan.window);
-            ids.extend(plan.shown_windows.iter().copied());
+    let mut desktop = None;
+    let filter = if plan.window.is_some() {
+        let mut ids = Vec::with_capacity(plan.shown_windows.len() + 1);
+        ids.extend(plan.window);
+        ids.extend(plan.shown_windows.iter().copied());
+        // SAFETY: the filter initialiser takes windows of the same content as the display.
+        unsafe {
             let included = NSArray::from_retained_slice(&windows_by_id(&content, &ids));
             SCContentFilter::initWithDisplay_includingWindows(SCContentFilter::alloc(), &display, &included)
-        } else {
-            let own_app = content.applications().iter().find(|app| app.processID() == own_pid);
-            match own_app.filter(|_| plan.exclude_own_app) {
-                Some(app) => {
-                    let apps = NSArray::from_retained_slice(&[app]);
-                    let except = NSArray::from_retained_slice(&windows_by_id(&content, &plan.shown_windows));
-                    SCContentFilter::initWithDisplay_excludingApplications_exceptingWindows(
-                        SCContentFilter::alloc(),
-                        &display,
-                        &apps,
-                        &except,
-                    )
-                }
-                None => {
-                    let excluded = NSArray::from_retained_slice(&windows_by_id(&content, &plan.excluded_windows));
-                    SCContentFilter::initWithDisplay_excludingWindows(SCContentFilter::alloc(), &display, &excluded)
-                }
-            }
         }
+    } else {
+        let (filter, known) = display_filter(&content, &display, &plan);
+        if plan.clean_desktop {
+            // SAFETY: reading a property of a listed display.
+            let id = DisplayId(unsafe { display.displayID() });
+            let finder = macos::finder_pids(&content);
+            desktop = Some(DesktopWatch { plan: plan.clone(), display: id, finder, known });
+        }
+        filter
     };
     // SAFETY: reading properties of a listed display and of the filter just made.
     let (bounds, id, filter_scale) = unsafe { (display.frame(), display.displayID(), filter.pointPixelScale()) };
@@ -560,7 +600,66 @@ fn resolve(config: &StreamConfig) -> Result<Source> {
         Some(rect) => CGSize::new(rect.width, rect.height),
         None => bounds.size,
     };
-    Ok(Source { filter, source_rect: plan.source_rect, points, scale })
+    Ok(Source { filter, source_rect: plan.source_rect, points, scale, desktop })
+}
+
+/// Stops the watcher of a clean desktop when dropped.
+struct Watcher {
+    /// Dropping it wakes the thread, which then ends without touching the stream again.
+    _stop: mpsc::Sender<()>,
+}
+
+impl Watcher {
+    fn start(stream: &Retained<SCStream>, watch: DesktopWatch, ended: Arc<AtomicBool>) -> Option<Watcher> {
+        let (tx, rx) = mpsc::channel::<()>();
+        let stream = Shared(stream.clone());
+        std::thread::Builder::new()
+            .name("glimpsfy-clean-desktop".into())
+            .spawn(move || watch_desktop(stream, watch, &rx, &ended))
+            .ok()
+            .map(|_| Watcher { _stop: tx })
+    }
+}
+
+/// Every `WATCH_INTERVAL`, until the stream stops: a Finder window on screen that the filter does
+/// not keep (opened, or brought in from another Space, during the take) gets a fresh content
+/// and a new filter. The thread is not joined on stop, because it may be waiting for
+/// ScreenCaptureKit on the thread that stops the stream; it checks the stop before each update.
+fn watch_desktop(
+    stream: Shared<Retained<SCStream>>,
+    mut watch: DesktopWatch,
+    stop: &mpsc::Receiver<()>,
+    ended: &AtomicBool,
+) {
+    loop {
+        if !matches!(stop.recv_timeout(WATCH_INTERVAL), Err(RecvTimeoutError::Timeout)) || ended.load(Ordering::SeqCst)
+        {
+            return;
+        }
+        let new: Vec<WindowId> =
+            macos::windows_on_screen(&watch.finder).into_iter().filter(|id| !watch.known.contains(id)).collect();
+        if new.is_empty() {
+            continue;
+        }
+        // One fetch per new window, kept or not, so a window the system never lists cannot keep
+        // the capture daemon busy for the rest of the take.
+        watch.known.extend(new);
+        let Ok(content) = fetch_content() else { continue };
+        let Ok(display) = display_by_id(&content, watch.display) else { continue };
+        let (filter, kept) = display_filter(&content, &display, &watch.plan);
+        watch.known.extend(kept.into_iter().filter(|id| !watch.known.contains(id)).collect::<Vec<_>>());
+        watch.finder = macos::finder_pids(&content);
+        if !matches!(stop.try_recv(), Err(TryRecvError::Empty)) {
+            return;
+        }
+        let stream = &stream.0;
+        // SAFETY: the filter comes from fresh content of the same display, and the handler is
+        // retained by ScreenCaptureKit until it runs.
+        let _ = wait_for(
+            |handler| unsafe { stream.updateContentFilter_completionHandler(&filter, Some(handler)) },
+            "updating the stream's filter",
+        );
+    }
 }
 
 fn configuration(config: &StreamConfig, source: &Source) -> Retained<SCStreamConfiguration> {
@@ -651,6 +750,8 @@ struct MacStream {
     ended: Arc<AtomicBool>,
     source: Shared<Source>,
     microphone: Option<Box<dyn CaptureStream>>,
+    /// Runs while a clean-desktop stream runs.
+    watcher: Option<Watcher>,
     running: bool,
 }
 
@@ -712,6 +813,7 @@ pub fn open(config: StreamConfig, sink: Box<dyn StreamSink>) -> Result<Box<dyn C
         ended,
         source: Shared(source),
         microphone,
+        watcher: None,
         running: false,
     }))
 }
@@ -731,6 +833,9 @@ impl CaptureStream for MacStream {
                 return Err(error);
             }
         }
+        if let Some(watch) = self.source.0.desktop.clone() {
+            self.watcher = Watcher::start(&self.stream.0, watch, self.ended.clone());
+        }
         Ok(())
     }
 
@@ -738,6 +843,8 @@ impl CaptureStream for MacStream {
         // Whether the stream had already stopped on its own (a failure the sink has heard of):
         // ScreenCaptureKit then answers the stop with an error, and the stop has happened anyway.
         let ended_on_its_own = self.ended.load(Ordering::SeqCst);
+        // Before the stream stops, so the watcher never gives a stopping stream a new filter.
+        self.watcher = None;
         let mut result = Ok(());
         if self.running {
             self.running = false;
