@@ -46,6 +46,7 @@ const SWEEP_EVERY: Duration = Duration::from_secs(60 * 60);
 const HISTORY_WAIT: Duration = Duration::from_secs(3);
 
 /// Terminals take the path, since they cannot paste an image.
+#[cfg(target_os = "macos")]
 const TERMINALS: &[&str] = &[
     "com.apple.Terminal",
     "com.googlecode.iterm2",
@@ -547,6 +548,8 @@ struct Job {
     bundle_id: String,
     name: String,
     seed: Seed,
+    // Only macOS's paste reads it; elsewhere a send has no step to cancel.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     cancel: Arc<AtomicBool>,
 }
 

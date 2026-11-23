@@ -20,7 +20,9 @@ use glimpsfy_mcp::gate::{Answer, Evidence, Gate, Refused, RequestId, SystemClock
 use glimpsfy_mcp::tools::{Ask, Content, ToolError};
 use tauri::{AppHandle, Emitter, Manager};
 
-use crate::commands::agents::{events, AgentConnection, AgentKeys, AgentQueue, AgentRequest, AgentToast, AgentsState};
+#[cfg(target_os = "macos")]
+use crate::commands::agents::AgentToast;
+use crate::commands::agents::{events, AgentConnection, AgentKeys, AgentQueue, AgentRequest, AgentsState};
 use crate::commands::capture::{CloseReason, Selection};
 use crate::commands::error::{CommandError, CommandResult, ErrorCode};
 use crate::{shortcuts, trace, windows, AppState};
@@ -48,6 +50,7 @@ pub const APPROVAL_KEYS: [(&str, ApprovalKey); 5] = [
 
 /// How recent the click that answers a request must be: the click and the page's call to
 /// `agents_answer` follow each other within a frame or two.
+#[cfg(target_os = "macos")]
 const CLICK_FRESH: Duration = Duration::from_secs(2);
 /// How long a selection the user was asked for may take to open before it counts as failed (a
 /// capture already open keeps it from opening at all).

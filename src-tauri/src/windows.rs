@@ -263,6 +263,8 @@ pub enum ToastKind {
     /// leaves after 4 seconds.
     AgentTimedOut,
     /// Requests that came while the screen was locked were refused; told once, after the unlock.
+    /// Only macOS tells the app when the screen locks.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     AgentLocked,
 }
 

@@ -89,8 +89,10 @@ struct Shared {
     state: Mutex<State>,
 }
 
-/// Where automatic scrolling sends its events: the window under the selection's centre.
+/// Where automatic scrolling sends its events: the window under the selection's centre. Only
+/// macOS posts scroll events, so elsewhere the fields go unread.
 #[derive(Clone, Copy)]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 struct Target {
     pid: i32,
     window: u32,
