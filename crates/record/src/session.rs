@@ -115,6 +115,16 @@ pub trait TakeWriter: Send {
     fn failure(&self) -> Option<String>;
     /// Finishes the file at `end_ns`. On failure, what was written so far stays on disk.
     fn finish(&mut self, end_ns: u64) -> Result<()>;
+    /// The codec the file is really written with, when the system had no encoder for the one
+    /// asked for and the writer fell back to H.264 (Windows and Linux without an HEVC encoder).
+    fn codec(&self) -> Option<VideoCodec> {
+        None
+    }
+    /// How many of the spec's audio tracks the file really has (the first ones), when the
+    /// encoder could not take them all.
+    fn audio_tracks(&self) -> Option<usize> {
+        None
+    }
 }
 
 pub trait WriterFactory: Send + Sync {
@@ -254,8 +264,10 @@ struct Inner {
     frames: u64,
     last_disk_check: u64,
     closed: bool,
-    /// The codec the writer really uses (see [`codec_for`]).
+    /// The codec the writer really uses (see [`codec_for`] and [`TakeWriter::codec`]).
     codec: VideoCodec,
+    /// How many audio tracks the file really has (see [`TakeWriter::audio_tracks`]).
+    audio_tracks: usize,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -320,9 +332,10 @@ impl StreamSink for Sink {
             };
             match shared.writers.create(&spec) {
                 Ok(writer) => {
+                    inner.codec = writer.codec().unwrap_or(spec.codec);
+                    inner.audio_tracks = writer.audio_tracks().unwrap_or(spec.audio.len()).min(spec.audio.len());
                     inner.writer = Some(writer);
                     inner.size = Some(frame.size);
-                    inner.codec = spec.codec;
                 }
                 Err(e) => {
                     inner.closed = true;
@@ -343,7 +356,7 @@ impl StreamSink for Sink {
                 return;
             }
         }
-        if inner.frames % 30 == 0 {
+        if inner.frames.is_multiple_of(30) {
             if let Some(reason) = inner.writer.as_ref().and_then(|w| w.failure()) {
                 inner.closed = true;
                 drop(inner);
@@ -464,6 +477,7 @@ impl Take {
         drop(writer);
         let size = inner.size.unwrap_or_default();
         let codec = inner.codec;
+        let audio_tracks = inner.audio_tracks;
         drop(inner);
         let file_bytes = std::fs::metadata(&self.path).map(|m| m.len()).unwrap_or(0);
         let fault = lock(&shared.fault).clone();
@@ -479,7 +493,7 @@ impl Take {
                 fps: self.config.fps,
                 codec,
                 color_space: ColorSpace::Srgb,
-                audio: shared.tracks.clone(),
+                audio: shared.tracks.iter().copied().take(audio_tracks).collect(),
                 fragment_interval_ms: FRAGMENT_INTERVAL_MS,
                 bits_per_second: None,
                 offline: false,
@@ -596,6 +610,7 @@ impl Recorder {
             )));
         }
         let (sources, tracks) = audio_layout(&config);
+        let audio_tracks = tracks.len();
         let mixer = tracks.contains(&TrackKind::MixedAudio).then(|| Mixer::new(sources.len()));
         let shared = Arc::new(Shared {
             id: id.clone(),
@@ -623,6 +638,7 @@ impl Recorder {
                 last_disk_check: 0,
                 closed: false,
                 codec: config.codec,
+                audio_tracks,
             }),
         });
         let mut stream = self.env.streams.open(stream_config(&config, own), Box::new(Sink(shared.clone())))?;
@@ -1133,7 +1149,11 @@ mod tests {
             rig.recorder.begin(RecordingId(name.into()), config(rig.dir.path()), path, &OwnWindows::default())
         };
         let counting_down = || {
+            // A `begin` that failed before the countdown (a full disk) never gets there, and the
+            // test would spin forever instead of failing.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
             while !matches!(rig.recorder.state(), RecordingState::Countdown { .. }) {
+                assert!(std::time::Instant::now() < deadline, "the take never reached the countdown");
                 std::thread::yield_now();
             }
         };

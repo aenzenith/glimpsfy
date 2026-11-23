@@ -30,6 +30,41 @@ objc2-core-video = { version = "0.3.2", default-features = false, features = ["s
 objc2-core-audio-types = { version = "0.3.2", default-features = false, features = ["std", "CoreAudioBaseTypes"] }
 objc2-av-foundation = { version = "0.3.2", default-features = false, features = ["std", "block2", "objc2-core-media", "objc2-core-video", "objc2-core-audio-types", "objc2-core-foundation", "AVAsset", "AVAssetReader", "AVAssetReaderOutput", "AVAssetTrack", "AVAssetWriter", "AVAssetWriterInput", "AVMetadataItem", "AVMetadataIdentifiers", "AVMediaSelectionGroup", "AVCaptureAudioDataOutput", "AVCaptureDevice", "AVCaptureInput", "AVCaptureOutputBase", "AVCaptureSession", "AVMediaFormat", "AVVideoSettings"] }
 
+# The Recycle Bin and the freedesktop.org Trash are the history's (`glimpsfy_history::SystemTrash`),
+# so the rule that an untrashable file is never unlinked lives in one place.
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+glimpsfy-history.workspace = true
+
+# Media Foundation writes and reads the MP4, Core Audio lists the microphones, and the registry
+# holds the privacy switches. The Media Foundation entry points are looked up at run time
+# (`platform/windows/mf.rs`), so an N edition without the Media Feature Pack still starts.
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.62.2", features = [
+    "Win32_Devices_FunctionDiscovery",
+    "Win32_Foundation",
+    "Win32_Media_Audio",
+    "Win32_Media_MediaFoundation",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Ole",
+    "Win32_System_Registry",
+    "Win32_System_Variant",
+    "Win32_UI_Shell_PropertiesSystem",
+] }
+
+# The writer, the reader and the export on Linux run on the system's GStreamer (1.20 on Ubuntu
+# 22.04), linked dynamically, with the same release line as the capture crate's stream so one
+# copy is linked. The 0.25 line needs Rust 1.92; 0.24 builds with 1.83.
+[target.'cfg(target_os = "linux")'.dependencies]
+gstreamer = "0.24.5"
+gstreamer-app = "0.24.5"
+gstreamer-video = "0.24.5"
+
 [dev-dependencies]
 tempfile.workspace = true
 serde_json.workspace = true
+
+[lints]
+workspace = true

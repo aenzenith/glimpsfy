@@ -1,19 +1,26 @@
-//! The recording pipeline end to end on macOS, without a screen: synthetic `CVPixelBuffer`s and
-//! audio go through the session into the real `AVAssetWriter`, and AVFoundation reads the file
-//! back. The export runs on that file.
-#![cfg(target_os = "macos")]
+//! The recording pipeline end to end, without a screen: synthetic frames and audio go through
+//! the session into the platform's real writer, and the platform's reader reads the file back.
+//! The export runs on that file. On macOS the frames are `CVPixelBuffer`s for `AVAssetWriter`
+//! and AVFoundation reads them back; on Linux they are BGRA frames in memory, as the X11 and
+//! portal streams deliver them, for the GStreamer writer and reader. On Windows the same BGRA
+//! frames go to Media Foundation's sink writer and come back through its source reader.
+#![cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
 
 use std::path::{Path, PathBuf};
+#[cfg(target_os = "macos")]
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use glimpsfy_capture::{
-    AudioBuffer, AudioSource, CaptureError, CaptureStream, ColorSpace, DisplayId, HostTime, MacPixelBuffer,
-    MicrophoneSource, NativeBuffer, PhysicalSize, StreamConfig, StreamPixelFormat, StreamSink, StreamTarget,
-    VideoBuffer, VideoFrame,
+    AudioBuffer, AudioSource, CaptureError, CaptureStream, ColorSpace, DisplayId, HostTime, MicrophoneSource,
+    PhysicalSize, StreamConfig, StreamPixelFormat, StreamSink, StreamTarget, VideoBuffer, VideoFrame,
 };
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+use glimpsfy_capture::{ColorInfo, Frame, PixelFormat, ScaleFactor};
+#[cfg(target_os = "macos")]
+use glimpsfy_capture::{MacPixelBuffer, NativeBuffer};
 use glimpsfy_record::export::{self, Progress};
 use glimpsfy_record::files::Trash;
 use glimpsfy_record::session::{Clock, Env, OwnWindows, Recorder, StreamOpener, SystemWriters};
@@ -22,7 +29,9 @@ use glimpsfy_record::{
     Mp4Quality, RecordError, RecordingConfig, RecordingId, RecordingOutcome, Resolution, TrackKind, TrimRange,
     VideoCodec, WebcamOverlay,
 };
+#[cfg(target_os = "macos")]
 use objc2_core_foundation::CFRetained;
+#[cfg(target_os = "macos")]
 use objc2_core_video::{
     kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange, CVPixelBuffer, CVPixelBufferCreate,
     CVPixelBufferGetBaseAddressOfPlane, CVPixelBufferGetBytesPerRowOfPlane, CVPixelBufferLockBaseAddress,
@@ -85,7 +94,36 @@ fn index_of(rgba: &[u8]) -> u64 {
     (0..8).map(|bit| ((rgba[(row * W + bit * 80 + 40) * 4 + 1] > 128) as u64) << bit).sum()
 }
 
+/// The frame the stream would send for `n`, in the platform's own buffer.
+#[cfg(target_os = "macos")]
+fn video(n: u64) -> (StreamPixelFormat, VideoBuffer) {
+    (StreamPixelFormat::Nv12, VideoBuffer::Native(NativeBuffer(Box::new(MacPixelBuffer(frame(n))))))
+}
+
+/// The same picture as the macOS frame, as BGRA in memory: a grey ramp, a tinted right half and
+/// a bright square that moves with `n`, so the encoder has motion to code. The Windows stream
+/// delivers frames in memory the same way.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn video(n: u64) -> (StreamPixelFormat, VideoBuffer) {
+    let mut data = vec![0u8; W * H * 4];
+    let sx = (n as usize * 7) % (W - 80);
+    for (i, pixel) in data.chunks_exact_mut(4).enumerate() {
+        let (row, col) = (i / W, i % W);
+        let inside = col >= sx && col < sx + 80 && (100..180).contains(&row);
+        let luma = if inside { 255 } else { (col * 64 / W) as u8 };
+        let red = if col > W / 2 && !inside { luma.saturating_add(40) } else { luma };
+        match index_bit(n, row, col) {
+            Some(bright) => pixel.copy_from_slice(&if bright { [255, 255, 255, 255] } else { [0, 0, 0, 255] }),
+            None => pixel.copy_from_slice(&[luma, luma, red, 255]),
+        }
+    }
+    let size = PhysicalSize { width: W as u32, height: H as u32 };
+    let frame = Frame::new(size, W * 4, PixelFormat::Bgra8, ColorInfo::srgb(), ScaleFactor(1.0), data).unwrap();
+    (StreamPixelFormat::Bgra, VideoBuffer::Cpu(Arc::new(frame)))
+}
+
 /// An NV12 frame with a bright square that moves with `n`, so the encoder has motion to code.
+#[cfg(target_os = "macos")]
 fn frame(n: u64) -> CFRetained<CVPixelBuffer> {
     let mut out: *mut CVPixelBuffer = std::ptr::null_mut();
     // SAFETY: a new pixel buffer is created, locked while its two planes are written within their
@@ -181,12 +219,13 @@ impl Rig {
         let sink = self.sink();
         for _ in 0..frames {
             let t = self.clock.0.fetch_add(FRAME_NS, Ordering::SeqCst);
+            let (format, buffer) = video(*counter);
             sink.video(VideoFrame {
                 timestamp: HostTime(t),
                 size: PhysicalSize { width: W as u32, height: H as u32 },
-                format: StreamPixelFormat::Nv12,
+                format,
                 color_space: ColorSpace::Srgb,
-                buffer: VideoBuffer::Native(NativeBuffer(Box::new(MacPixelBuffer(frame(*counter))))),
+                buffer,
             });
             // The microphone: mono 48 kHz, 440 Hz. The system: stereo 44.1 kHz, 660 Hz.
             let mic: Vec<f32> = (0..1600)
@@ -226,6 +265,46 @@ impl Rig {
     }
 }
 
+/// Whether this Windows has nothing to encode with: a Windows Server without its Media
+/// Foundation feature or an N edition without the Media Feature Pack, as a CI runner may be. The
+/// tests that record skip there and say so; any other failure of the writer is a real one.
+#[cfg(target_os = "windows")]
+fn no_encoder_here() -> bool {
+    use glimpsfy_record::session::{WriterFactory, WriterSpec};
+    let dir = tempfile::tempdir().unwrap();
+    let spec = WriterSpec {
+        path: dir.path().join("probe.mp4"),
+        size: PhysicalSize { width: W as u32, height: H as u32 },
+        fps: FPS as u32,
+        codec: VideoCodec::H264,
+        color_space: ColorSpace::Srgb,
+        audio: vec![],
+        fragment_interval_ms: 2_000,
+        bits_per_second: None,
+        offline: false,
+    };
+    match SystemWriters.create(&spec) {
+        Ok(mut writer) => {
+            // A writer that got no frame removes its file and says so; that is expected here.
+            let _ = writer.finish(0);
+            false
+        }
+        Err(e) => {
+            let reason = e.to_string();
+            let missing =
+                reason.contains("Media Foundation is not available") || reason.contains("has no H.264 encoder");
+            assert!(missing, "the writer failed: {reason}");
+            println!("skipped, this Windows cannot record: {reason}");
+            true
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn no_encoder_here() -> bool {
+    false
+}
+
 fn saved(outcome: RecordingOutcome) -> glimpsfy_record::RecordingResult {
     match outcome {
         RecordingOutcome::Saved { result } => result,
@@ -237,6 +316,9 @@ fn saved(outcome: RecordingOutcome) -> glimpsfy_record::RecordingResult {
 /// come in order with no gap where the pause was, and every track is there.
 #[test]
 fn pause_leaves_no_gap_and_the_file_has_every_track() {
+    if no_encoder_here() {
+        return;
+    }
     let rig = rig();
     let path = rig.record("paused.mp4", VideoCodec::H264, |rig, n| {
         rig.feed(90, n);
@@ -268,8 +350,10 @@ fn pause_leaves_no_gap_and_the_file_has_every_track() {
 }
 
 /// A take cut short (the copy taken while it is still being written is what a crash leaves)
-/// still opens and plays up to its last fragment.
+/// still opens and plays up to its last fragment. The Windows writer makes a plain MP4, whose
+/// index is written at the end, so there this does not hold (see `platform/windows/writer.rs`).
 #[test]
+#[cfg(not(target_os = "windows"))]
 fn a_truncated_take_plays_to_its_last_fragment() {
     let rig = rig();
     let crashed = rig.dir.path().join("crashed.mp4");
@@ -311,6 +395,9 @@ fn options(format: ExportFormat, trim: Option<TrimRange>) -> ExportOptions {
 /// any working file behind. Pass-through, re-encode and GIF all produce playable files.
 #[test]
 fn exports_never_replace_and_cancel_cleanly() {
+    if no_encoder_here() {
+        return;
+    }
     let rig = rig();
     let source = take(&rig);
     let id = RecordingId("source".into());

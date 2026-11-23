@@ -1,15 +1,20 @@
 //! Records the main display for a few seconds through the real stream and writer, then exports
 //! an MP4 and a GIF, and prints what each file holds. A developer tool for checking the whole
-//! path on a Mac with the screen recording permission:
+//! path on a Mac with the screen recording permission, on Windows, or on Linux (an X11 display,
+//! Xvfb included, or a Wayland session through the screen cast portal):
 //!
-//! `cargo run -p glimpsfy-record --example record_screen -- <seconds> <folder>`
+//! `cargo run -p glimpsfy-record --example record_screen -- <seconds> <folder> [h264|hevc] [mic]`
+//!
+//! The folder defaults to `glimpsfy-record` in the system's temporary folder. `hevc` asks for
+//! HEVC, which falls back to H.264 where no HEVC encoder is installed, and `mic` adds the default
+//! microphone next to the system audio. The devices the system lists are printed first.
 
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use glimpsfy_capture::{new_backend, CaptureBackend, StreamTarget};
+use glimpsfy_capture::{new_backend, CaptureBackend, MicrophoneSource, StreamTarget};
 use glimpsfy_record::export::{self, Progress};
 use glimpsfy_record::files::Trash;
 use glimpsfy_record::session::{Env, OwnWindows, Recorder, SystemClock, SystemWriters};
@@ -28,8 +33,14 @@ impl Trash for KeepEverything {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args().skip(1);
     let seconds: u64 = args.next().and_then(|s| s.parse().ok()).unwrap_or(5);
-    let folder = PathBuf::from(args.next().unwrap_or_else(|| "/tmp/glimpsfy-record".into()));
+    let folder = args.next().map(PathBuf::from).unwrap_or_else(|| std::env::temp_dir().join("glimpsfy-record"));
+    let codec = match args.next().as_deref() {
+        Some("hevc") => VideoCodec::Hevc,
+        _ => VideoCodec::H264,
+    };
+    let microphone = args.next().as_deref() == Some("mic");
     std::fs::create_dir_all(&folder)?;
+    println!("devices: {:#?}", platform::devices());
 
     let backend: Arc<dyn CaptureBackend> = new_backend();
     let display = backend.displays()?.into_iter().find(|d| d.is_primary).ok_or("no main display")?;
@@ -45,9 +56,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         target: StreamTarget::Display { display: display.id },
         fps: 30,
         resolution: Resolution::Native,
-        codec: VideoCodec::H264,
+        codec,
         shows_cursor: true,
-        audio: AudioConfig { system: true, microphone: None, separate_tracks: true },
+        audio: AudioConfig {
+            system: true,
+            microphone: microphone.then_some(MicrophoneSource { device_id: None }),
+            separate_tracks: true,
+        },
         clicks: ClickHighlight::default(),
         keystrokes: KeystrokeOverlay::default(),
         webcam: WebcamOverlay::default(),
@@ -103,6 +118,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             destination: None,
             audio: ExportAudio::default(),
             purpose: ExportPurpose::Save,
+            cuts: Vec::new(),
         };
         let wanted = export::wanted_path(&folder, &result.path, &format, false);
         let wanted =
