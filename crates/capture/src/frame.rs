@@ -76,12 +76,17 @@ pub struct Frame {
     pub data: Vec<u8>,
 }
 
-/// How hard the PNG encoder works. `Fast` suits the clipboard, `Balanced` suits files.
+/// How hard the PNG encoder works. `Fast` suits the clipboard, `Balanced` suits files, and
+/// `Optimised` suits a file that is written once and kept, where a save that takes a second or two
+/// longer is worth a smaller file.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PngEffort {
     Fastest,
     Fast,
     Balanced,
+    /// `Balanced`, then compressed again by oxipng within [`crate::encode::PNG_OPTIMISE_BUDGET`]
+    /// ([`crate::encode::optimise_png`]); the pixels and the colour chunks stay as they are.
+    Optimised,
 }
 
 impl Frame {
@@ -159,6 +164,25 @@ impl Frame {
         out
     }
 
+    /// The pixels as tight RGB rows without their alpha, for an opaque frame's PNG.
+    fn to_rgb(&self) -> Vec<u8> {
+        let (width, height) = (self.size.width as usize, self.size.height as usize);
+        let mut out = vec![0u8; width * 3 * height];
+        let (r, b) = match self.format {
+            PixelFormat::Rgba8 => (0, 2),
+            PixelFormat::Bgra8 => (2, 0),
+        };
+        for (y, dst) in out.chunks_exact_mut(width * 3).enumerate() {
+            let src = &self.data[y * self.bytes_per_row..y * self.bytes_per_row + width * 4];
+            for (s, d) in src.chunks_exact(4).zip(dst.chunks_exact_mut(3)) {
+                d[0] = s[r];
+                d[1] = s[1];
+                d[2] = s[b];
+            }
+        }
+        out
+    }
+
     /// The pixels in the frame's own byte order without row padding, borrowed when the rows are
     /// already tight.
     pub fn tight_bytes(&self) -> Cow<'_, [u8]> {
@@ -214,10 +238,15 @@ impl Frame {
     /// A PNG of the frame, tagged with its colour space: the ICC profile when there is one, the
     /// sRGB chunk for an sRGB frame without one.
     pub fn encode_png(&self, effort: PngEffort) -> Result<Vec<u8>> {
-        let rgba = self.to_rgba();
-        let mut out = Vec::with_capacity(rgba.len() / 3);
+        let started = std::time::Instant::now();
+        // A file of an opaque frame, which every screen capture is, leaves out the alpha channel:
+        // a quarter fewer bytes to compress and a smaller file. The clipboard's and the overlay's
+        // PNGs skip the extra pass over the pixels.
+        let opaque = matches!(effort, PngEffort::Balanced | PngEffort::Optimised) && self.is_opaque();
+        let pixels = if opaque { self.to_rgb() } else { self.to_rgba() };
+        let mut out = Vec::with_capacity(pixels.len() / 3);
         let mut info = png::Info::with_size(self.size.width, self.size.height);
-        info.color_type = png::ColorType::Rgba;
+        info.color_type = if opaque { png::ColorType::Rgb } else { png::ColorType::Rgba };
         info.bit_depth = png::BitDepth::Eight;
         if let Some(profile) = &self.color.icc_profile {
             info.icc_profile = Some(Cow::Borrowed(profile));
@@ -233,12 +262,15 @@ impl Frame {
         encoder.set_compression(match effort {
             PngEffort::Fastest => png::Compression::Fastest,
             PngEffort::Fast => png::Compression::Fast,
-            PngEffort::Balanced => png::Compression::Balanced,
+            PngEffort::Balanced | PngEffort::Optimised => png::Compression::Balanced,
         });
         let mut writer = encoder.write_header().map_err(|e| CaptureError::Encode(e.to_string()))?;
-        writer.write_image_data(&rgba).map_err(|e| CaptureError::Encode(e.to_string()))?;
+        writer.write_image_data(&pixels).map_err(|e| CaptureError::Encode(e.to_string()))?;
         writer.finish().map_err(|e| CaptureError::Encode(e.to_string()))?;
-        Ok(out)
+        Ok(match effort {
+            PngEffort::Optimised => crate::encode::optimise_png(out, Some(started.elapsed())),
+            _ => out,
+        })
     }
 
     /// The frame as a top-down 32-bit BMP (`BITMAPINFOHEADER`, `BI_RGB`), whose B, G, R, X byte

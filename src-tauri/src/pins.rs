@@ -440,6 +440,13 @@ pub fn save(app: &AppHandle, id: u64) -> CommandResult<PathBuf> {
     let (bytes, kind) = image(id)?;
     let info = info(id)?;
     let output = app.state::<AppState>().settings.get().output;
+    // The pin's own copy is a quick PNG (or the file it opened); the saved file is made smaller
+    // the way a capture's is. A JPEG is written as it is.
+    let bytes = if kind == ImageType::Png && output.optimise_png {
+        glimpsfy_capture::encode::optimise_png(bytes, None)
+    } else {
+        bytes
+    };
     let (date, time) = crate::output::Naming::clock(chrono::Local::now());
     let naming = crate::output::Naming { date, time, app: None, width: info.pixel_width, height: info.pixel_height };
     let path =

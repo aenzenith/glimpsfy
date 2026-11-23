@@ -48,6 +48,8 @@ const ACK: { project: string; use: Key; licence: Key }[] = [
   ...SYSTEM_ACK[platform.os],
   { project: "png · image-webp", use: "settings.about.ackImages", licence: "settings.about.mitOrApache" },
   { project: "jpeg-encoder", use: "settings.about.ackJpeg", licence: "settings.about.mitOrApacheIjg" },
+  // oxipng and libdeflate's C are MIT; the libdeflater bindings that join them are Apache 2.0.
+  { project: "oxipng · libdeflate", use: "settings.about.ackPngOptimise", licence: "settings.about.mitAndApache" },
   { project: "ureq", use: "settings.about.ackUreq", licence: "settings.about.mitOrApache" },
 ];
 

@@ -85,6 +85,8 @@ export type Output = Extra & {
   quality: number;
   retina: RetinaScale;
   copyAfterSave: boolean;
+  /** A saved PNG is compressed again (oxipng) before it is written; the pixels stay the same. */
+  optimisePng: boolean;
   windowShadow: boolean;
   windowCorners: boolean;
   windowBackground: WindowBackground;

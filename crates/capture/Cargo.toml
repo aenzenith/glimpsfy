@@ -12,11 +12,14 @@ rust-version.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 png.workspace = true
-# Pure-Rust encoders for Settings › Output › Format. jpeg-encoder's licence adds the IJG notice,
-# which About's acknowledgements must carry.
+# Encoders for Settings › Output › Format, in pure Rust. jpeg-encoder's licence adds the IJG
+# notice, which About's acknowledgements must carry.
 jpeg-encoder = "0.6.1"
 # Lossless (VP8L) only: no pure-Rust lossy WebP encoder exists, so WebP ignores the quality.
 image-webp = "0.2.4"
+# Saved PNGs compressed again without changing a pixel (`encode::optimise_png`). It brings
+# libdeflate, the crate's one C library, which `cc` compiles with the platform's C compiler.
+oxipng.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2.workspace = true

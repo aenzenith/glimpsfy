@@ -33,7 +33,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use glimpsfy_annotate::BeautifyStyle;
 use glimpsfy_capture::{selection_to_frame, ColorInfo, Display, Frame, ImageEncoding, PixelFormat, PngEffort};
@@ -350,7 +350,7 @@ fn save_images(
     let (mut pngs, mut frames, mut copied) = (Vec::new(), Vec::new(), Vec::new());
     for (i, (frame, origin)) in images.iter().enumerate() {
         let format = target.and_then(format_of).or(origin.format).unwrap_or(output.format);
-        let (bytes, path, fallback_from) = match write_image(output, frame, origin, i, format, target) {
+        let (bytes, plain, path, fallback_from) = match write_image(output, frame, origin, i, format, target) {
             Ok(written) => written,
             Err(error) => {
                 results.push(Err(error));
@@ -358,8 +358,9 @@ fn save_images(
             }
         };
         if output.copy_after_save {
+            // A PNG made smaller goes to the clipboard as the plain PNG it was made from.
             let png = if format == ImageFormat::Png {
-                Ok(bytes.clone())
+                Ok(plain.unwrap_or_else(|| bytes.clone()))
             } else {
                 frame.encode(ImageEncoding::Png(PngEffort::Fast))
             };
@@ -395,7 +396,11 @@ fn save_images(
     results
 }
 
-/// Encodes one image and writes its file: the bytes, the path and the folder that failed.
+/// A written image: the file's bytes, the plain PNG a smaller one was made from (`encode_file`),
+/// the path and the folder that failed.
+type Written = (Vec<u8>, Option<Vec<u8>>, PathBuf, Option<String>);
+
+/// Encodes one image and writes its file.
 fn write_image(
     output: &Output,
     frame: &Frame,
@@ -403,17 +408,44 @@ fn write_image(
     index: usize,
     format: ImageFormat,
     target: Option<&Path>,
-) -> CommandResult<(Vec<u8>, PathBuf, Option<String>)> {
-    let bytes = frame.encode(encoding(output, format))?;
+) -> CommandResult<Written> {
+    let (bytes, plain) = encode_file(output, frame, format)?;
     let (path, fallback_from) = match target {
         Some(path) => (write_picked(path, index, format, &bytes)?, None),
         None => write_in_folder(output, frame, origin, format, &bytes)?,
     };
-    Ok((bytes, path, fallback_from))
+    Ok((bytes, plain, path, fallback_from))
+}
+
+/// The file's bytes in `format`. A PNG made smaller (Settings › Output › Make PNG files smaller)
+/// also answers the plain PNG it was made from, for the clipboard.
+fn encode_file(output: &Output, frame: &Frame, format: ImageFormat) -> CommandResult<(Vec<u8>, Option<Vec<u8>>)> {
+    let encoding = encoding(output, format);
+    if encoding != ImageEncoding::Png(PngEffort::Optimised) {
+        return Ok((frame.encode(encoding)?, None));
+    }
+    let started = Instant::now();
+    let plain = frame.encode(ImageEncoding::Png(PngEffort::Balanced))?;
+    let encoded_in = started.elapsed();
+    let file = glimpsfy_capture::encode::optimise_png(plain.clone(), Some(encoded_in));
+    let took = started.elapsed();
+    trace::log(format!(
+        "[glimpsfy] png {}×{} in {:.0} ms ({:.0} ms balanced){}: {} → {} bytes{}",
+        frame.size.width,
+        frame.size.height,
+        trace::ms(took),
+        trace::ms(encoded_in),
+        if took > glimpsfy_capture::encode::PNG_OPTIMISE_BUDGET { ", over the budget" } else { "" },
+        plain.len(),
+        file.len(),
+        if file.len() == plain.len() { ", kept as encoded" } else { "" }
+    ));
+    Ok((file, Some(plain)))
 }
 
 fn encoding(output: &Output, format: ImageFormat) -> ImageEncoding {
     match format {
+        ImageFormat::Png if output.optimise_png => ImageEncoding::Png(PngEffort::Optimised),
         ImageFormat::Png => ImageEncoding::Png(PngEffort::Balanced),
         ImageFormat::Jpeg => {
             ImageEncoding::Jpeg { quality: output.quality.clamp(50, 100) as u8, background: [255, 255, 255] }
@@ -537,7 +569,13 @@ pub(crate) fn write_series_frame(
         RetinaScale::ScaleTo1x => frame.at_1x().unwrap_or(frame),
         RetinaScale::Keep2x => frame,
     };
-    let bytes = frame.encode(encoding(output, output.format)).map_err(std::io::Error::other)?;
+    // The series' one writer thread keeps pace with its ticks only when no frame waits seconds
+    // for the smaller PNG, so a series stays at the balanced encoder.
+    let encoding = match encoding(output, output.format) {
+        ImageEncoding::Png(_) => ImageEncoding::Png(PngEffort::Balanced),
+        other => other,
+    };
+    let bytes = frame.encode(encoding).map_err(std::io::Error::other)?;
     let path = naming::save_named(folder, stem, output.format.extension(), &bytes)?;
     Ok((path, bytes.len() as u64, frame.size))
 }

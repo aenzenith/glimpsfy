@@ -42,6 +42,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
 png = "0.18"
+# Lossless PNG optimisation for saved files (Settings › Output › Make PNG files smaller). Without
+# `binary` (the CLI) and `zopfli` (minutes per screenshot); libdeflate's C is built with `cc`.
+oxipng = { version = "10.2", default-features = false, features = ["parallel"] }
 tempfile = "3"
 
 # macOS bindings. Every objc2 framework crate of the 0.3 line pairs with objc2 0.6, which is
@@ -79,6 +82,15 @@ opt-level = 3
 [profile.dev.package.crc32fast]
 opt-level = 3
 [profile.dev.package.adler2]
+opt-level = 3
+# A saved PNG passes through oxipng (`encode::optimise_png`), whose filters and libdeflate's C
+# (compiled by `libdeflate-sys`'s build script at this level) would otherwise stretch a 5K save
+# well past its time budget in `npm run tauri dev`.
+[profile.dev.package.oxipng]
+opt-level = 3
+[profile.dev.package.libdeflater]
+opt-level = 3
+[profile.dev.package.libdeflate-sys]
 opt-level = 3
 # The QR and barcode search outside macOS (`crates/ocr/src/barcodes.rs`) takes 406 ms for a
 # full-HD screen unoptimised and 37 ms optimised.

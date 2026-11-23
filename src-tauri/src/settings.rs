@@ -554,6 +554,9 @@ pub struct Output {
     pub quality: u32,
     pub retina: RetinaScale,
     pub copy_after_save: bool,
+    /// Whether a saved PNG is compressed again (oxipng) before it is written: the same pixels in
+    /// a smaller file, for a save that may take a second or two longer.
+    pub optimise_png: bool,
     pub window_shadow: bool,
     pub window_corners: bool,
     pub window_background: WindowBackground,
@@ -600,6 +603,7 @@ impl Default for Output {
             quality: 90,
             retina: RetinaScale::Keep2x,
             copy_after_save: false,
+            optimise_png: true,
             window_shadow: true,
             window_corners: true,
             window_background: WindowBackground::Transparent,

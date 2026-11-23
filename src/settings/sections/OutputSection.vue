@@ -126,6 +126,7 @@ const formats = [
   { value: "webp" as ImageFormat, label: "WebP" },
 ];
 const formatHelp = computed(() => t(o.value.format === "png" ? "settings.output.formatPng" : o.value.format === "jpeg" ? "settings.output.formatJpeg" : "settings.output.formatWebp"));
+const optimisePngId = uid("png-small");
 const quality = ref(o.value.quality);
 watch(() => o.value.quality, (q) => (quality.value = q));
 const retinas = computed(() => [
@@ -291,6 +292,10 @@ function cancelClear(): void {
         />
         <span class="p-val">{{ t("settings.output.percent", { n: quality }) }}</span>
       </div>
+    </FormRow>
+    <!-- oxipng reads PNG only, so the switch shows with PNG the way Quality shows with JPEG. -->
+    <FormRow v-if="o.format === 'png'" :label="t('settings.output.optimisePng')" :for="optimisePngId" :help="t('settings.output.optimisePngHelp')">
+      <SwitchControl :id="optimisePngId" :model-value="o.optimisePng" @update:model-value="(v) => update((s) => (s.output.optimisePng = v))" />
     </FormRow>
     <FormRow :label="tp('settings.output.retina')" :label-id="ids.retina" :help="t('settings.output.retinaHelp')">
       <SegmentedControl :labelledby="ids.retina" :model-value="o.retina" :options="retinas" @update:model-value="(v) => update((s) => (s.output.retina = v))" />
