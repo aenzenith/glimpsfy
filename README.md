@@ -8,7 +8,7 @@
   <p>
     <a href="https://github.com/aenzenith/glimpsfy/releases/latest"><b>Download</b></a>
   </p>
-  <sub>Free and open source · macOS 14+, with Windows and Linux to follow · seven languages</sub>
+  <sub>Free and open source · macOS 14+, with Windows and Linux from the next release · seven languages</sub>
 </div>
 
 <br>
@@ -24,8 +24,9 @@ the result is on your clipboard, on your disk or behind a link within seconds.
   and a delayed mode.
 - **Annotate** draws arrows, shapes, text, numbered steps, blur and pixelate on a toolbar attached
   to the selection.
-- **OCR** copies the text of any region and decodes QR codes, offline through Apple's Vision
-  engine.
+- **OCR** copies the text of any region and decodes QR codes offline: through Apple's Vision
+  engine on macOS, Windows' own engine on Windows, and PaddleOCR models that Glimpsfy downloads
+  once on Windows and Linux.
 - **Record** captures the screen with system audio and the microphone, then trims it or exports it
   as a GIF.
 - **Share** copies, saves, pins or uploads a capture to a free image host, an S3 bucket or any
@@ -42,11 +43,23 @@ Download the latest build from [Releases](https://github.com/aenzenith/glimpsfy/
   the first time, macOS asks whether to open an app downloaded from the internet; click Open. The
   first-run screen then walks you through the Screen Recording, Microphone and Accessibility
   permissions.
-- **Windows and Linux** builds follow in later versions.
+- **Windows 10/11** (`-setup.exe` or `.msi`): the builds are attached to every release from the
+  next one on. The setup installs for the current user without an administrator prompt, and it
+  fetches WebView2 when the machine doesn't have it. The installers aren't signed yet, so
+  SmartScreen stops the first start once: click More info, then Run anyway.
+- **Linux** (`.deb`, `.rpm` or `.AppImage`): the builds are attached to every release from the
+  next one on. `sudo apt install ./Glimpsfy_*.deb` or `sudo dnf install ./Glimpsfy-*.rpm` brings
+  the GStreamer plugins that recording needs. The AppImage carries its own, so you
+  `chmod +x Glimpsfy_*.AppImage` and run it; it still needs FUSE to start, xdg-desktop-portal and
+  PipeWire to capture on Wayland, and a Secret Service such as GNOME Keyring to keep upload keys.
+  Glimpsfy lives in the tray, which GNOME shows through its AppIndicator extension.
 
 ## Development
 
-You need Node 22, stable Rust and the Xcode Command Line Tools.
+You need Node 22 and Rust 1.94 or newer. macOS also needs the Xcode Command Line Tools, Windows
+the Visual Studio C++ Build Tools, and Linux the packages listed in
+`tools/linux-check/packages.txt` (WebKitGTK 4.1, GStreamer and the X11 libraries).
+`tools/linux-check/run.sh` runs the Linux checks in Docker from any machine.
 
 ```sh
 npm ci
