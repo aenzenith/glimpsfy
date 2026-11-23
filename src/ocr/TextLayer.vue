@@ -1,8 +1,9 @@
 <script setup lang="ts">
 // The text recognition layer over a capture (overlay ab7) or an image (editor ab9): a veil over
 // the image, an outline around every recognised line, the recognised words as real, invisible,
-// selectable text placed over the pixels, a chip that copies all of it, and a chip under each QR
-// code. Selecting with the mouse and pressing ⌘C copies exactly the selected text with its
+// selectable text placed over the pixels, a chip that copies all of it, a chip under each QR code
+// and a chip under each table that copies it as TSV or as a Markdown table (`table.ts`).
+// Selecting with the mouse and pressing ⌘C copies exactly the selected text with its
 // indentation and table tabs; ⇧⌘C (or the chip) copies everything; ⌘A selects everything; Esc
 // is left to the page, which hides the layer.
 //
@@ -34,6 +35,7 @@ import { language, t } from "../lib/i18n";
 import { ariaKeys } from "../lib/keys";
 import EntityMenu from "./EntityMenu.vue";
 import { ppOcrWithoutModels } from "./models";
+import { tablesOf, toMarkdown, toTsv } from "./table";
 import { languageName, lineCount, lineRuns, placer, textOf, wordOffsets, type Rect, type WordRange } from "./text";
 import { useEntities } from "./useEntities";
 import { useRecognition } from "./useRecognition";
@@ -379,15 +381,43 @@ const codeChips = computed(() => {
   });
 });
 
+/** The tables of a finished reading, in reading order: at most three, the ones with the most
+ * cells, because the layout also counts rows of buttons and the labels and values of a form as
+ * tables. */
+const tables = computed(() => {
+  const result = current.value;
+  if (status.value !== "done" || !result?.text.trim()) return [];
+  const all = tablesOf(result);
+  const kept = [...all].sort((a, b) => b.cells - a.cells).slice(0, 3);
+  return all.filter((table) => kept.includes(table));
+});
+
+/** A table's chip sits 12 px under the table and 5 px left of it, as a code's chip does. */
+const tableChips = computed(() => {
+  const p = place.value;
+  if (!p) return [];
+  return tables.value.map((table, i) => {
+    const r = p(table.bounds);
+    return {
+      key: i,
+      table,
+      at: { left: `${r.x - 5}px`, top: `${r.y + r.height + 12}px` },
+      size: t("ocr.table.size", { rows: table.rows.length, columns: table.rows[0].length }),
+    };
+  });
+});
+
 /** How far each chip moves down so that no two overlap: the summary chip first, then the code
- * chips. A chip's width is known only once it is drawn, so this runs after each render. */
+ * chips, then the table chips. A chip's width is known only once it is drawn, so this runs after
+ * each render. */
 const shifts = ref<number[]>([]);
 const summaryEl = ref<HTMLElement | null>(null);
 const codeEls = ref<HTMLElement[]>([]);
+const tableEls = ref<HTMLElement[]>([]);
 
 async function layoutChips(): Promise<void> {
   await nextTick();
-  const els = [summaryEl.value, ...codeEls.value];
+  const els = [summaryEl.value, ...codeEls.value, ...tableEls.value];
   const placed: { left: number; right: number; top: number; bottom: number }[] = [];
   const next = els.map((el, i) => {
     if (!el) return 0;
@@ -411,7 +441,7 @@ async function layoutChips(): Promise<void> {
   });
   if (next.some((v, i) => Math.abs(v - (shifts.value[i] ?? 0)) > 0.5)) shifts.value = next;
 }
-watch([codeChips, chipAt, message, summary, shown], layoutChips, { flush: "post" });
+watch([codeChips, tableChips, chipAt, message, summary, shown], layoutChips, { flush: "post" });
 
 const shifted = (at: { left: string; top: string }, i: number) => ({ ...at, top: `${parseFloat(at.top) + (shifts.value[i] ?? 0)}px` });
 
@@ -495,6 +525,23 @@ async function openLink(url: string): Promise<void> {
       <button type="button" class="g-button" @click="copy(chip.code.payload)">
         <GIcon name="copy" :size="16" />{{ t("ocr.code.copy") }}
       </button>
+    </div>
+
+    <div
+      v-for="(chip, i) in tableChips"
+      :key="`t${chip.key}`"
+      ref="tableEls"
+      class="g-chip ocr-table"
+      :style="shifted(chip.at, 1 + codeChips.length + i)"
+      @pointerdown.stop
+      @mousedown.stop
+    >
+      <GIcon name="grid" :size="16" />
+      <span class="g-chip-text"><small>{{ t("ocr.table.title") }}</small>{{ chip.size }}</span>
+      <button type="button" class="g-button" data-variant="primary" @click="copy(toTsv(chip.table))">
+        <GIcon name="copy" :size="16" />{{ t("ocr.table.tsv") }}
+      </button>
+      <button type="button" class="g-button" @click="copy(toMarkdown(chip.table))">{{ t("ocr.table.markdown") }}</button>
     </div>
 
     <EntityMenu
@@ -598,7 +645,8 @@ async function openLink(url: string): Promise<void> {
   transform: translateX(-50%);
   pointer-events: auto;
 }
-.ocr-code {
+.ocr-code,
+.ocr-table {
   position: absolute;
   z-index: 3;
   pointer-events: auto;
