@@ -318,9 +318,9 @@ fn after_for(mode: CaptureMode, setting: settings::AfterSelection) -> AfterSelec
 }
 
 /// The style a new capture in `mode` starts with: the automatic preset, for the modes that deliver
-/// a screenshot. Copy text delivers none.
+/// a screenshot. Copy text and the ruler deliver none.
 fn automatic_beautify(mode: CaptureMode, settings: &settings::Settings) -> Option<BeautifyStyle> {
-    let screenshot = !matches!(mode, CaptureMode::CopyText);
+    let screenshot = !matches!(mode, CaptureMode::CopyText | CaptureMode::Ruler);
     screenshot.then(|| settings.beautify.automatic()).flatten()
 }
 
@@ -354,6 +354,9 @@ pub fn start(app: &AppHandle, mode: CaptureMode, at: Instant) -> CommandResult<(
             delay::take_pending();
             state.settings.get().general.delay_seconds.clamp(1, 60)
         }
+        // The ruler measures the screen as it is now, and a delay that is set waits for the
+        // next capture.
+        CaptureMode::Ruler => 0,
         _ => delay::take_pending(),
     };
     if seconds > 0 {
@@ -378,7 +381,9 @@ pub fn start_from_menu(app: &AppHandle, mode: CaptureMode) {
 pub fn start_now(app: &AppHandle, mode: CaptureMode, at: Instant) -> CommandResult<()> {
     match mode {
         CaptureMode::Area | CaptureMode::AreaDelayed => start_overlay(app, CaptureMode::Area, at, false),
-        CaptureMode::Window | CaptureMode::CopyText | CaptureMode::ScrollCapture => start_overlay(app, mode, at, false),
+        CaptureMode::Window | CaptureMode::CopyText | CaptureMode::Ruler | CaptureMode::ScrollCapture => {
+            start_overlay(app, mode, at, false)
+        }
         CaptureMode::Display => start_direct(app, Direct::Display, at),
         CaptureMode::AllDisplays => start_direct(app, Direct::AllDisplays, at),
         CaptureMode::RepeatLastArea => {
@@ -609,6 +614,7 @@ fn snap_targets(display: &Display, windows: &[WindowInfo]) -> Vec<OverlayWindow>
                 title: w.title.clone(),
                 rect,
                 corner_radius: w.corner_radius,
+                capture_blocked: w.capture_blocked,
             })
         })
         .collect()

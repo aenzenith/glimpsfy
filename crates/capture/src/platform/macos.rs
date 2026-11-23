@@ -38,11 +38,11 @@ use objc2_app_kit::NSScreen;
 use objc2_core_foundation::{CFData, CFDictionary, CFRetained, CFString, CGRect};
 use objc2_core_graphics::{
     kCGColorSpaceDisplayP3, kCGColorSpaceSRGB, kCGNullWindowID, kCGWindowAlpha, kCGWindowBounds, kCGWindowIsOnscreen,
-    kCGWindowLayer, kCGWindowName, kCGWindowNumber, kCGWindowOwnerName, kCGWindowOwnerPID, CGBitmapInfo, CGColorSpace,
-    CGDataProvider, CGDirectDisplayID, CGDisplayBounds, CGDisplayCopyColorSpace, CGDisplayCopyDisplayMode,
-    CGDisplayIsBuiltin, CGDisplayMode, CGGetActiveDisplayList, CGImage, CGImageAlphaInfo, CGImageByteOrderInfo,
-    CGMainDisplayID, CGPreflightScreenCaptureAccess, CGRectMakeWithDictionaryRepresentation,
-    CGRequestScreenCaptureAccess, CGWindowListCopyWindowInfo, CGWindowListOption,
+    kCGWindowLayer, kCGWindowName, kCGWindowNumber, kCGWindowOwnerName, kCGWindowOwnerPID, kCGWindowSharingState,
+    CGBitmapInfo, CGColorSpace, CGDataProvider, CGDirectDisplayID, CGDisplayBounds, CGDisplayCopyColorSpace,
+    CGDisplayCopyDisplayMode, CGDisplayIsBuiltin, CGDisplayMode, CGGetActiveDisplayList, CGImage, CGImageAlphaInfo,
+    CGImageByteOrderInfo, CGMainDisplayID, CGPreflightScreenCaptureAccess, CGRectMakeWithDictionaryRepresentation,
+    CGRequestScreenCaptureAccess, CGWindowListCopyWindowInfo, CGWindowListOption, CGWindowSharingType,
 };
 use objc2_foundation::{NSArray, NSDictionary, NSError, NSNumber, NSString};
 use objc2_screen_capture_kit::{
@@ -469,6 +469,8 @@ impl CaptureBackend for MacBackend {
                 alpha: number(&dict, unsafe { kCGWindowAlpha }).map(|n| n.as_f64()).unwrap_or(1.0),
                 is_on_screen: number(&dict, unsafe { kCGWindowIsOnscreen }).is_some_and(|n| n.as_bool()),
                 corner_radius: None,
+                capture_blocked: number(&dict, unsafe { kCGWindowSharingState })
+                    .is_some_and(|n| n.as_u32() == CGWindowSharingType::None.0),
             });
         }
         Ok(windows)

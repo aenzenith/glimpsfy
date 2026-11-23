@@ -55,6 +55,10 @@ pub struct WindowInfo {
     pub is_on_screen: bool,
     /// The window's corner radius in points, when the platform reports one.
     pub corner_radius: Option<f64>,
+    /// The window keeps itself out of screen captures (macOS `NSWindowSharingNone`, Windows
+    /// display affinity), so a frame shows what lies behind it instead.
+    #[serde(default)]
+    pub capture_blocked: bool,
 }
 
 /// Which windows a listing returns.

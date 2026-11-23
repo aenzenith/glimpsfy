@@ -3,7 +3,9 @@
 // crosshair and the loupe, a drag selection with eight handles, moving and nudging, window
 // snapping, and the two glass bars. Copy, Save and Close work. The annotation tools draw through
 // the seam in `annotations.ts` (milestone 2): with drawings, Copy and Save send the rendered
-// selection to the core, and ⌘O hands the capture with its drawings to the editor. ⌘↓ turns the
+// selection to the core, and ⌘O hands the capture with its drawings to the editor. The ruler
+// (`ruler/Ruler.vue`) measures the frozen screen instead, opened by its shortcut or by M before a
+// selection; while it is on, the pointer and the keys go to it first. ⌘↓ turns the
 // selection into a scrolling capture (D27, mode "scroll", `ScrollMode.vue`): the frozen frame
 // and the drawings step aside, the selection lets the pointer through to the app under it, and
 // the core stitches what scrolls past; Esc brings the frozen selection back as it was.
@@ -91,6 +93,8 @@ import FirstUploadDialog from "../upload/FirstUploadDialog.vue";
 import { jobName } from "../ocr/text";
 import "./overlay.css";
 import * as modes from "./modes";
+import Ruler from "./ruler/Ruler.vue";
+import { pixelSource } from "./ruler/edges";
 import { useOverlayBeautify } from "./beautify";
 import ScrollMode from "./ScrollMode.vue";
 
@@ -146,6 +150,11 @@ const cursor = ref("crosshair");
 const heldElsewhere = ref<number | null>(null);
 const view = reactive({ w: window.innerWidth, h: window.innerHeight });
 const loupeShown = ref(false);
+/** The ruler is on: no dim, loupe, window hover or size label, and the measures take the pointer. */
+const rulerOn = ref(false);
+/** This page holds the keyboard, so the ruler's bar shows here and on no other display. */
+const keyHeld = ref(false);
+const rulerEl = ref<InstanceType<typeof Ruler> | null>(null);
 /** The size menu's choice (`lib/sizes.ts`): free, a locked ratio or a fixed size. It holds for
  * this capture only; every capture starts free. */
 const choice = shallowRef<SizeChoice>(FREE);
@@ -210,6 +219,8 @@ const xyEl = ref<HTMLElement | null>(null);
 let ctx: CanvasRenderingContext2D | null = null;
 let lens: CanvasRenderingContext2D | null = null;
 let pixels: Uint8ClampedArray | null = null;
+/** The capture whose frame the canvas holds, so the ruler never reads the last capture's pixels. */
+let loadedId: number | null = null;
 /** The frame pixel the lens shows, so a move within one pixel draws nothing; -1 for a new frame. */
 const lensAt = { x: -1, y: -1 };
 /** The newest pointer move not handled yet: moves are handled once per animation frame. */
@@ -290,7 +301,7 @@ const RESIZE_CURSORS: Record<string, string> = {
 // and end, so a drag does not render the page again; the moving parts are painted below.
 const hasSel = computed(() => sel.value !== null);
 const sizeShown = computed(() => sel.value !== null && sel.value.w > 0 && mode.value !== "scroll");
-const showLines = computed(() => mode.value === "idle" && !windowMode.value && heldElsewhere.value === null && pointer.value !== null);
+const showLines = computed(() => mode.value === "idle" && !windowMode.value && !rulerOn.value && heldElsewhere.value === null && pointer.value !== null);
 type HandleAt = { key: string; kind: "x" | "y" | null; x: number; y: number };
 /** One empty list for every state without handles, so a drag leaves the computed unchanged. */
 const NO_HANDLES: HandleAt[] = [];
@@ -618,6 +629,7 @@ function resetAll(): void {
   scroll.value = null;
   scrollOutside.value = false;
   scrollAsking.value = false;
+  rulerOn.value = false;
   clearTimeout(hintTimer);
   clearTimeout(noticeTimer);
   clearTimeout(outsideTimer);
@@ -629,6 +641,10 @@ async function begin(next: OverlayFrame): Promise<void> {
   frame.value = next;
   void beautify.start(next);
   windowMode.value = next.mode === "window";
+  rulerOn.value = next.mode === "ruler";
+  loadedId = null;
+  // The core gives the keyboard to the display under the pointer; focus events say the rest.
+  keyHeld.value = next.pointer !== null || document.hasFocus();
   view.w = window.innerWidth;
   view.h = window.innerHeight;
 
@@ -649,10 +665,11 @@ async function begin(next: OverlayFrame): Promise<void> {
     return;
   }
   pixels = loaded.pixels;
+  loadedId = next.captureId;
   annotations.attach(next, ctx.canvas, loaded.pixels, view.w);
   if (next.pointer) {
     pointer.value = next.pointer;
-    updateLoupe(next.pointer);
+    if (!rulerOn.value) updateLoupe(next.pointer);
   }
   await nextTick();
   if (frame.value?.captureId !== next.captureId) return;
@@ -676,7 +693,39 @@ function end(closed: CaptureClosed): void {
   beautify.stop();
   frame.value = null;
   pixels = null;
+  loadedId = null;
   annotations.detach();
+}
+
+/** The frozen frame's pixels for the ruler's snapping, once this capture's frame is drawn. */
+const rulerSource = () => (ctx && loadedId !== null && loadedId === frame.value?.captureId ? pixelSource(ctx, pixels) : null);
+
+/** M before a selection: the ruler takes over the frozen screen. */
+function openRuler(): void {
+  rulerOn.value = true;
+  windowMode.value = false;
+  hovered.value = null;
+  loupeShown.value = false;
+  menu.value = null;
+  hintFaded.value = true;
+}
+
+/** Esc in a ruler that M opened, with no measure left: back to the area selection. */
+function closeRuler(): void {
+  rulerOn.value = false;
+  if (pointer.value) updateLoupe(pointer.value);
+}
+
+/** The ruler's keys; Esc clears its measures first and then closes it, or the capture when the
+ * ruler's own shortcut opened it. */
+function rulerKey(e: KeyboardEvent): void {
+  if (e.key === "Escape") {
+    e.preventDefault();
+    if (rulerEl.value?.escape()) return;
+    if (frame.value?.mode === "ruler") return close();
+    return closeRuler();
+  }
+  if (rulerEl.value?.key(e)) e.preventDefault();
 }
 
 function finishSelection(r: Rect, windowId: number | null = null): void {
@@ -1455,6 +1504,7 @@ function onMouseDown(e: MouseEvent): void {
   if (e.button !== 0 || !frame.value) return;
   const p = point(e);
   e.preventDefault();
+  if (rulerOn.value) return rulerEl.value?.press(p, e);
   // While the page scrolls, a press outside the selection keeps it: the bar ends the mode.
   if (mode.value === "scroll") return;
   // A press beside the open size menu only closes it.
@@ -1521,6 +1571,7 @@ function handleMove(e: MouseEvent): void {
   if (!frame.value) return;
   const p = point(e);
   pointer.value = p;
+  if (rulerOn.value) return rulerEl.value?.move(p, e);
   if (mode.value === "scroll") {
     cursor.value = "default";
     return;
@@ -1639,6 +1690,7 @@ function onMouseUp(e: MouseEvent): void {
   flushMove();
   if (e.button !== 0) return;
   const p = point(e);
+  if (rulerOn.value) return rulerEl.value?.release(p, e);
   if (annotations.busy()) {
     annotations.end();
     void layoutBars();
@@ -1694,7 +1746,10 @@ function onKeyDown(e: KeyboardEvent): void {
   if (e.target instanceof HTMLElement && e.target.isContentEditable) return;
   // The beautify panel's sliders and switch keep only their own keys (`BeautifyPanel.vue`).
   if (e.target instanceof HTMLInputElement && e.target.type !== "range" && e.target.type !== "checkbox") return;
+  // A key that reached this page shows that it holds the keyboard.
+  keyHeld.value = true;
   if (mode.value === "scroll") return scrollKey(e);
+  if (rulerOn.value) return rulerKey(e);
   // F turns beautify on or off for this capture at any moment, during a drag too; ⇧F is free.
   if (e.key.toLowerCase() === "f" && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && beautifiable.value) {
     e.preventDefault();
@@ -1752,6 +1807,12 @@ function onKeyDown(e: KeyboardEvent): void {
       return;
     }
     return close();
+  }
+  // M before a selection measures the frozen screen instead.
+  if (e.key.toLowerCase() === "m" && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && mode.value === "idle" && heldElsewhere.value === null) {
+    e.preventDefault();
+    openRuler();
+    return;
   }
   if (e.key === " " && mode.value === "idle") {
     e.preventDefault();
@@ -1854,12 +1915,21 @@ function onKeyDown(e: KeyboardEvent): void {
 
 function onKeyUp(e: KeyboardEvent): void {
   flushMove();
+  if (rulerOn.value) return rulerEl.value?.keyUp(e);
   if (e.key === "Alt") {
     allTips.value = false;
     if (mode.value === "sel" && annotations.busy()) annotations.setFree(false);
     else if (mode.value === "sel" && pointer.value) aim(pointer.value, e.metaKey, false);
   }
   if (e.key === "Meta" && mode.value === "sel" && pointer.value && !annotations.busy()) aim(pointer.value, false, e.altKey);
+}
+
+function onFocus(): void {
+  keyHeld.value = true;
+}
+
+function onBlur(): void {
+  keyHeld.value = false;
 }
 
 function onResize(): void {
@@ -1880,6 +1950,8 @@ onMounted(async () => {
   window.addEventListener("keydown", onKeyDown);
   window.addEventListener("keyup", onKeyUp);
   window.addEventListener("resize", onResize);
+  window.addEventListener("focus", onFocus);
+  window.addEventListener("blur", onBlur);
   void annotations.init();
   stops.push(await onWindow<OverlayFrame>(CAPTURE_STARTED, (next) => void begin(next)));
   stops.push(await on<CaptureClosed>(CAPTURE_CLOSED, end));
@@ -1924,6 +1996,8 @@ onUnmounted(() => {
   window.removeEventListener("keydown", onKeyDown);
   window.removeEventListener("keyup", onKeyUp);
   window.removeEventListener("resize", onResize);
+  window.removeEventListener("focus", onFocus);
+  window.removeEventListener("blur", onBlur);
   cancelAnimationFrame(moveFrame);
   stops.forEach((stop) => stop());
 });
@@ -1937,7 +2011,7 @@ onUnmounted(() => {
     <template v-if="frame">
       <!-- The dim: bands top, bottom, left and right of the hole, then the corners of a rounded
            hole (`paintDim`). -->
-      <div ref="dimEl" class="o-dim" aria-hidden="true">
+      <div ref="dimEl" v-show="!rulerOn" class="o-dim" aria-hidden="true">
         <i data-band /><i data-band /><i data-band /><i data-band />
         <i data-corner="tl" /><i data-corner="tr" /><i data-corner="bl" /><i data-corner="br" />
       </div>
@@ -2083,6 +2157,18 @@ onUnmounted(() => {
         @settings="openAccessibility"
         @cover="coverScroll"
       />
+      <!-- The ruler over the frozen frame, new for each capture so no measure outlives one. -->
+      <Ruler
+        v-if="rulerOn"
+        :key="frame.captureId"
+        ref="rulerEl"
+        :frame="frame"
+        :view="view"
+        :scale="ratio"
+        :source="rulerSource"
+        :bar="keyHeld"
+        @close="close"
+      />
     </template>
 
     <div ref="loupeEl" v-show="frame && loupeShown" class="g-glass o-loupe o-moving" aria-hidden="true">
@@ -2098,7 +2184,7 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <div v-if="frame" class="g-hint o-float hint" :class="{ 'o-hint-fade': hintFaded }">
+    <div v-if="frame && !rulerOn" class="g-hint o-float hint" :class="{ 'o-hint-fade': hintFaded }">
       <span>{{ t("overlay.hintDrag") }}</span>
       <span class="g-divider" role="separator" />
       <kbd class="g-kbd">Space</kbd><span class="g-muted">{{ t("overlay.hintWindow") }}</span>

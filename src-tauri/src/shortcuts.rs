@@ -45,6 +45,7 @@ pub enum Action {
     MuteMicrophone,
     DiscardRecording,
     OpenHistory,
+    MeasureScreen,
     DrawOnScreen,
     Spotlight,
     /// Selects an area and goes straight into the scrolling capture (macOS).
@@ -73,6 +74,7 @@ impl Action {
             Action::CaptureAreaDelayed => CaptureMode::AreaDelayed,
             Action::RepeatLastArea => CaptureMode::RepeatLastArea,
             Action::CopyText => CaptureMode::CopyText,
+            Action::MeasureScreen => CaptureMode::Ruler,
             // The scrolling capture streams through ScreenCaptureKit and posts scroll events
             // through Core Graphics, which only the macOS build has.
             Action::ScrollCapture if cfg!(target_os = "macos") => CaptureMode::ScrollCapture,
@@ -189,6 +191,7 @@ pub fn apply(app: &AppHandle, shortcuts: &Shortcuts) -> Vec<ShortcutProblem> {
         (Action::MuteMicrophone, &shortcuts.mute_microphone),
         (Action::DiscardRecording, &shortcuts.discard_recording),
         (Action::OpenHistory, &shortcuts.open_history),
+        (Action::MeasureScreen, &shortcuts.measure_screen),
         (Action::DrawOnScreen, &shortcuts.draw_on_screen),
         (Action::Spotlight, &shortcuts.spotlight),
         (Action::ScrollCapture, &shortcuts.scroll_capture),

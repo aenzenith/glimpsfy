@@ -50,6 +50,9 @@ pub enum CaptureMode {
     AreaDelayed,
     /// Select an area in the overlay and copy the text in it (`ocr_copy_text`).
     CopyText,
+    /// Measure the frozen screen in the overlay (the ruler); it delivers nothing and records
+    /// nothing in the history.
+    Ruler,
     /// Select an area in the overlay and go straight into the scrolling capture (`scroll.rs`),
     /// as ⌘↓ does from the action bar. macOS only (`scroll_capture`).
     ScrollCapture,
@@ -64,6 +67,7 @@ impl CaptureMode {
                 | CaptureMode::Window
                 | CaptureMode::AreaDelayed
                 | CaptureMode::CopyText
+                | CaptureMode::Ruler
                 | CaptureMode::ScrollCapture
         )
     }
@@ -121,6 +125,9 @@ pub struct OverlayWindow {
     /// Display-local, logical; it may reach past the display's edges.
     pub rect: LogicalRect,
     pub corner_radius: Option<f64>,
+    /// The window keeps itself out of captures, so the frame shows what lies behind it; the
+    /// ruler hatches it and measures nothing there.
+    pub capture_blocked: bool,
 }
 
 /// Why a capture ended, with `capture://closed`.
