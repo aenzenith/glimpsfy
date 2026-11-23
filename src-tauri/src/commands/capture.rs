@@ -91,6 +91,9 @@ pub enum AfterSelection {
     Save,
     /// Hands the selection to `ocr_copy_text` (the copy-text mode).
     CopyText,
+    /// Hands the selection to `agents_take_selection`: an agent asked for an area the user
+    /// selects, and what lies in it goes to the agent.
+    Agent,
     /// Hands the selection to `capture_start_scroll` (the scrolling capture mode).
     Scroll,
 }
@@ -151,6 +154,8 @@ pub enum CloseReason {
     Recording,
     /// The selection was pinned (⌘P).
     Pinned,
+    /// The selection went to the agent that asked for it (`agents_take_selection`).
+    Agent,
 }
 
 #[derive(Clone, Debug, Serialize)]

@@ -76,6 +76,9 @@ fn save(app: &AppHandle, state: &AppState, settings: Settings) -> CommandResult<
     if saved.general.show_menu_bar_icon != previous.general.show_menu_bar_icon {
         crate::tray::set_visible(app, saved.general.show_menu_bar_icon);
     }
+    if saved.agents.enabled != previous.agents.enabled {
+        crate::agents::apply(app, saved.agents.enabled);
+    }
     let shortcut_problems = shortcuts::apply(app, &saved.shortcuts);
     let _ = app.emit(events::SETTINGS_CHANGED, saved.clone());
     if let Some(error) = login_error {

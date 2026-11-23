@@ -1,0 +1,26 @@
+[package]
+name = "glimpsfy-mcp"
+description = "The local MCP server of Glimpsfy: JSON-RPC over a per-user socket, the tools, the approval gate and the stdio bridge"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+# No MCP SDK: rmcp would bring tokio and its macros inside the security boundary, and the server
+# needs five JSON-RPC methods, which serde_json covers.
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+
+# The socket's peer checks (`getpeereid`, `LOCAL_PEERPID`, `proc_pidpath`) and the per-user
+# temporary folder (`confstr`).
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

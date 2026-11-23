@@ -42,6 +42,7 @@ pub struct Settings {
     pub recording: Recording,
     pub ocr: Ocr,
     pub upload: Upload,
+    pub agents: Agents,
     /// Fields a newer Glimpsfy wrote, kept as they are.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -58,6 +59,7 @@ impl Default for Settings {
             recording: Recording::default(),
             ocr: Ocr::default(),
             upload: Upload::default(),
+            agents: Agents::default(),
             extra: Map::new(),
         }
     }
@@ -802,6 +804,18 @@ impl Default for Upload {
             extra: Map::new(),
         }
     }
+}
+
+// -------------------------------------------------------------------------------------- agents
+
+/// Settings › Agents: the local MCP server (macOS only). It is off until the user turns it on.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Agents {
+    /// Agents may connect and send requests, each of which the user approves.
+    pub enabled: bool,
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
 }
 
 // ---------------------------------------------------------------------------- load and save

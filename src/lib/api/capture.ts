@@ -75,8 +75,10 @@ export type CaptureMode =
 
 /** What the overlay does when a selection is finished or a window clicked: stay for annotation,
  * copy and close, save and close, or copy the text in it (`ocr_copy_text`).
- * `scroll`: the selection becomes a scrolling capture (`capture_start_scroll`). */
-export type AfterSelection = "annotate" | "copy" | "save" | "copyText" | "scroll";
+ * `agent`: an agent asked for an area the user selects, and the selection goes to it
+ * (`agents_take_selection`). `scroll`: the selection becomes a scrolling capture
+ * (`capture_start_scroll`). */
+export type AfterSelection = "annotate" | "copy" | "save" | "copyText" | "agent" | "scroll";
 
 /** A window the overlay can snap to, display-local and logical. */
 export type OverlayWindow = {
@@ -121,7 +123,17 @@ export type DelayState = {
   mode: CaptureMode | null;
 };
 
-export type CloseReason = "cancelled" | "copied" | "saved" | "failed" | "uploaded" | "editor" | "recording" | "pinned";
+export type CloseReason =
+  | "cancelled"
+  | "copied"
+  | "saved"
+  | "failed"
+  | "uploaded"
+  | "editor"
+  | "recording"
+  | "pinned"
+  /** The selection went to the agent that asked for it (`agents_take_selection`). */
+  | "agent";
 
 /** The payload of `capture://closed`. */
 export type CaptureClosed = { captureId: CaptureId; reason: CloseReason };

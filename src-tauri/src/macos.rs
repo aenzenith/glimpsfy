@@ -1874,3 +1874,144 @@ pub mod recording {
         }
     }
 }
+
+// ------------------------------------------------------------------------ agents' approval card
+
+/// What the approval card trusts: which process made a click or a key press, whether the keyboard
+/// really holds a chord, and when the screen locks or the Mac sleeps (`agents`).
+///
+/// Another process of the same user can post clicks and keys into the session (`CGEventPost`,
+/// `osascript`). The window server stamps a posted event with its sender's pid, while an event
+/// from the hardware carries 0; and the HID system's key state holds only what a keyboard holds
+/// down. An agent therefore cannot answer its own request, whatever it posts.
+pub mod approval {
+    use std::cell::RefCell;
+    use std::ptr::NonNull;
+    use std::sync::Mutex;
+    use std::time::Instant;
+
+    use block2::RcBlock;
+    use objc2::rc::Retained;
+    use objc2::runtime::AnyObject;
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::{NSEvent, NSEventMask, NSWorkspace};
+    use objc2_core_graphics::{CGEvent, CGEventField, CGEventFlags, CGEventSource, CGEventSourceStateID};
+    use objc2_foundation::{NSDistributedNotificationCenter, NSNotification, NSOperationQueue, NSString};
+    use tauri::{AppHandle, WebviewWindow};
+
+    /// The last click or key press one of Glimpsfy's own windows received while the watch ran.
+    #[derive(Clone, Copy, Debug)]
+    pub struct Input {
+        pub at: Instant,
+        /// The event's source process was 0: the hardware made it.
+        pub hardware: bool,
+        /// The window server's number of the window it went to.
+        pub window: isize,
+    }
+
+    static LAST: Mutex<Option<Input>> = Mutex::new(None);
+
+    thread_local! {
+        static MONITOR: RefCell<Option<Retained<AnyObject>>> = const { RefCell::new(None) };
+    }
+
+    /// Watches the clicks and key presses Glimpsfy's own windows receive, while a request waits or
+    /// an agent's area is being selected. A local monitor sees only events AppKit hands this app,
+    /// so it costs nothing while the user works elsewhere.
+    pub fn watch_input(on: bool, _mtm: MainThreadMarker) {
+        MONITOR.with_borrow_mut(|monitor| {
+            if !on {
+                if let Some(old) = monitor.take() {
+                    // SAFETY: a monitor that `addLocalMonitorForEventsMatchingMask:` returned.
+                    unsafe { NSEvent::removeMonitor(&old) };
+                }
+                *LAST.lock().unwrap_or_else(|p| p.into_inner()) = None;
+                return;
+            }
+            if monitor.is_some() {
+                return;
+            }
+            let mask = NSEventMask::LeftMouseDown | NSEventMask::LeftMouseUp | NSEventMask::KeyDown;
+            let block = RcBlock::new(|event: NonNull<NSEvent>| -> *mut NSEvent {
+                // SAFETY: AppKit hands the monitor a valid event for the length of the call.
+                let ns_event = unsafe { event.as_ref() };
+                let pid = ns_event
+                    .CGEvent()
+                    .map(|cg| CGEvent::integer_value_field(Some(&cg), CGEventField::EventSourceUnixProcessID))
+                    .unwrap_or(-1);
+                let input = Input { at: Instant::now(), hardware: pid == 0, window: ns_event.windowNumber() };
+                *LAST.lock().unwrap_or_else(|p| p.into_inner()) = Some(input);
+                event.as_ptr()
+            });
+            // SAFETY: the block hands back the event it was given, a valid pointer.
+            *monitor = unsafe { NSEvent::addLocalMonitorForEventsMatchingMask_handler(mask, &block) };
+        });
+    }
+
+    pub fn last_input() -> Option<Input> {
+        *LAST.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// The window server's number of one of the app's windows.
+    pub fn window_number(window: &WebviewWindow, mtm: MainThreadMarker) -> Option<isize> {
+        super::ns_window(window, mtm).map(|w| w.windowNumber())
+    }
+
+    /// Virtual key codes of the chords that answer (`kVK_ANSI_Y`, `kVK_ANSI_N`, `kVK_ANSI_T`); the
+    /// arrows only move through the queue and need no proof.
+    pub const KEY_Y: u16 = 0x10;
+    pub const KEY_N: u16 = 0x2D;
+    pub const KEY_T: u16 = 0x11;
+
+    /// Whether the keyboard holds `key` down with ⌥⇧⌘ now, in the HID system's own state, which a
+    /// posted key press does not change. Callable from any thread.
+    pub fn chord_held(key: u16) -> bool {
+        let state = CGEventSourceStateID::HIDSystemState;
+        let chord = CGEventFlags::MaskCommand | CGEventFlags::MaskShift | CGEventFlags::MaskAlternate;
+        CGEventSource::flags_state(state).contains(chord) && CGEventSource::key_state(state, key)
+    }
+
+    /// Whether the login window covers the session now (the screen is locked).
+    pub fn screen_locked() -> bool {
+        let Some(session) = objc2_core_graphics::CGSessionCopyCurrentDictionary() else {
+            return false;
+        };
+        let key = objc2_core_foundation::CFString::from_static_str("CGSSessionScreenIsLocked");
+        // SAFETY: the key is a CFString and the dictionary holds CF objects.
+        let value = unsafe { session.value((&*key as *const objc2_core_foundation::CFString).cast()) };
+        !value.is_null()
+    }
+
+    /// A change of the session that ends what the card waits for.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum SessionChange {
+        Locked,
+        Unlocked,
+        /// The Mac goes to sleep, or another user's session comes forward.
+        Away,
+    }
+
+    /// Calls `on` on the main thread when the screen locks or unlocks, the Mac goes to sleep, or
+    /// another user's session takes the screen. Once, at start; the observers live as long as the
+    /// app.
+    pub fn watch_session(app: &AppHandle, on: fn(&AppHandle, SessionChange), _mtm: MainThreadMarker) {
+        let queue = NSOperationQueue::mainQueue();
+        let observe = |center: &objc2_foundation::NSNotificationCenter, name: &NSString, change: SessionChange| {
+            let app = app.clone();
+            let block = RcBlock::new(move |_: NonNull<NSNotification>| on(&app, change));
+            // SAFETY: the block lives as long as the observer, which is kept for good.
+            let token =
+                unsafe { center.addObserverForName_object_queue_usingBlock(Some(name), None, Some(&queue), &block) };
+            std::mem::forget(token);
+        };
+        let distributed = NSDistributedNotificationCenter::defaultCenter();
+        observe(&distributed, &NSString::from_str("com.apple.screenIsLocked"), SessionChange::Locked);
+        observe(&distributed, &NSString::from_str("com.apple.screenIsUnlocked"), SessionChange::Unlocked);
+        let workspace = NSWorkspace::sharedWorkspace().notificationCenter();
+        // SAFETY: the names are AppKit's own constants.
+        unsafe {
+            observe(&workspace, objc2_app_kit::NSWorkspaceWillSleepNotification, SessionChange::Away);
+            observe(&workspace, objc2_app_kit::NSWorkspaceSessionDidResignActiveNotification, SessionChange::Away);
+        }
+    }
+}

@@ -7,7 +7,9 @@
 // `upload://failed`; an export toast follows `record://export-progress` while the trim window
 // that started it is closed, since the window shows its own progress otherwise. A success leaves
 // on its own after a few seconds (the timers pause while the pointer rests on the stack), a
-// failure stays until it is dismissed, and every toast has a dismiss button.
+// failure stays until it is dismissed, and every toast has a dismiss button. The agents' approval
+// card follows `agents://queue-changed` and stays under every other toast while a request waits
+// (AgentCard.vue); the frame the page reports names the request once the card shows it whole.
 //
 // A toast rises from under its place and fades in, lifts and fades out when it leaves, and the
 // others glide into their new places. The page moves the toasts itself, frame by frame, and
@@ -17,7 +19,7 @@
 // and opacity, so the blur moves with it; the page draws only the tint, the edges and the
 // shadow. The panel never becomes key, so WebKit reports a click in it but no pointer move: the
 // page asks the core where the pointer is (`toast_pointer`).
-import { nextTick, onMounted, onUnmounted, reactive, ref, shallowRef } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, shallowRef } from "vue";
 
 import GIcon from "../components/GIcon.vue";
 import ProgressRing from "../components/ProgressRing.vue";
@@ -25,6 +27,7 @@ import SendList from "../components/SendList.vue";
 import TipWrap from "../components/TipWrap.vue";
 import { Window } from "@tauri-apps/api/window";
 
+import { agents_state, onAgentsQueueChanged, type AgentQueue } from "../lib/api/agents";
 import { onWindow, type ErrorCode } from "../lib/api/core";
 import { history_get, thumbUrl } from "../lib/api/history";
 import { output_reveal } from "../lib/api/output";
@@ -65,6 +68,9 @@ import { TOAST_SHOW } from "../lib/events";
 import { language, t } from "../lib/i18n";
 import { can } from "../lib/platform";
 import { doneText, failureText as uploadFailure } from "../upload/text";
+import { CARD_WIDTH } from "./agent";
+import AgentCard from "./AgentCard.vue";
+import AgentNote from "./AgentNote.vue";
 import { fixText, reasonText } from "./reason";
 
 /** How long a toast that reports success stays. */
@@ -138,6 +144,8 @@ type Item = {
   capture: Toast | null;
   upload: Upload | null;
   export?: Export | null;
+  /** The approval card of the agents' requests (`AgentCard.vue`), always the stack's last toast. */
+  card?: boolean;
 };
 
 /** macOS draws the blur under each toast natively; the page then drops its own backdrop filter. */
@@ -384,17 +392,19 @@ function glass(now: number): ToastGlass[] {
 /** The toast's width (`--toast-w`), read once. */
 let toastWidth = 0;
 
-/** The window: the toast's width with the shadow's room on both sides, reaching past the visible
- * area by what the shadow needs beyond the stack's gap. It keeps this size and stays on screen,
- * invisible and letting every click through while no toast is shown, so its page keeps drawing
- * at full speed and the first toast rises as smoothly as the others. */
-function windowFrame(shown: boolean): ToastFrame {
+/** The window: the width of the toast or of the agents' approval card, whichever is wider, with
+ * the shadow's room on both sides, reaching past the visible area by what the shadow needs beyond
+ * the stack's gap. It keeps this size and stays on screen, invisible and letting every click
+ * through while no toast is shown, so its page keeps drawing at full speed, the first toast rises
+ * as smoothly as the others, and the window never resizes under a moving toast when the card
+ * comes. */
+function windowFrame(shown: boolean, now: number): ToastFrame {
   toastWidth ||= parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--toast-w")) || 300;
-  let width = toastWidth + 2 * SHADOW_SIDE;
+  let width = Math.max(toastWidth, CARD_WIDTH) + 2 * SHADOW_SIDE;
   const open = sendFor.value;
   const list = sendBox.value?.firstElementChild as HTMLElement | null | undefined;
   if (shown && open && list) width = Math.max(width, open.right + list.offsetWidth + SHADOW_SIDE);
-  return { width, pastRight: SHADOW_SIDE - GAP_RIGHT, pastBelow: SHADOW_BELOW - GAP_BELOW, shown };
+  return { width, pastRight: SHADOW_SIDE - GAP_RIGHT, pastBelow: SHADOW_BELOW - GAP_BELOW, shown, agent: shown ? cardAtRest(now) : null };
 }
 
 let lastSent = "";
@@ -405,7 +415,7 @@ let sending = false;
  * at a time; the frames that pass meanwhile leave only the newest waiting. */
 function report(now: number): void {
   const shown = items.value.length > 0;
-  const frame = windowFrame(shown);
+  const frame = windowFrame(shown, now);
   const rects = shown ? glass(now) : [];
   const sent = JSON.stringify([frame, rects]);
   if (sent === lastSent) return;
@@ -610,7 +620,7 @@ function add(item: Item): void {
 }
 
 /** Toasts that stay until they are dismissed, because they ask for the user's attention. */
-const STAYS: ReadonlySet<Toast["kind"]> = new Set(["failed", "diskFull"]);
+const STAYS: ReadonlySet<Toast["kind"]> = new Set(["failed", "diskFull", "agentLocked"]);
 
 function showCapture(toast: Toast): void {
   // An export's result (its saved file, or why it failed) takes the place of its progress.
@@ -623,6 +633,61 @@ function showCapture(toast: Toast): void {
     armSent(key);
     void sentThumb(key);
   } else if (!STAYS.has(toast.kind)) arm(key, toast.fallbackFrom ? STAY_WARN_MS : STAY_MS);
+}
+
+// ------------------------------------------------------------------------------------ agents
+
+/** The approval card's key: one card shows whichever request waits. */
+const CARD = "agent";
+/** The queue the card shows. It stays while the card leaves after the queue emptied, so the card
+ * keeps its content on the way out. */
+const cardQueue = shallowRef<AgentQueue | null>(null);
+/** When `cardQueue` arrived, so the card counts down between the core's reports. */
+const cardAt = ref(0);
+/** Queue events heard, so the state read on mount cannot overwrite a newer event. */
+let queueEvents = 0;
+
+/** The stack in drawing order: the toasts as they came, and the card under them all, so new toasts
+ * pile up above a waiting request. */
+const stacked = computed(() => [...items.value.filter((item) => !item.card), ...items.value.filter((item) => item.card)]);
+
+const AGENT_TOASTS: ReadonlySet<Toast["kind"]> = new Set(["agentSent", "agentTimedOut", "agentLocked"]);
+const isAgentToast = (item: Item) => !!item.capture && AGENT_TOASTS.has(item.capture.kind);
+
+/** The waiting requests changed: the card comes with the first one, shows the one the core picked,
+ * and leaves with the stack's motion once none waits. */
+function onQueue(queue: AgentQueue): void {
+  const waiting = queue.shown !== null && queue.requests.some((request) => request.id === queue.shown);
+  if (waiting) {
+    cardQueue.value = queue;
+    cardAt.value = performance.now();
+    if (!find(CARD)) add({ key: CARD, leaving: false, capture: null, upload: null, card: true });
+  } else {
+    dismiss(CARD);
+  }
+  // Another request shown in the same place changes no size, and the next frame must name it.
+  void fit();
+}
+
+/** The request the card shows whole at `now`: the card in its place, opaque and at rest. The core
+ * counts the card's answers 0.6 s after the first frame that names a request, so a card that still
+ * rises, fades, waits for its picture or leaves names none. */
+function cardAtRest(now: number): number | null {
+  const shown = cardQueue.value?.shown ?? null;
+  const motion = motions.get(CARD);
+  if (shown === null || !find(CARD) || !motion || motion.leaving || moving(motion, now)) return null;
+  return valueAt(motion.alpha, now) >= 1 && valueAt(motion.y, now) === 0 ? shown : null;
+}
+
+/** A queue that already waits when the page loads. */
+async function loadAgents(): Promise<void> {
+  const seen = queueEvents;
+  try {
+    const state = await agents_state();
+    if (queueEvents === seen) onQueue(state.queue);
+  } catch (error) {
+    console.warn("agents_state", error);
+  }
 }
 
 // ------------------------------------------------------------------------------- send to app
@@ -1225,7 +1290,12 @@ onMounted(async () => {
     await onUploadFailed(onFailed),
     await onRecordExportProgress((p) => void onExportProgress(p)),
     await onSendState(onSent),
+    await onAgentsQueueChanged((queue) => {
+      queueEvents += 1;
+      onQueue(queue);
+    }),
   );
+  if (can("agents")) void loadAgents();
   // Puts the empty window on screen, invisible, so the first toast finds its page awake.
   report(performance.now());
 });
@@ -1255,9 +1325,12 @@ onUnmounted(() => {
     />
   </div>
   <div ref="stack" class="g-toasts stack" :style="{ right: `${SHADOW_SIDE}px`, bottom: `${SHADOW_BELOW}px` }">
+    <!-- The agents' card and toasts draw themselves; every other toast is the row below. -->
+    <template v-for="item in stacked" :key="item.key">
+    <AgentCard v-if="item.card && cardQueue" :data-key="item.key" :queue="cardQueue" :at="cardAt" />
+    <AgentNote v-else-if="isAgentToast(item)" :data-key="item.key" :toast="item.capture!" @dismiss="dismiss(item.key)" />
     <div
-      v-for="item in items"
-      :key="item.key"
+      v-else
       class="g-toast"
       :data-key="item.key"
       :role="status(item) === 'warn' ? 'alert' : 'status'"
@@ -1356,16 +1429,19 @@ onUnmounted(() => {
         </button>
       </div>
     </div>
+    </template>
   </div>
 </template>
 
 <style scoped>
 /* The stack keeps the toast's width even with no toast in its flow: a leaving toast is taken out
    of the flow, and when it was the last one a shrink-to-fit stack fell to 0 px wide, and the
-   toast's max-width: 100% squeezed it from 300 px to its padding as it faded out. */
+   toast's max-width: 100% squeezed it from 300 px to its padding as it faded out. It is as wide
+   as the agents' approval card (CARD_WIDTH in agent.ts), and the narrower toasts keep to its
+   right edge. */
 .stack {
   position: absolute;
-  width: var(--toast-w);
+  width: max(var(--toast-w), 340px);
 }
 /* A lifted subject has no background, so its thumbnail sits on the checkerboard that stands for
    transparency, whole rather than cropped to the frame. */

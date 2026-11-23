@@ -1636,6 +1636,7 @@ dependencies = [
  "glimpsfy-annotate",
  "glimpsfy-capture",
  "glimpsfy-history",
+ "glimpsfy-mcp",
  "glimpsfy-models",
  "glimpsfy-ocr",
  "glimpsfy-record",
@@ -1711,6 +1712,16 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "unicode-normalization",
+]
+
+[[package]]
+name = "glimpsfy-mcp"
+version = "0.3.1"
+dependencies = [
+ "libc",
+ "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]

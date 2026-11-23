@@ -7,6 +7,7 @@ members = [
     "crates/upload",
     "crates/history",
     "crates/annotate",
+    "crates/mcp",
     "crates/models",
     "crates/speech",
     "src-tauri",
@@ -27,6 +28,7 @@ glimpsfy-ocr = { path = "crates/ocr" }
 glimpsfy-upload = { path = "crates/upload" }
 glimpsfy-history = { path = "crates/history" }
 glimpsfy-annotate = { path = "crates/annotate" }
+glimpsfy-mcp = { path = "crates/mcp" }
 glimpsfy-models = { path = "crates/models" }
 glimpsfy-speech = { path = "crates/speech" }
 

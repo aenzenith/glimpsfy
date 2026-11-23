@@ -8,6 +8,7 @@
 //! Adding a command: write it in its area's file, add it to the list below, add its wrapper to
 //! the area's `.ts` file, and add a row to the command table in `docs/ARCHITECTURE.md`.
 
+pub mod agents;
 pub mod capture;
 pub mod color;
 pub mod error;
@@ -165,6 +166,16 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Syn
         transcript::transcript_start,
         transcript::transcript_cancel,
         transcript::transcript_save_cuts,
+        // agents (the local MCP server)
+        agents::agents_state,
+        agents::agents_answer,
+        agents::agents_show,
+        agents::agents_take_selection,
+        agents::agents_revoke,
+        agents::agents_disconnect,
+        agents::agents_log,
+        agents::agents_clear_log,
+        agents::agents_command,
         // settings
         settings::settings_get,
         settings::settings_set,

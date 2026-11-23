@@ -72,10 +72,40 @@ pub fn refresh(app: &AppHandle) {
     }
 }
 
+/// What the text beside the icon says: a countdown's seconds or the minutes of an agent's timed
+/// permission (`agents`). Each owner sets its own part, so one never wipes out another's.
+static COUNTDOWN: std::sync::Mutex<Option<u32>> = std::sync::Mutex::new(None);
+static GRANT_MINUTES: std::sync::Mutex<Option<u32>> = std::sync::Mutex::new(None);
+
 /// Shows the seconds left of a countdown beside the icon, or nothing.
 pub fn show_countdown(app: &AppHandle, remaining: Option<u32>) {
+    *COUNTDOWN.lock().unwrap_or_else(|p| p.into_inner()) = remaining;
+    show_title(app);
+}
+
+/// Shows the minutes an agent's timed permission has left beside the icon, or nothing.
+pub fn show_grant(app: &AppHandle, minutes: Option<u32>) {
+    let mut held = GRANT_MINUTES.lock().unwrap_or_else(|p| p.into_inner());
+    if *held == minutes {
+        return;
+    }
+    *held = minutes;
+    drop(held);
+    show_title(app);
+}
+
+/// The text beside the icon. A countdown comes first: it ends within seconds and is what the user
+/// is waiting for; a timed permission, which goes on for minutes and also shows in Settings, comes
+/// after it.
+fn show_title(app: &AppHandle) {
+    let countdown = *COUNTDOWN.lock().unwrap_or_else(|p| p.into_inner());
+    let grant = *GRANT_MINUTES.lock().unwrap_or_else(|p| p.into_inner());
+    let title = countdown.map(|s| format!("{s}")).or_else(|| {
+        let language = app.state::<AppState>().settings.get().general.language;
+        grant.map(|m| i18n::text(language, "tray.grantMinutes", &[("n", &m.to_string())]))
+    });
     if let Some(tray) = app.tray_by_id(TRAY_ID) {
-        let _ = tray.set_title(remaining.map(|s| format!("{s}")));
+        let _ = tray.set_title(title);
     }
 }
 

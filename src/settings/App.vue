@@ -1,14 +1,16 @@
 <script setup lang="ts">
-// The settings window: a sidebar of seven sections beside grouped rows, in an ordinary titled
-// window (the system draws the title bar). Every control saves at once (store.ts). A host of
-// Upload opens its own page with a back button in the toolbar.
+// The settings window: a sidebar of sections (Agents on macOS alone) beside grouped rows, in an
+// ordinary titled window (the system draws the title bar). Every control saves at once
+// (store.ts). A host of Upload opens its own page with a back button in the toolbar.
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 
 import GIcon from "../components/GIcon.vue";
 import { on } from "../lib/api/core";
 import { SETTINGS_SECTION, window_take_settings_section, type SettingsSection } from "../lib/api/windows";
 import { t, type Key } from "../lib/i18n";
+import { can } from "../lib/platform";
 import AboutSection from "./sections/AboutSection.vue";
+import AgentsSection from "./sections/AgentsSection.vue";
 import BeautifySection from "./sections/BeautifySection.vue";
 import GeneralSection from "./sections/GeneralSection.vue";
 import OcrSection from "./sections/OcrSection.vue";
@@ -30,6 +32,8 @@ const SECTIONS: { id: SectionId; icon: string; title: Key }[] = [
   { id: "recording", icon: "record", title: "settings.nav.recording" },
   { id: "ocr", icon: "ocr", title: "settings.nav.ocr" },
   { id: "upload", icon: "upload", title: "settings.nav.upload" },
+  // The local MCP server exists on macOS alone.
+  ...(can("agents") ? [{ id: "agents" as const, icon: "shield", title: "settings.nav.agents" as const }] : []),
   { id: "about", icon: "info", title: "settings.nav.about" },
 ];
 
@@ -161,6 +165,7 @@ onBeforeUnmount(() => {
             <ProviderPage v-if="provider" :key="provider.id" :settings="settings" :provider="provider" />
             <UploadSection v-else :settings="settings" @open="openProvider" />
           </template>
+          <AgentsSection v-else-if="section === 'agents'" :settings="settings" />
           <AboutSection v-else-if="section === 'about'" />
         </template>
       </main>

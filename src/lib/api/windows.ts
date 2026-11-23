@@ -3,6 +3,7 @@
 // src-tauri/src/windows.rs and the pin types of src-tauri/src/pins.rs.
 
 import type { CaptureId, LogicalPoint, LogicalRect, Selection } from "./capture";
+import type { AgentToast } from "./agents";
 import type { ErrorCode } from "./core";
 import { call } from "./core";
 import type { EntryId } from "./history";
@@ -12,7 +13,10 @@ export type WindowKind = "editor" | "recorder" | "popover" | "history" | "settin
 
 /** `diskFull`: a recording stopped because the disk was almost full, and it is saved at `path`.
  * `subjectCopied`: the subjects of a selection reached the clipboard as a transparent PNG; `subjects` says how many.
- * `colorCopied`: the colour picker copied `text`, a colour in `format` or a contrast line, and `swatch` is the colour. */
+ * `colorCopied`: the colour picker copied `text`, a colour in `format` or a contrast line, and `swatch` is the colour.
+ * `agentSent`: a timed permission sent a capture to an agent; `agent` names it and the minutes left.
+ * `agentTimedOut`: nobody answered an agent's request within 60 seconds, so it was denied.
+ * `agentLocked`: requests that came while the screen was locked were refused; told once after the unlock. */
 export type ToastKind =
   | "copied"
   | "saved"
@@ -22,7 +26,10 @@ export type ToastKind =
   | "pathCopied"
   | "sent"
   | "subjectCopied"
-  | "colorCopied";
+  | "colorCopied"
+  | "agentSent"
+  | "agentTimedOut"
+  | "agentLocked";
 
 /** The payload of `toast://show`. The toast page words it in the user's language. */
 export type Toast = {
@@ -57,11 +64,13 @@ export type Toast = {
   subjects?: number | null;
   /** The CSS colour a `colorCopied` toast shows in place of a thumbnail. */
   swatch?: string | null;
+  /** What an agent's toast (`agentSent`, `agentTimedOut`, `agentLocked`) tells. */
+  agent?: AgentToast | null;
 };
 
 export const window_open = (kind: WindowKind) => call<void>("window_open", { kind });
 
-export type SettingsSection = "general" | "shortcuts" | "output" | "beautify" | "recording" | "ocr" | "upload" | "about";
+export type SettingsSection = "general" | "shortcuts" | "output" | "beautify" | "recording" | "ocr" | "upload" | "agents" | "about";
 /** Opens Settings at `section` (Upload, when no upload host is chosen yet) instead of the section
  * shown last. */
 export const window_open_settings = (section: SettingsSection) => call<void>("window_open_settings", { section });
@@ -75,8 +84,10 @@ export type ToastGlass = { key: string; right: number; bottom: number; width: nu
 /** The toast window: `width` points wide, its bottom-right corner `pastRight` points right of and
  * `pastBelow` points under the visible area's bottom-right corner, so the toasts' shadows have
  * room past it; it is as tall as the visible area, and clicks go through it but on a toast. It
- * stays on screen, invisible while `shown` is false, so its page keeps drawing at full speed. */
-export type ToastFrame = { width: number; pastRight: number; pastBelow: number; shown: boolean };
+ * stays on screen, invisible while `shown` is false, so its page keeps drawing at full speed.
+ * `agent` is the request the approval card shows whole at this frame (opaque and at rest), or
+ * `null`; the core counts the card's 0.6 s before its answers from the first frame that names it. */
+export type ToastFrame = { width: number; pastRight: number; pastBelow: number; shown: boolean; agent: number | null };
 /** Puts the toast window at `frame` with a native blur under each toast in `glass`. */
 export const toast_fit = (frame: ToastFrame, glass: ToastGlass[]) => call<void>("toast_fit", { frame, glass });
 /** The pointer in the toast window (points from its top-left corner), or `null` while the window

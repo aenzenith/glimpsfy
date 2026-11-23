@@ -84,6 +84,7 @@ pub enum SettingsSection {
     Recording,
     Ocr,
     Upload,
+    Agents,
     About,
 }
 

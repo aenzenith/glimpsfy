@@ -168,6 +168,12 @@ export type Upload = Extra & {
   providers: Record<string, unknown>;
 };
 
+/** Settings › Agents: the local MCP server (macOS only), off until the user turns it on. */
+export type Agents = Extra & {
+  /** Agents may connect and send requests, each of which the user approves. */
+  enabled: boolean;
+};
+
 export type Settings = Extra & {
   version: number;
   general: General;
@@ -177,4 +183,5 @@ export type Settings = Extra & {
   recording: Recording;
   ocr: Ocr;
   upload: Upload;
+  agents: Agents;
 };

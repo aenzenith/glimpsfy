@@ -423,7 +423,7 @@ fn read_pixels(request: &Request<'_>) -> CommandResult<(PixelsHeader, Frame)> {
     Ok((header, frame))
 }
 
-fn recognize(
+pub(crate) fn recognize(
     app: &AppHandle,
     frame: Arc<Frame>,
     job: Option<String>,

@@ -13,7 +13,10 @@
 //! - `settings`, `shortcuts`, `tray`, `permissions`: what their names say.
 //! - `macos`: AppKit glue (panels, levels, pasteboard, display changes).
 //! - `trace`, `dev`: latency marks and the dev-only measurement switches.
+//! - `agents/`: the local MCP server's listener, the approval card's answers and the log; the
+//!   protocol and the gate are `crates/mcp`.
 
+mod agents;
 mod calendar;
 mod capture_log;
 mod colors;
@@ -56,6 +59,12 @@ pub struct AppState {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // `glimpsfy mcp` is an agent's stdio server: it joins the agent to the running app's socket and
+    // never starts Tauri. It must branch off before the single-instance plugin, which would hand
+    // the argument to the running app and exit.
+    if std::env::args().nth(1).as_deref() == Some("mcp") {
+        std::process::exit(glimpsfy_mcp::bridge::run(cfg!(debug_assertions)));
+    }
     // The screen recording probe (`permissions::probe`) answers and exits before anything starts.
     if let Some(code) = permissions::probe() {
         std::process::exit(code);
@@ -89,6 +98,8 @@ pub fn run() {
             shortcuts::apply(&handle, &app.state::<AppState>().settings.get().shortcuts);
             tray::create(&handle)?;
             windows::setup(&handle);
+            // Agents: the local MCP server, when Settings › Agents lets agents in.
+            agents::setup(&handle);
             // The history opens its database on its own thread.
             commands::history::setup(&handle);
             send::setup(&handle);

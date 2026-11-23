@@ -5,7 +5,7 @@
 //! window's label (`overlay-<display id>`, `toast`, `settings`…). Windows are made in code, never
 //! in `tauri.conf.json`, because the overlays depend on the displays connected at run time.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -248,6 +248,13 @@ pub enum ToastKind {
     /// The subjects of a selection reached the clipboard as a transparent PNG (Copy subject);
     /// `subjects` says how many.
     SubjectCopied,
+    /// A timed permission sent a capture to an agent; `agent` names it and the minutes left.
+    AgentSent,
+    /// An agent's request was not answered within 60 seconds and was denied; a quiet card that
+    /// leaves after 4 seconds.
+    AgentTimedOut,
+    /// Requests that came while the screen was locked were refused; told once, after the unlock.
+    AgentLocked,
 }
 
 /// One toast; the toast page words it in the user's language from `kind` and the details.
@@ -287,6 +294,8 @@ pub struct Toast {
     pub swatch: Option<String>,
     /// How many subjects a `SubjectCopied` toast's image holds.
     pub subjects: Option<u32>,
+    /// What an agent's toast tells.
+    pub agent: Option<crate::commands::agents::AgentToast>,
 }
 
 impl Toast {
@@ -311,6 +320,7 @@ impl Toast {
             temporary: false,
             swatch: None,
             subjects: None,
+            agent: None,
         }
     }
 }
@@ -330,6 +340,10 @@ pub struct ToastFrame {
     pub past_right: f64,
     pub past_below: f64,
     pub shown: bool,
+    /// The agent request the approval card shows fully at this frame (at rest, opaque), whose
+    /// answers count 0.6 s after it first comes (`agents::card_visible`); `None` otherwise.
+    #[serde(default)]
+    pub agent: Option<u64>,
 }
 
 /// Where one toast is drawn in the toast window at this frame, measured by the page from the
@@ -354,6 +368,17 @@ pub struct ToastGlass {
 /// The display the toasts stack on: the one the last capture was taken on.
 static TOAST_DISPLAY: Mutex<Option<DisplayId>> = Mutex::new(None);
 
+/// Whether a toast shows at the last frame the page drew (`ToastFrame::shown`).
+static TOAST_SHOWN: AtomicBool = AtomicBool::new(false);
+
+/// Moves the toasts to `display` for the next toast, unless one shows: a stack never jumps to
+/// another display under the user's eyes.
+pub fn toast_follow(display: DisplayId) {
+    if !TOAST_SHOWN.load(Ordering::SeqCst) {
+        *TOAST_DISPLAY.lock().unwrap_or_else(|p| p.into_inner()) = Some(display);
+    }
+}
+
 pub fn toast(app: &AppHandle, display: Option<DisplayId>, toast: Toast) {
     if display.is_some() {
         *TOAST_DISPLAY.lock().unwrap_or_else(|p| p.into_inner()) = display;
@@ -372,6 +397,8 @@ pub fn toast_failure(app: &AppHandle, display: Option<DisplayId>, error: &Comman
 /// capture's display, where the stack grows upward from above the Dock, and each toast in
 /// `glass` gets its native blur.
 pub fn toast_fit(app: &AppHandle, frame: ToastFrame, glass: Vec<ToastGlass>) {
+    crate::agents::card_visible(app, frame.agent);
+    TOAST_SHOWN.store(frame.shown, Ordering::SeqCst);
     let Some(window) = app.get_webview_window(TOAST) else {
         return;
     };

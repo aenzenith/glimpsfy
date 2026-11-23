@@ -183,6 +183,9 @@ pub struct CaptureSession {
     holder: Mutex<Option<DisplayId>>,
     /// Closed by the measurement loop once painted (`GLIMPSFY_AUTOCAPTURE`).
     pub auto: bool,
+    /// The agent request whose area this capture lets the user select (`agents_take_selection`);
+    /// closing it any other way denies the request.
+    pub agent: Option<u64>,
 }
 
 pub struct SessionDisplay {
@@ -535,6 +538,7 @@ fn capture_frozen(
     let pointer = pointer();
     let pointer_display = displays.iter().find(|d| d.frame.contains(pointer)).map(|d| d.id);
     let front = front_window(&all_windows);
+    let agent = if mode == CaptureMode::Area { crate::agents::take_pick() } else { None };
 
     let entries = frames
         .into_iter()
@@ -571,12 +575,16 @@ fn capture_frozen(
         front,
         taken_at,
         opened: Instant::now(),
-        after: after_for(mode, settings.general.after_selection),
+        after: match agent {
+            Some(_) => AfterSelection::Agent,
+            None => after_for(mode, settings.general.after_selection),
+        },
         all_windows,
         picked: Mutex::new(None),
-        beautify: Mutex::new(automatic_beautify(mode, &settings)),
+        beautify: Mutex::new(if agent.is_some() { None } else { automatic_beautify(mode, &settings) }),
         holder: Mutex::new(None),
         auto,
+        agent,
     })
 }
 
@@ -1085,6 +1093,9 @@ pub fn displays_changed(app: &AppHandle) {
 pub fn close(app: &AppHandle, id: CaptureId, reason: CloseReason) -> Option<Arc<CaptureSession>> {
     let state = app.state::<AppState>();
     let session = state.sessions.take(id)?;
+    if let Some(request) = session.agent.filter(|_| reason != CloseReason::Agent) {
+        crate::agents::selection_cancelled(app, request);
+    }
     // A scrolling capture of this one stops with it, its result unused.
     crate::scroll::closed(app, id);
     windows::hide_overlays(app);
