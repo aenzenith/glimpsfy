@@ -385,17 +385,21 @@ fn window_list(app: &AppHandle) -> Value {
         .webview_windows()
         .into_iter()
         .map(|(label, window)| {
-            let mut item = json!({
+            let item = json!({
                 "label": label,
                 "visible": window.is_visible().unwrap_or(false),
                 "focused": window.is_focused().unwrap_or(false),
             });
             #[cfg(target_os = "macos")]
-            if let Some(mtm) = objc2::MainThreadMarker::new() {
-                if let Some(facts) = crate::macos::window_facts(&window, mtm) {
-                    item["ns"] = facts;
+            let item = {
+                let mut item = item;
+                if let Some(mtm) = objc2::MainThreadMarker::new() {
+                    if let Some(facts) = crate::macos::window_facts(&window, mtm) {
+                        item["ns"] = facts;
+                    }
                 }
-            }
+                item
+            };
             item
         })
         .collect();

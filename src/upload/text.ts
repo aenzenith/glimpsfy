@@ -3,7 +3,7 @@
 // toast or the history. Every figure comes from `describe()` and `ConsentInfo`, which carry what
 // docs/PROVIDERS.md recorded; a host that states nothing gets a sentence that says so.
 
-import { language, t, type Key } from "../lib/i18n";
+import { language, t, tp, type Key } from "../lib/i18n";
 import type {
   ConsentInfo,
   FieldOption,
@@ -16,9 +16,10 @@ import type {
   UploadFailed,
 } from "../lib/api/upload";
 
-/** A key of upload.json that arrived as a string from the core. */
+/** A key of upload.json that arrived as a string from the core, in this platform's words where
+ * the sentence names the keychain. */
 export function tk(key: string, params: Record<string, string | number> = {}): string {
-  return t(key as Key, params);
+  return tp(key as Key, params);
 }
 
 /** An option's label: translated, or the text itself for a literal one (POST). */

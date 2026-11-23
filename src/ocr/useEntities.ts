@@ -13,6 +13,7 @@ import type { Bounds, Entity, OcrResult } from "../lib/api/ocr";
 import { ocr_detect_entities } from "../lib/api/ocr";
 import { app_add_to_calendar, app_can_open_url, app_open_url } from "../lib/api/windows";
 import { language, t } from "../lib/i18n";
+import { commandHeld } from "../lib/keys";
 import type { MenuRow } from "./EntityMenu.vue";
 import { ACTION_KINDS, actionOf, dateTitle, eventOf } from "./entities";
 import type { Rect } from "./text";
@@ -256,7 +257,7 @@ export function useEntities(o: Options) {
       active.value = active.value === "main" || mainOff ? "copy" : "main";
       return true;
     }
-    if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "c") {
+    if (commandHeld(e) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "c") {
       void run("copy");
       return true;
     }

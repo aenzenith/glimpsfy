@@ -21,7 +21,7 @@ import KeyCaps from "../components/KeyCaps.vue";
 import ProgressRing from "../components/ProgressRing.vue";
 import TipWrap from "../components/TipWrap.vue";
 import Menu, { type MenuItem } from "../history/Menu.vue";
-import { mediaPath } from "../history/model";
+import { copyable, mediaPath } from "../history/model";
 import { sendMenuItems } from "../history/send";
 import {
   CAPTURE_COUNTDOWN,
@@ -92,9 +92,9 @@ import {
   type WindowKind,
 } from "../lib/api/windows";
 import { PERMISSIONS_CHANGED, SETTINGS_CHANGED } from "../lib/events";
-import { language, t, type Key } from "../lib/i18n";
-import { capsOf, capsText, type ShortcutAction } from "../lib/keys";
-import { can } from "../lib/platform";
+import { language, t, tp, type Key } from "../lib/i18n";
+import { capsOf, capsText, chord, type ShortcutAction } from "../lib/keys";
+import { can, isMac } from "../lib/platform";
 import type { IntervalPlan, Settings, Shortcuts } from "../lib/settings";
 import { useUpdate } from "../lib/update";
 import { codeOf, reasonText } from "../toast/reason";
@@ -108,16 +108,19 @@ const RECENT = 5;
 /** How far the pointer moves with the button held before a thumbnail is dragged out as a file. */
 const DRAG_SLOP = 4;
 
-/** A capture mode, or `record`, which opens the recording's setup; `sep` draws a line before it. */
+/** A capture mode, or `record`, which opens the recording's setup; `sep` draws a line before it.
+ * Capture window is left out where a single window cannot be captured (`windowCapture`). */
 type Row = { mode: CaptureMode | "record"; icon: string; label: Key; shortcut: ShortcutAction; sep?: true };
-const ROWS: Row[] = [
-  { mode: "area", icon: "area", label: "popover.capture.area", shortcut: "captureArea" },
-  { mode: "window", icon: "window", label: "popover.capture.window", shortcut: "captureWindow" },
-  { mode: "display", icon: "display", label: "popover.capture.display", shortcut: "captureDisplay" },
-  { mode: "repeatLastArea", icon: "repeat", label: "popover.capture.repeat", shortcut: "repeatLastArea" },
-  { mode: "copyText", icon: "ocr", label: "popover.capture.copyText", shortcut: "copyText", sep: true },
-  { mode: "record", icon: "record", label: "popover.capture.record", shortcut: "recordScreen" },
-];
+const ROWS: Row[] = (
+  [
+    { mode: "area", icon: "area", label: "popover.capture.area", shortcut: "captureArea" },
+    { mode: "window", icon: "window", label: "popover.capture.window", shortcut: "captureWindow" },
+    { mode: "display", icon: "display", label: "popover.capture.display", shortcut: "captureDisplay" },
+    { mode: "repeatLastArea", icon: "repeat", label: "popover.capture.repeat", shortcut: "repeatLastArea" },
+    { mode: "copyText", icon: "ocr", label: "popover.capture.copyText", shortcut: "copyText", sep: true },
+    { mode: "record", icon: "record", label: "popover.capture.record", shortcut: "recordScreen" },
+  ] satisfies Row[]
+).filter((row) => row.mode !== "window" || can("windowCapture"));
 
 const DELAYS = [0, 3, 5, 10] as const;
 
@@ -156,7 +159,10 @@ const uploads = reactive(new Map<EntryId, Uploading>());
 const providerNames = reactive(new Map<string, string>());
 
 const restartNeeded = computed(() => permissions.value?.restartNeeded === true);
+/** Only where the user grants screen capture can it be missing: a Wayland desktop asks by itself
+ * at each capture, and Windows and X11 ask nothing. */
 const blocked = computed(() => {
+  if (!can("screenRecordingPermission")) return false;
   const state = permissions.value?.screenRecording;
   return state !== undefined && state !== "granted" && state !== "notRequired";
 });
@@ -555,7 +561,7 @@ const ACT: Record<ActId, Omit<Act, "id">> = {
 
 /** The actions that work for this entry now; a control that could not work is left out. */
 function actionsFor(entry: Entry): Act[] {
-  const ids: ActId[] = ["copy"];
+  const ids: ActId[] = copyable(entry) ? ["copy"] : [];
   // Send holds Copy path in its menu; where there is no Send (Windows, Linux), Copy path stands
   // on its own. A text copy has no file, and its text goes to an app with Send only.
   if (can("sendToApp")) ids.push("send");
@@ -788,7 +794,7 @@ function thumbDown(event: PointerEvent, entry: Entry, index: number): void {
 }
 
 function thumbMove(event: PointerEvent): void {
-  if (!press || press.dragged) return;
+  if (!press || press.dragged || !can("dragOut")) return;
   if (!(event.buttons & 1)) {
     press = null;
     return;
@@ -851,7 +857,7 @@ function restartForUpdate(): void {
 }
 
 function openReleases(): void {
-  void app_open_url(RELEASES_URL).catch((error) => (notice.value = { tone: "warn", text: reasonText(codeOf(error)) }));
+  void app_open_url(updateView.value?.releaseUrl ?? RELEASES_URL).catch((error) => (notice.value = { tone: "warn", text: reasonText(codeOf(error)) }));
 }
 
 // ---------------------------------------------------------------------- permission and footer
@@ -900,7 +906,8 @@ function onDelayMenuKey(event: KeyboardEvent): boolean {
 function onKey(event: KeyboardEvent): void {
   const active = document.activeElement as HTMLElement | null;
   const onThumb = !!active?.closest(".s-thumb");
-  const mod = event.metaKey || event.ctrlKey;
+  // ⌘ on macOS, where ⌃ has always worked too; Ctrl elsewhere, where the Windows key is the system's.
+  const mod = isMac() ? event.metaKey || event.ctrlKey : event.ctrlKey;
 
   if (delayOpen.value && onDelayMenuKey(event)) return;
 
@@ -1259,7 +1266,7 @@ const emptyParts = computed(() => {
             :data-kind="selected.kind"
             role="img"
             :aria-label="`${title(selected)}, ${sub(selected)}`"
-            :title="t('popover.hint')"
+            :title="can('dragOut') ? t('popover.hint') : undefined"
             @pointerdown="thumbDown($event, selected, sel)"
             @dblclick="open(selected)"
           >
@@ -1299,7 +1306,7 @@ const emptyParts = computed(() => {
                 :aria-selected="i === sel"
                 :tabindex="i === sel ? 0 : -1"
                 :aria-label="`${title(entry)}, ${sub(entry)}`"
-                :title="t('popover.hint')"
+                :title="can('dragOut') ? t('popover.hint') : undefined"
                 :data-badge="uploads.has(entry.id) || entry.hosted ? '' : undefined"
                 @pointerdown="thumbDown($event, entry, i)"
                 @focus="select(i)"
@@ -1327,7 +1334,7 @@ const emptyParts = computed(() => {
               <span class="s-info-sub" :data-kind="selected.hosted && !uploads.has(selected.id) ? 'link' : undefined">{{ sub(selected) }}</span>
             </div>
             <div class="s-acts" role="toolbar" :aria-label="t('popover.actions.aria')">
-              <TipWrap v-for="act in shelf.labelled" :key="act.id" :tip="t(act.label)" :caps="act.caps" align="start">
+              <TipWrap v-for="act in shelf.labelled" :key="act.id" :tip="tp(act.label)" :caps="act.caps" align="start">
                 <button
                   type="button"
                   class="g-button s-act"
@@ -1342,7 +1349,7 @@ const emptyParts = computed(() => {
               <TipWrap
                 v-for="(act, j) in shelf.icons"
                 :key="act.id"
-                :tip="t(act.label)"
+                :tip="tp(act.label)"
                 :caps="act.caps"
                 :align="j >= shelf.icons.length - 2 ? 'end' : undefined"
               >
@@ -1351,7 +1358,7 @@ const emptyParts = computed(() => {
                   class="g-btn"
                   data-size="small"
                   :data-act="act.id"
-                  :aria-label="t(act.label)"
+                  :aria-label="tp(act.label)"
                   :aria-expanded="act.id === 'send' ? !!sendMenu : undefined"
                   :data-state="act.id === 'send' && sendMenu ? 'pressed' : undefined"
                   @click="run(act.id, selected)"
@@ -1387,14 +1394,14 @@ const emptyParts = computed(() => {
       <div class="g-popover-section">
         <div class="g-popover-actions">
           <button type="button" class="g-button" data-variant="plain" @click="openWindow('history')">
-            {{ t("popover.history") }}<span class="g-muted">⌘Y</span>
+            {{ t("popover.history") }}<span class="g-muted">{{ chord("⌘Y") }}</span>
           </button>
           <span class="g-spacer" />
           <button type="button" class="g-button" data-variant="plain" @click="openWindow('settings')">
-            {{ t("popover.settings") }}<span class="g-muted">⌘,</span>
+            {{ t("popover.settings") }}<span class="g-muted">{{ chord("⌘,") }}</span>
           </button>
           <button type="button" class="g-button" data-variant="plain" @click="app_quit()">
-            {{ t("popover.quit") }}<span class="g-muted">⌘Q</span>
+            {{ t("popover.quit") }}<span class="g-muted">{{ chord("⌘Q") }}</span>
           </button>
         </div>
       </div>

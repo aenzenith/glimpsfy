@@ -39,8 +39,6 @@ dirs = "7"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 # The folder and file pickers of Settings and the pins (app shell).
 tauri-plugin-dialog = "2.8.1"
-# Start at login outside macOS (app shell, `commands/settings.rs`).
-tauri-plugin-autostart = "2.7.0"
 # Glimpsfy's own updates from the GitHub releases (app shell, `update.rs`).
 tauri-plugin-updater = { version = "2.13.1", default-features = false, features = ["native-tls"] }
 # Reads the colour profile and resolution of a PNG the editor opens (annotation,
@@ -60,7 +58,48 @@ auto-launch = "0.6.0"
 libc = "0.2"
 
 [target.'cfg(not(target_os = "macos"))'.dependencies]
+# The clipboard of Windows and Linux (app shell, `desktop/mod.rs`).
 tauri-plugin-clipboard-manager = "2.4.1"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# What the shell asks the X server itself (`desktop/linux.rs`): the pointer, the keys, the focus,
+# window ids, the tray's XEmbed selection, the clicks and keys a recording shows, and the shape
+# of a panel without a compositor; the release the capture crate uses.
+x11rb = { version = "0.13.2", features = ["shape", "xinput"] }
+# GTK and GDK as Tauri links them, for window types, override-redirect panels, the clipboard's
+# files, dragging out and the display and compositor signals (`desktop/linux.rs`).
+gtk = "0.18"
+gdkx11 = "0.18"
+# The GlobalShortcuts portal on Wayland, on zbus's async-io flavour as in the capture crate (the
+# tokio flavour would switch every plugin's zbus to it).
+ashpd = { version = "0.12.3", default-features = false, features = ["async-std"] }
+futures-lite = "2"
+# A JPEG chosen as a beautify background (`output/beautify.rs`); Windows lists it for the
+# clipboard below.
+zune-jpeg = "0.5.15"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+# The Win32 calls the shell makes itself (`desktop/windows.rs`): the foreground window, the
+# pointer and the keys, the capture exclusion, panels that stay out of Alt+Tab and show without
+# the keyboard, the display and theme watch, a take's input hooks, files on the clipboard, the
+# login item and the registry for the taskbar's theme.
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Globalization", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_Security", "Win32_System_DataExchange", "Win32_System_LibraryLoader", "Win32_System_Memory", "Win32_System_Ole", "Win32_System_Registry", "Win32_System_Threading", "Win32_UI_Accessibility", "Win32_UI_HiDpi", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+# Dragging a capture out goes through the shell's own data object and OLE, which are COM
+# interfaces that windows-sys does not wrap (`desktop/windows.rs`); tao already builds 0.62.
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_System_Com", "Win32_System_Ole", "Win32_UI_Shell"] }
+# Whether this Windows can keep a window out of captures (10 version 2004, build 19041).
+windows-version = "0.1.7"
+# A JPEG goes on the clipboard as pixels; the OCR crate already builds it (MIT, Apache-2.0 or
+# Zlib).
+zune-jpeg = "0.5.15"
+
+[target.'cfg(any(target_os = "linux", target_os = "windows"))'.dependencies]
+# PP-OCR, the text recognition of Linux and the second engine of Windows, with its runtime RTen
+# built in (`crates/ocr`, feature `ppocr`). macOS reads with Vision and builds without it.
+glimpsfy-ocr = { workspace = true, features = ["ppocr"] }
 
 [dev-dependencies]
 tempfile.workspace = true
+
+[lints]
+workspace = true

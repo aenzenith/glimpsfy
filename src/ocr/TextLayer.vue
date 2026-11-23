@@ -20,16 +20,20 @@
 // - `displayId`: the display whose toast stack says "Copied"; the last capture's by default.
 //
 // It emits `hide` when its hide button is pressed (and sets the context's `visible` to false),
-// and exposes `copySelection()`, `copyAll()` and `hasSelection()` to the page.
+// `settings` when it opened Settings › Text recognition because the PP-OCR models are missing (so
+// the overlay can close its capture), and exposes `copySelection()`, `copyAll()` and
+// `hasSelection()` to the page.
 
 import { computed, inject, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
 
 import { TEXT_LAYER } from "../annotate/textLayer";
 import GIcon from "../components/GIcon.vue";
 import { ocr_copy, type CodeResult, type OcrResult } from "../lib/api/ocr";
-import { app_open_url } from "../lib/api/windows";
+import { app_open_url, window_open_settings } from "../lib/api/windows";
 import { language, t } from "../lib/i18n";
+import { ariaKeys } from "../lib/keys";
 import EntityMenu from "./EntityMenu.vue";
+import { ppOcrWithoutModels } from "./models";
 import { languageName, lineCount, lineRuns, placer, textOf, wordOffsets, type Rect, type WordRange } from "./text";
 import { useEntities } from "./useEntities";
 import { useRecognition } from "./useRecognition";
@@ -48,7 +52,7 @@ const props = withDefaults(
   }>(),
   { result: null, codes: null, imageSize: null, rect: null, visible: null, displayId: null, leaves: false },
 );
-const emit = defineEmits<{ hide: []; leave: [run: () => Promise<void>] }>();
+const emit = defineEmits<{ hide: []; settings: []; leave: [run: () => Promise<void>] }>();
 
 const context = inject(TEXT_LAYER, null);
 // The page's reading, which the annotation tools that snap to words share; one of its own without
@@ -338,8 +342,22 @@ const summary = computed(() => {
   return name ? `${lines} · ${name}` : lines;
 });
 
+/** The engine is PP-OCR and its models are not downloaded (`not_found`, as on a fresh Linux
+ * install): the chip says so and opens Settings › Text recognition instead of the bare failure. */
+const noModels = ref(false);
+watch(
+  () => recognition.problem.value,
+  async (problem) => (noModels.value = problem === "unavailable" ? await ppOcrWithoutModels() : false),
+);
+
+function openModels(): void {
+  void window_open_settings("ocr").catch((error) => console.warn("window_open_settings", error));
+  emit("settings");
+}
+
 const message = computed(() => {
   if (status.value === "reading") return t("ocr.reading");
+  if (status.value === "failed" && noModels.value) return t("ocr.modelsMissing");
   if (status.value === "failed") return recognition.problem.value === "unavailable" ? t("ocr.unavailable") : t("ocr.failed");
   if (status.value === "done" && current.value && !current.value.text.trim()) return t("ocr.empty");
   return null;
@@ -447,10 +465,13 @@ async function openLink(url: string): Promise<void> {
         type="button"
         class="g-button"
         data-variant="primary"
-        aria-keyshortcuts="Shift+Meta+C"
+        :aria-keyshortcuts="ariaKeys('Shift+Meta+C')"
         @click="copyAll"
       >
         <GIcon name="copy" :size="16" />{{ t("ocr.copyAll") }}
+      </button>
+      <button v-else-if="status === 'failed' && noModels" type="button" class="g-button" data-variant="primary" @click="openModels">
+        <GIcon name="settings" :size="16" />{{ t("ocr.openSettings") }}
       </button>
       <button type="button" class="g-btn" :aria-label="t('ocr.hide')" :title="t('ocr.hide')" aria-keyshortcuts="Escape" @click="hide">
         <GIcon name="close" :size="16" />

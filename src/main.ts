@@ -9,6 +9,7 @@ import { settings_get } from "./lib/api/settings";
 import { app_log } from "./lib/api/windows";
 import { SETTINGS_CHANGED } from "./lib/events";
 import { setLanguage } from "./lib/i18n";
+import { loadPlatform } from "./lib/platform";
 import type { Settings } from "./lib/settings";
 import "./styles/tokens.css";
 import "./styles/components.css";
@@ -129,14 +130,16 @@ async function start(): Promise<void> {
     follow(settings);
   });
 
-  // The language and the theme before the first paint, so no page flashes in the wrong one.
+  // The platform, the language and the theme before the first paint, so no page flashes in the
+  // wrong one or shows, for a moment, what this platform cannot do.
+  const platformRead = loadPlatform();
   try {
     const settings = await settings_get();
     if (!heard) follow(settings);
   } catch {
     if (!heard) languageSet = setLanguage("system");
   }
-  await languageSet;
+  await Promise.all([languageSet, platformRead]);
 
   const { default: root } = await page.load();
   createApp(root).mount("#app");

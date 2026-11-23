@@ -3,7 +3,7 @@
 
 import type { Entry, EntryId, EntryKind, HistoryItem, HistoryQuery, SortOrder, TextBox } from "../lib/api/history";
 import type { Language } from "../lib/i18n";
-import { platform } from "../lib/platform";
+import { can, platform } from "../lib/platform";
 
 // ------------------------------------------------------------------------------------ filters
 
@@ -132,15 +132,29 @@ export function formatWhen(ms: number, now: number, lang: Language, words: { tod
   return `${new Intl.DateTimeFormat(lang, { day: "numeric", month: "short", year }).format(ms)} ${time}`;
 }
 
+/** The last path separator: on Windows a backslash is one too. */
+function lastSeparator(path: string): number {
+  return platform.os === "windows" ? Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\")) : path.lastIndexOf("/");
+}
+
 export function extensionOf(entry: Entry): string {
   const path = mediaPath(entry) ?? "";
   const dot = path.lastIndexOf(".");
-  return dot > path.lastIndexOf("/") && dot >= 0 ? path.slice(dot + 1).toUpperCase() : entry.kind === "recording" ? "MP4" : "PNG";
+  return dot > lastSeparator(path) && dot >= 0 ? path.slice(dot + 1).toUpperCase() : entry.kind === "recording" ? "MP4" : "PNG";
 }
 
 export function fileName(path: string | null): string {
   if (!path) return "";
-  return path.slice(path.lastIndexOf("/") + 1);
+  return path.slice(lastSeparator(path) + 1);
+}
+
+/** Whether Copy can put the entry on the clipboard: text and PNG or JPEG images everywhere, any
+ * other file (a recording, a GIF, a WebP image) only where the system takes a file itself on the
+ * clipboard (`copyFile`). */
+export function copyable(entry: Entry): boolean {
+  // A series copies its newest frame, which the core puts on the clipboard as an image or a file.
+  if (entry.kind === "textCopy" || entry.kind === "series" || can("copyFile")) return true;
+  return entry.kind === "screenshot" && ["PNG", "JPG", "JPEG"].includes(extensionOf(entry));
 }
 
 /** The file that holds the image the entry shows, as `Entry::media_path` in the core picks it: the

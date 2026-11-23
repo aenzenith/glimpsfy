@@ -12,7 +12,7 @@ import GIcon from "../../components/GIcon.vue";
 import SelectControl from "../../components/SelectControl.vue";
 import SwitchControl from "../../components/SwitchControl.vue";
 import { upload_remove_secret, upload_secret_status, upload_set_secret, type Issue } from "../../lib/api/upload";
-import { t } from "../../lib/i18n";
+import { t, tp } from "../../lib/i18n";
 import { issueText, tk } from "../../upload/text";
 import { describeError, uid } from "../text";
 import { helpOf, labelOf, optionLabel, pairSecretKey, placeholderOf, ruleProblem, type Field, type Pair } from "../upload";
@@ -194,9 +194,9 @@ async function removeSecret(): Promise<void> {
 
 const secretHelp = computed<{ text: string; tone: "ok" | "danger" | "warn" | null; icon: boolean }>(() => {
   if (secretError.value) return { text: secretError.value, tone: "danger", icon: false };
-  if (secretState.value === "kept") return { text: t("settings.upload.secretKept"), tone: "ok", icon: false };
-  if (secretState.value === "onFile") return { text: t("settings.upload.secretOnFile"), tone: null, icon: true };
-  if (secretState.value === "removed") return { text: t("settings.upload.secretRemoved"), tone: null, icon: false };
+  if (secretState.value === "kept") return { text: tp("settings.upload.secretKept"), tone: "ok", icon: false };
+  if (secretState.value === "onFile") return { text: tp("settings.upload.secretOnFile"), tone: null, icon: true };
+  if (secretState.value === "removed") return { text: tp("settings.upload.secretRemoved"), tone: null, icon: false };
   // Nothing stored yet is the normal start of a host, so it reads as a note, not an error.
   if (secretState.value === "missing" && issueHelp.value) return { text: issueHelp.value.text, tone: "warn", icon: false };
   return { text: help.value || tk("upload.help.keychain"), tone: null, icon: true };
@@ -326,9 +326,9 @@ const pairError = computed(() => rows.find((r) => r.error)?.error ?? null);
 const pairHelp = computed<{ text: string; tone: "ok" | "danger" | "warn" | null }>(() => {
   if (pairError.value) return { text: pairError.value, tone: "danger" };
   if (issueHelp.value) return issueHelp.value;
-  if (secretValues.value && rows.some((r) => r.state === "kept")) return { text: t("settings.upload.pairsKept"), tone: "ok" };
-  if (secretValues.value && rows.some((r) => r.state === "missing")) return { text: t("settings.upload.pairsMissing"), tone: "warn" };
-  return { text: help.value || (secretValues.value ? t("settings.upload.pairsHelp") : ""), tone: null };
+  if (secretValues.value && rows.some((r) => r.state === "kept")) return { text: tp("settings.upload.pairsKept"), tone: "ok" };
+  if (secretValues.value && rows.some((r) => r.state === "missing")) return { text: tp("settings.upload.pairsMissing"), tone: "warn" };
+  return { text: help.value || (secretValues.value ? tp("settings.upload.pairsHelp") : ""), tone: null };
 });
 const namePlaceholder = computed(() => (props.field.kind === "pairs" ? placeholderOf(props.field.namePlaceholder) : ""));
 const valuePlaceholder = (row: Row) => {
@@ -360,7 +360,7 @@ defineExpose({
     </template>
     <template #after>
       <div class="p-actions p-flush">
-        <button v-if="stored" type="button" class="g-button" data-variant="plain" :disabled="secretBusy" @click="removeSecret">{{ t("settings.upload.removeSecret") }}</button>
+        <button v-if="stored" type="button" class="g-button" data-variant="plain" :disabled="secretBusy" @click="removeSecret">{{ tp("settings.upload.removeSecret") }}</button>
       </div>
     </template>
     <div class="p-secret">

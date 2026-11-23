@@ -1,12 +1,13 @@
 <script setup lang="ts">
 // Key caps (`g-keys` of `g-kbd`) for a shortcut, from caps such as ["⇧", "⌘", "2"] or from an
-// accelerator such as "Shift+CommandOrControl+2".
+// accelerator such as "Shift+CommandOrControl+2". Caps written in macOS's form show in the
+// platform's words (Ctrl, Shift) on Windows and Linux.
 import { computed } from "vue";
 
-import { capsOf } from "../lib/keys";
+import { capsOf, chordCaps } from "../lib/keys";
 
 const props = defineProps<{ caps?: readonly string[]; accelerator?: string | null }>();
-const shown = computed(() => props.caps ?? capsOf(props.accelerator));
+const shown = computed(() => (props.caps ? chordCaps(props.caps) : capsOf(props.accelerator)));
 </script>
 
 <template>

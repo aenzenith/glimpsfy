@@ -7,6 +7,7 @@
 // `thumbUrl(entry)` and `fileUrl(id)` from the `glimpsfy-history` scheme.
 
 import { t } from "../i18n";
+import { platform } from "../platform";
 import { call, on, type EpochMs } from "./core";
 import type { DeletionHandle, ProviderId, UploadResult } from "./upload";
 
@@ -238,6 +239,12 @@ export function thumbUrl(entry: Pick<Entry, "id" | "thumbnail">): string | null 
 /** The capture itself: an image, or a recording the inspector plays. */
 export function fileUrl(id: EntryId): string {
   return mediaUrl("file", id);
+}
+
+/** A recording as the inspector's `<video>` plays it: from the core's loopback address where the
+ * webview's player loads no app scheme (`platform.videoBase`, Linux), from `fileUrl` elsewhere. */
+export function videoUrl(id: EntryId): string {
+  return platform.videoBase ? `${platform.videoBase}/history/${encodeURIComponent(id)}` : fileUrl(id);
 }
 
 export function history_list(query: HistoryQuery): Promise<HistoryPage> {

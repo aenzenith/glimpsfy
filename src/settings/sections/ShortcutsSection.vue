@@ -1,7 +1,9 @@
 <script setup lang="ts">
 // Settings › Shortcuts: one recorder per global action, the clashes with another action and with
-// macOS, the keys the system refused, Restore defaults, and the fixed keys of the overlay.
-import { reactive, ref } from "vue";
+// the system, the keys the system refused, Restore defaults, and the fixed keys of the overlay.
+// Where the desktop gives apps no global shortcuts (Wayland), each action shows instead the
+// command line that runs it (`glimpsfy --action <name>`), for a shortcut of the desktop's own.
+import { computed, reactive, ref } from "vue";
 
 import FormRow from "../../components/FormRow.vue";
 import GIcon from "../../components/GIcon.vue";
@@ -9,8 +11,8 @@ import KeyCaps from "../../components/KeyCaps.vue";
 import SectionHead from "../../components/SectionHead.vue";
 import ShortcutRecorder from "../../components/ShortcutRecorder.vue";
 import { settings_default_shortcuts } from "../../lib/api/settings";
-import { app_open_system_settings } from "../../lib/api/windows";
-import { t, type Key } from "../../lib/i18n";
+import { app_copy_text, app_open_system_settings } from "../../lib/api/windows";
+import { t, tp, type Key } from "../../lib/i18n";
 import { capsOf, capsText, holderOf, SHORTCUT_GROUPS, systemShortcut, type ShortcutAction } from "../../lib/keys";
 import { can } from "../../lib/platform";
 import type { Settings } from "../../lib/settings";
@@ -29,6 +31,35 @@ const conflicts = reactive<Partial<Record<ShortcutAction, Conflict>>>({});
 const undo = reactive<Partial<Record<ShortcutAction, string | null>>>({});
 const restoring = ref(false);
 
+/** The groups as this platform offers them: Capture window needs single windows, drawing and
+ * the spotlight need the pointer outside the app's own windows, and the scrolling capture is
+ * macOS's alone for now. */
+const offered = (action: ShortcutAction) =>
+  action === "captureWindow"
+    ? can("windowCapture")
+    : action === "drawOnScreen" || action === "spotlight"
+      ? can("globalPointer")
+      : action === "scrollCapture"
+        ? can("scrollCapture")
+        : true;
+const groups = computed(() => SHORTCUT_GROUPS.map((g) => ({ group: g.group, actions: g.actions.filter(offered) })));
+/** The desktop hands no global shortcuts to apps, so the rows show commands instead of recorders. */
+const commandsOnly = !can("globalShortcuts");
+/** The command line that runs an action in the running app (`--action capture-area`). */
+const commandOf = (action: ShortcutAction) => `glimpsfy --action ${action.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)}`;
+const copiedCommand = ref<ShortcutAction | null>(null);
+let copiedTimer = 0;
+function copyCommand(action: ShortcutAction): void {
+  void app_copy_text(commandOf(action)).then(
+    () => {
+      copiedCommand.value = action;
+      clearTimeout(copiedTimer);
+      copiedTimer = window.setTimeout(() => (copiedCommand.value = null), 1600);
+    },
+    (error) => (banner.value = { tone: "danger", text: describeError(error) }),
+  );
+}
+
 const helpIds = Object.fromEntries(SHORTCUT_GROUPS.flatMap((g) => g.actions).map((a) => [a, uid(`sc-${a}`)])) as Record<ShortcutAction, string>;
 
 const nameOf = (action: string) => tr(`settings.shortcuts.action.${action}`, {}, action);
@@ -39,15 +70,15 @@ type RowView = { help: string | null; tone: "warn" | "danger" | null; kind: "con
 function view(action: ShortcutAction): RowView {
   const refusal = refusals[action];
   if (listening.value === action) {
-    if (refusal) return { help: t(refusal.reason === "needsModifier" ? "settings.shortcuts.needsModifier" : "settings.shortcuts.commandAlone"), tone: "danger", kind: null };
+    if (refusal) return { help: tp(refusal.reason === "needsModifier" ? "settings.shortcuts.needsModifier" : "settings.shortcuts.commandAlone"), tone: "danger", kind: null };
     return { help: t("settings.shortcuts.listening"), tone: null, kind: null };
   }
   const conflict = conflicts[action];
   if (conflict) return { help: t("settings.shortcuts.taken", { other: nameOf(conflict.other), keys: capsText(conflict.accelerator) }), tone: "warn", kind: "conflict" };
   const problem = shortcutProblems.value[action];
-  if (problem && problem.accelerator === own(action)) return { help: t("settings.shortcuts.refusedBySystem", { keys: capsText(problem.accelerator) }), tone: "danger", kind: null };
+  if (problem && problem.accelerator === own(action)) return { help: tp("settings.shortcuts.refusedBySystem", { keys: capsText(problem.accelerator) }), tone: "danger", kind: null };
   const system = systemShortcut(own(action));
-  if (system) return { help: tr(system, {}, t("settings.shortcuts.systemFallback", { keys: capsText(own(action)) })), tone: "warn", kind: "system" };
+  if (system) return { help: tr(system, {}, tp("settings.shortcuts.systemFallback", { keys: capsText(own(action)) })), tone: "warn", kind: "system" };
   const cleared = clearedShortcuts.value[action];
   if (cleared && !own(action)) return { help: t("settings.shortcuts.cleared", { other: nameOf(cleared.keptBy), keys: capsText(cleared.accelerator) }), tone: "warn", kind: null };
   if (action === "recordScreen") return { help: t("settings.shortcuts.recordScreenHelp"), tone: null, kind: null };
@@ -187,7 +218,28 @@ const DRAWINGS: RefRow[] = [
 </script>
 
 <template>
-  <template v-for="group in SHORTCUT_GROUPS" :key="group.group">
+  <template v-if="commandsOnly">
+    <SectionHead :title="t('settings.shortcuts.commands.title')" :desc="t('settings.shortcuts.commands.desc')" />
+    <template v-for="group in groups" :key="group.group">
+      <SectionHead :title="tr(`settings.shortcuts.group.${group.group}`, {}, group.group)" />
+      <div class="g-group">
+        <FormRow v-for="action in group.actions" :key="action" :label="nameOf(action)">
+          <code class="p-code">{{ commandOf(action) }}</code>
+          <button
+            type="button"
+            class="g-btn"
+            data-size="small"
+            :aria-label="t('settings.shortcuts.commands.copy', { name: nameOf(action) })"
+            :title="t('settings.shortcuts.commands.copy', { name: nameOf(action) })"
+            @click="copyCommand(action)"
+          >
+            <GIcon :name="copiedCommand === action ? 'check' : 'copy'" :size="16" />
+          </button>
+        </FormRow>
+      </div>
+    </template>
+  </template>
+  <template v-for="group in groups" v-else :key="group.group">
     <SectionHead :title="tr(`settings.shortcuts.group.${group.group}`, {}, group.group)" />
     <div class="g-group">
       <FormRow
@@ -204,10 +256,10 @@ const DRAWINGS: RefRow[] = [
             <button type="button" class="g-button" data-variant="plain" @click="cancelConflict(action)">{{ t("settings.common.cancel") }}</button>
           </div>
         </template>
-        <template v-else-if="view(action).kind === 'system'" #after>
+        <template v-else-if="view(action).kind === 'system' && (can('systemSettingsPanes') || action in undo)" #after>
           <div class="p-actions p-flush">
-            <button type="button" class="g-button" data-variant="plain" @click="openKeyboardShortcuts">
-              <GIcon name="external-link" :size="16" />{{ t("settings.shortcuts.openKeyboard") }}
+            <button v-if="can('systemSettingsPanes')" type="button" class="g-button" data-variant="plain" @click="openKeyboardShortcuts">
+              <GIcon name="external-link" :size="16" />{{ tp("settings.shortcuts.openKeyboard") }}
             </button>
             <button v-if="action in undo" type="button" class="g-button" data-variant="plain" @click="undoSystem(action)">{{ t("settings.common.undo") }}</button>
           </div>
@@ -228,7 +280,7 @@ const DRAWINGS: RefRow[] = [
     </div>
   </template>
 
-  <div class="p-foot">
+  <div v-if="!commandsOnly" class="p-foot">
     <span class="g-help">{{ t("settings.shortcuts.restoreHelp") }}</span>
     <button type="button" class="g-button" :disabled="restoring" @click="restoreDefaults">{{ t("settings.shortcuts.restore") }}</button>
   </div>

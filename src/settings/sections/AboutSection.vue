@@ -8,7 +8,8 @@ import FormRow from "../../components/FormRow.vue";
 import GIcon from "../../components/GIcon.vue";
 import SectionHead from "../../components/SectionHead.vue";
 import { app_open_url, window_open } from "../../lib/api/windows";
-import { t, type Key } from "../../lib/i18n";
+import { t, tp, type Key } from "../../lib/i18n";
+import { platform } from "../../lib/platform";
 import { banner } from "../store";
 import { describeError } from "../text";
 import UpdateRow from "../UpdateRow.vue";
@@ -29,12 +30,22 @@ const LINKS: { icon: string; title: Key; url: string }[] = [
   { icon: "history", title: "settings.about.changelog", url: `${REPO}/releases` },
 ];
 
+/** The bindings to the system each platform's build is made with. */
+const SYSTEM_ACK: Record<typeof platform.os, { project: string; use: Key; licence: Key }[]> = {
+  macos: [{ project: "objc2", use: "settings.about.ackObjc2", licence: "settings.about.mit" }],
+  windows: [{ project: "windows-rs", use: "settings.about.ackWindows", licence: "settings.about.mitOrApache" }],
+  linux: [
+    { project: "x11rb", use: "settings.about.ackX11", licence: "settings.about.mitOrApache" },
+    { project: "ashpd", use: "settings.about.ackPortals", licence: "settings.about.mit" },
+  ],
+};
+
 const ACK: { project: string; use: Key; licence: Key }[] = [
   { project: "Tauri", use: "settings.about.ackTauri", licence: "settings.about.mitOrApache" },
   { project: "Vue", use: "settings.about.ackVue", licence: "settings.about.mit" },
   { project: "SQLite · rusqlite", use: "settings.about.ackSqlite", licence: "settings.about.publicDomainMit" },
   { project: "keyring-core", use: "settings.about.ackKeyring", licence: "settings.about.mitOrApache" },
-  { project: "objc2", use: "settings.about.ackObjc2", licence: "settings.about.mit" },
+  ...SYSTEM_ACK[platform.os],
   { project: "png · image-webp", use: "settings.about.ackImages", licence: "settings.about.mitOrApache" },
   { project: "jpeg-encoder", use: "settings.about.ackJpeg", licence: "settings.about.mitOrApacheIjg" },
   { project: "ureq", use: "settings.about.ackUreq", licence: "settings.about.mitOrApache" },
@@ -78,7 +89,7 @@ function welcome(): void {
 
   <SectionHead :title="t('settings.about.headWelcome')" />
   <div class="g-group">
-    <FormRow :label="t('settings.about.welcome')" :help="t('settings.about.welcomeHelp')">
+    <FormRow :label="t('settings.about.welcome')" :help="tp('settings.about.welcomeHelp')">
       <button type="button" class="g-button" @click="welcome">{{ t("settings.about.welcomeOpen") }}</button>
     </FormRow>
   </div>
@@ -97,7 +108,7 @@ function welcome(): void {
         <tbody>
           <tr v-for="row in ACK" :key="row.project">
             <td>{{ row.project }}</td>
-            <td class="g-cell-sub">{{ t(row.use) }}</td>
+            <td class="g-cell-sub">{{ tp(row.use) }}</td>
             <td class="g-cell-sub">{{ t(row.licence) }}</td>
           </tr>
         </tbody>

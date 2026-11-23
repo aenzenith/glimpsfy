@@ -1,8 +1,10 @@
 <script setup lang="ts">
 // Settings › Text recognition: the engine, the PP-OCR models, the languages the engine reads and
-// how the text comes out. Every state says what this build can really do: the PP-OCR engine is
-// not in this build (`ocr_model_download` answers `not_implemented`), so its models are listed
+// how the text comes out. Every state says what this build can really do: where the PP-OCR engine
+// is not in the build (`ocr_model_download` answers `not_implemented`), its models are listed
 // with their sizes and nothing offers a download; a model that is on disk can still be removed.
+// The system's own engine (Vision, Windows' text recognition) is offered where `ocr_engines`
+// lists one; Linux has none, and PP-OCR is its only engine.
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from "vue";
 
 import FormRow from "../../components/FormRow.vue";
@@ -20,9 +22,12 @@ import {
   type LanguageInfo,
   type ModelInfo,
   type ModelProgress,
+  type OcrEngineId,
+  type OcrEngines,
 } from "../../lib/api/ocr";
 import { ApiError, on } from "../../lib/api/core";
-import { language, t } from "../../lib/i18n";
+import { language, t, tp, type Key } from "../../lib/i18n";
+import { platform } from "../../lib/platform";
 import type { OcrEngineChoice, Settings } from "../../lib/settings";
 import { update } from "../store";
 import { describeError, formatBytes, isNotImplemented, uid } from "../text";
@@ -32,9 +37,20 @@ const ocr = computed(() => props.settings.ocr);
 
 const ids = { engine: uid("engine"), languages: uid("langs"), detect: uid("detect"), breaks: uid("breaks"), codes: uid("codes") };
 
-const platform = typeof navigator === "undefined" ? "mac" : /Mac/.test(navigator.platform || navigator.userAgent) ? "mac" : /Win/.test(navigator.platform || navigator.userAgent) ? "windows" : "other";
-const systemName = computed(() => t(platform === "mac" ? "settings.ocr.vision" : platform === "windows" ? "settings.ocr.windowsOcr" : "settings.ocr.systemEngine"));
-const systemHelp = computed(() => t(platform === "mac" ? "settings.ocr.visionHelp" : platform === "windows" ? "settings.ocr.windowsOcrHelp" : "settings.ocr.systemEngineHelp"));
+/** The engines of this platform and build (`ocr_engines`), once they answered. */
+const engines = ref<OcrEngines | null>(null);
+/** The system's own engine, or `null` where there is none. Until `ocr_engines` answers, the
+ * platform's usual one stands in, so the row does not appear late. */
+const systemEngine = computed<OcrEngineId | null>(() => {
+  if (engines.value) return engines.value.available.find((id) => id !== "ppOcr") ?? null;
+  return platform.os === "macos" ? "vision" : platform.os === "windows" ? "windowsMediaOcr" : null;
+});
+const SYSTEM_TEXT: Partial<Record<OcrEngineId, { name: Key; help: Key }>> = {
+  vision: { name: "settings.ocr.vision", help: "settings.ocr.visionHelp" },
+  windowsMediaOcr: { name: "settings.ocr.windowsOcr", help: "settings.ocr.windowsOcrHelp" },
+};
+const systemName = computed(() => t(SYSTEM_TEXT[systemEngine.value ?? "vision"]?.name ?? "settings.ocr.systemEngine"));
+const systemHelp = computed(() => t(SYSTEM_TEXT[systemEngine.value ?? "vision"]?.help ?? "settings.ocr.systemEngineHelp"));
 
 /** Whether PP-OCR reads text in this build (`ocr_engines`); until it does, it can be left but
  * not chosen. */
@@ -96,7 +112,13 @@ function modelMeta(model: ModelInfo): string {
 }
 
 onMounted(async () => {
-  void ocr_engines().then((engines) => (ppOcrReady.value = engines.ready.includes("ppOcr")), () => (ppOcrReady.value = false));
+  void ocr_engines().then(
+    (answer) => {
+      engines.value = answer;
+      ppOcrReady.value = answer.ready.includes("ppOcr");
+    },
+    () => (ppOcrReady.value = false),
+  );
   void loadModels();
   stopProgress = await on<ModelProgress>(OCR_MODEL_PROGRESS, (p) => {
     const d = downloads.get(p.model);
@@ -168,7 +190,7 @@ const languagesHelp = computed<{ text: string; tone: "warn" | "danger" | null }>
   if (listState.value === "loading") return { text: t("settings.ocr.languagesLoading"), tone: null };
   if (listState.value === "unavailable") return { text: t("settings.ocr.languagesUnavailable"), tone: "warn" };
   if (listState.value === "failed") return { text: listError.value ?? "", tone: "danger" };
-  if (!choices.value.length) return { text: t("settings.ocr.languagesEmpty"), tone: "warn" };
+  if (!choices.value.length) return { text: tp("settings.ocr.languagesEmpty"), tone: "warn" };
   if (unavailableCount.value) return { text: `${t("settings.ocr.languagesHelp")} ${t("settings.ocr.languagesDownload", { n: unavailableCount.value })}`, tone: null };
   return { text: t("settings.ocr.languagesHelp"), tone: null };
 });
@@ -177,7 +199,7 @@ const languagesHelp = computed<{ text: string; tone: "warn" | "danger" | null }>
 <template>
   <SectionHead :title="t('settings.ocr.headEngine')" />
   <div class="g-group" role="radiogroup" :aria-label="t('settings.ocr.headEngine')">
-    <label class="g-form-row p-engine">
+    <label v-if="systemEngine" class="g-form-row p-engine">
       <input type="radio" class="g-radio" :name="ids.engine" :checked="ocr.engine === 'system'" @change="pickEngine('system')" />
       <span class="g-form-label">
         <span class="g-label">{{ systemName }}</span>
@@ -196,7 +218,7 @@ const languagesHelp = computed<{ text: string; tone: "warn" | "danger" | null }>
       />
       <span class="g-form-label">
         <span class="g-label">PP-OCR</span>
-        <span class="g-help">{{ t("settings.ocr.ppOcrHelp") }}</span>
+        <span class="g-help">{{ tp("settings.ocr.ppOcrHelp") }}</span>
         <span v-if="!ppOcrReady" class="g-help" data-tone="warn"><GIcon name="warning" :size="14" />{{ t("settings.ocr.ppOcrMissing") }}</span>
       </span>
     </label>
@@ -207,6 +229,7 @@ const languagesHelp = computed<{ text: string; tone: "warn" | "danger" | null }>
     <FormRow v-if="modelsError || !models" :label="t('settings.ocr.models')" :help="modelsError ?? t('settings.ocr.modelsLoading')" :tone="modelsError ? 'warn' : null" />
     <template v-else>
       <FormRow v-if="!ppOcrReady" :help="t('settings.ocr.modelsMissing')" tone="warn" />
+      <FormRow v-else-if="ocr.engine === 'ppOcr' && models.length && !models.some((m) => m.installed)" :help="t('settings.ocr.modelsNeeded')" tone="warn" />
       <FormRow v-if="modelProblem" :help="modelProblem" tone="danger" />
       <FormRow v-if="!models.length" :help="t('settings.ocr.modelsNone')" />
       <FormRow v-for="model in models" :key="model.id" :label="model.title" :help="modelMeta(model)">
@@ -247,5 +270,5 @@ const languagesHelp = computed<{ text: string; tone: "warn" | "danger" | null }>
       <SwitchControl :id="ids.codes" :model-value="ocr.detectCodes" @update:model-value="(v) => update((s) => (s.ocr.detectCodes = v))" />
     </FormRow>
   </div>
-  <p class="p-note"><GIcon name="shield" :size="16" /><span>{{ t("settings.ocr.privacy") }}</span></p>
+  <p class="p-note"><GIcon name="shield" :size="16" /><span>{{ tp("settings.ocr.privacy") }}</span></p>
 </template>

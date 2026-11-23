@@ -14,6 +14,7 @@ import { computed, nextTick, onMounted, ref, watch } from "vue";
 
 import GIcon from "../components/GIcon.vue";
 import { t } from "../lib/i18n";
+import { ariaKeys, chord } from "../lib/keys";
 import type { EntityAction } from "./entities";
 import type { Rect } from "./text";
 
@@ -92,20 +93,20 @@ function run(row: MenuRow): void {
     >
       <GIcon :name="action.icon" :size="16" />
       <span class="g-pop-name">{{ t(action.label) }}</span>
-      <span class="g-pop-sub">↩</span>
+      <span class="g-pop-sub">{{ chord("↩") }}</span>
     </button>
     <button
       type="button"
       class="g-pop-item"
       role="menuitem"
       :data-state="active === 'copy' ? 'hover' : undefined"
-      aria-keyshortcuts="Meta+C"
+      :aria-keyshortcuts="ariaKeys('Meta+C')"
       @pointerenter="emit('hover', 'copy')"
       @click="run('copy')"
     >
       <GIcon name="copy" :size="16" />
       <span class="g-pop-name">{{ t(action.copyLabel) }}</span>
-      <span class="g-pop-sub">⌘C</span>
+      <span class="g-pop-sub">{{ chord("⌘C") }}</span>
     </button>
     <p v-if="problem" class="g-pop-help ocr-menu-warn" role="status">{{ problem }}</p>
   </div>

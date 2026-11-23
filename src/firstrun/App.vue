@@ -12,6 +12,11 @@
 // Glimpsfy takes for Capture area when the user presses Done. Glimpsfy never changes the system's
 // settings; it only explains the Keyboard Shortcuts step and opens that pane. Start at login is
 // saved at once and shows macOS's refusal. Done saves `general.firstRunDone` and closes.
+//
+// Elsewhere the steps follow the platform (`can`): Windows and an X11 desktop ask no screen
+// recording permission and a Wayland desktop asks by itself at the first capture, so step 1 lists
+// only the permissions the system does ask for; the system keys are Print Screen; and where the
+// desktop gives no global shortcuts (Wayland), step 2 hands over the command to bind instead.
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 
@@ -28,18 +33,23 @@ import {
   type Permissions,
 } from "../lib/api/permissions";
 import { settings_get, settings_set } from "../lib/api/settings";
-import { app_open_system_settings, app_open_url, app_restart } from "../lib/api/windows";
+import { app_copy_text, app_open_system_settings, app_open_url, app_restart } from "../lib/api/windows";
 import { PERMISSIONS_CHANGED, SETTINGS_CHANGED } from "../lib/events";
-import { t, type Key } from "../lib/i18n";
-import { capsOf, capsText } from "../lib/keys";
+import { t, tp, type Key } from "../lib/i18n";
+import { capsOf, capsText, joinCaps } from "../lib/keys";
+import { can, isMac, platform } from "../lib/platform";
 import type { Settings } from "../lib/settings";
 import { tr } from "../settings/text";
 import { codeOf, reasonText } from "../toast/reason";
 
 /** How often step 1 asks for the permissions while the window is visible. */
 const POLL_MS = 1500;
-/** The macOS area screenshot keys, which "Replace the macOS keys" gives to Capture area. */
-const MAC_AREA_KEYS = "Shift+CommandOrControl+4";
+/** The system's area screenshot keys, which "Replace the macOS keys" gives to Capture area: ⇧⌘4
+ * on macOS, and Print Screen on Windows and Linux, whose screenshot tools take that key. */
+const MAC_AREA_KEYS = isMac() ? "Shift+CommandOrControl+4" : "PrintScreen";
+/** The desktop gives no global shortcuts (Wayland), so step 2 offers the command to bind. */
+const commandsOnly = !can("globalShortcuts");
+const AREA_COMMAND = "glimpsfy --action capture-area";
 /** The public source (Cargo.toml `repository`), for the privacy block's link. */
 const SOURCE_URL = "https://github.com/aenzenith/glimpsfy";
 const dev = import.meta.env.DEV;
@@ -51,6 +61,9 @@ const ROWS: Row[] = [
   { id: "accessibility", icon: "accessibility", pane: "firstrun.illus.accessibility" },
 ];
 type RowState = "none" | "waiting" | "restart" | "granted" | "notRequired";
+/** Where the system asks nothing for screen capture (Windows, X11) or asks by itself at the first
+ * capture (Wayland), step 1 has no screen recording row and nothing holds Continue back. */
+const screenAsked = can("screenRecordingPermission");
 
 const FACTS: Key[] = ["firstrun.privacy.account", "firstrun.privacy.upload", "firstrun.privacy.ocr", "firstrun.privacy.screen"];
 
@@ -68,10 +81,28 @@ function rowState(id: Row["id"]): RowState {
   return waiting.has(id) ? "waiting" : "none";
 }
 
+/** The rows the system asks for: a permission it does not need (`notRequired`) is left out. Until
+ * the first answer, the platform's usual rows stand in. */
+const rows = computed(() =>
+  ROWS.filter((row) => {
+    if (row.id === "screenRecording" && !screenAsked) return false;
+    const state = permissions.value?.[row.id];
+    if (state) return state !== "notRequired";
+    return isMac() || (row.id === "microphone" && platform.os === "windows");
+  }),
+);
+const lead = computed(() => (platform.session === "wayland" ? t("firstrun.welcome.leadWayland") : tp("firstrun.welcome.lead")));
+
 const screenState = computed(() => rowState("screenRecording"));
-const canContinue = computed(() => screenState.value === "granted" || screenState.value === "notRequired");
+const canContinue = computed(() => !screenAsked || screenState.value === "granted" || screenState.value === "notRequired");
 const hint = computed<Key>(() =>
-  canContinue.value ? "firstrun.hint.ok" : screenState.value === "restart" ? "firstrun.hint.restart" : "firstrun.hint.blocked",
+  !rows.value.length
+    ? "firstrun.hint.none"
+    : canContinue.value
+      ? "firstrun.hint.ok"
+      : screenState.value === "restart"
+        ? "firstrun.hint.restart"
+        : "firstrun.hint.blocked",
 );
 
 const tag = (id: Row["id"]) => `firstrun.perm.${id}.tag` as Key;
@@ -153,7 +184,17 @@ const ourKeys = computed(() => {
   const area = settings.value?.shortcuts.captureArea ?? null;
   return replaced && area === MAC_AREA_KEYS ? (originalArea ?? null) : area;
 });
-const tryKeys = computed(() => capsOf(choice.value === "replace" ? MAC_AREA_KEYS : ourKeys.value));
+const tryKeys = computed(() => (commandsOnly ? [] : capsOf(choice.value === "replace" ? MAC_AREA_KEYS : ourKeys.value)));
+const commandCopied = ref(false);
+async function copyCommand(): Promise<void> {
+  try {
+    await app_copy_text(AREA_COMMAND);
+    commandCopied.value = true;
+    setTimeout(() => (commandCopied.value = false), 1600);
+  } catch (error) {
+    saveError.value = reasonText(codeOf(error));
+  }
+}
 const tryParts = computed(() => {
   const [before = "", after = ""] = t("firstrun.fin.tryKeys").split("{keys}");
   return { before, after };
@@ -223,7 +264,7 @@ async function finish(): Promise<void> {
       return;
     }
     if (choice.value === "replace" && saved.shortcutProblems.some((p) => p.action === "captureArea")) {
-      saveError.value = t("firstrun.fin.keysRefused", { keys: capsText(MAC_AREA_KEYS) });
+      saveError.value = tp("firstrun.fin.keysRefused", { keys: capsText(MAC_AREA_KEYS) });
       return;
     }
     await getCurrentWindow().close();
@@ -268,12 +309,12 @@ onUnmounted(() => {
         <span class="s-appicon"><GIcon name="glyph" :size="32" /></span>
         <div>
           <h1 class="g-page-title">{{ t("firstrun.welcome.title") }}</h1>
-          <p class="s-fr-lead">{{ t("firstrun.welcome.lead") }}</p>
+          <p class="s-fr-lead">{{ lead }}</p>
         </div>
       </div>
 
-      <div class="g-group">
-        <div v-for="row in ROWS" :key="row.id" class="s-perm" :data-perm="row.id">
+      <div v-if="rows.length" class="g-group">
+        <div v-for="row in rows" :key="row.id" class="s-perm" :data-perm="row.id">
           <span class="s-perm-icon"><GIcon :name="row.icon" :size="20" /></span>
           <div>
             <div class="s-perm-name">
@@ -283,10 +324,10 @@ onUnmounted(() => {
             <p class="s-perm-why">{{ t(why(row.id)) }}</p>
             <p class="s-perm-state" :data-tone="TONE[rowState(row.id)]" aria-live="polite">
               <span v-if="rowState(row.id) === 'none'" class="s-open-dot" />
-              <ProgressRing v-else-if="rowState(row.id) === 'waiting'" :progress="null" :label="t('firstrun.state.waiting')" :size="14" />
+              <ProgressRing v-else-if="rowState(row.id) === 'waiting'" :progress="null" :label="tp('firstrun.state.waiting')" :size="14" />
               <GIcon v-else-if="rowState(row.id) === 'restart'" name="warning" :size="14" />
               <GIcon v-else name="check" :size="14" />
-              <span>{{ t(stateKey(rowState(row.id))) }}</span>
+              <span>{{ tp(stateKey(rowState(row.id))) }}</span>
             </p>
           </div>
           <div class="s-perm-act">
@@ -297,7 +338,7 @@ onUnmounted(() => {
               :data-variant="row.id === 'screenRecording' ? 'primary' : undefined"
               @click="allow(row.id)"
             >
-              {{ row.id === "microphone" ? t("firstrun.btn.ask") : t("firstrun.btn.open") }}
+              {{ row.id === "microphone" ? t("firstrun.btn.ask") : tp("firstrun.btn.open") }}
             </button>
             <button v-else-if="rowState(row.id) === 'waiting'" type="button" class="g-button" data-variant="plain" @click="openAgain(row.id)">
               {{ t("firstrun.btn.again") }}
@@ -308,7 +349,7 @@ onUnmounted(() => {
           </div>
           <div v-if="rowState(row.id) === 'waiting'" class="s-perm-more">
             <!-- The System Settings list, drawn small, so the user knows what to look for. -->
-            <div class="s-illus" aria-hidden="true">
+            <div v-if="isMac()" class="s-illus" aria-hidden="true">
               <div class="s-illus-side">
                 <span class="s-illus-lights"><i /><i /><i /></span>
                 <span class="s-illus-nav">{{ t("firstrun.illus.general") }}</span>
@@ -324,7 +365,7 @@ onUnmounted(() => {
                 </span>
               </div>
             </div>
-            <p class="g-help">{{ t("firstrun.wait") }}</p>
+            <p class="g-help">{{ tp("firstrun.wait") }}</p>
           </div>
           <div v-else-if="rowState(row.id) === 'restart'" class="s-perm-more s-perm-more-tight">
             <p class="g-help">{{ t("firstrun.restartWhy") }}</p>
@@ -342,9 +383,9 @@ onUnmounted(() => {
       <div class="s-privacy">
         <span class="s-privacy-icon"><GIcon name="shield" :size="20" /></span>
         <div>
-          <h2 class="s-privacy-title">{{ t("firstrun.privacy.title") }}</h2>
+          <h2 class="s-privacy-title">{{ tp("firstrun.privacy.title") }}</h2>
           <ul class="s-facts">
-            <li v-for="fact in FACTS" :key="fact"><GIcon name="check" :size="14" /><span>{{ t(fact) }}</span></li>
+            <li v-for="fact in FACTS" :key="fact"><GIcon name="check" :size="14" /><span>{{ tp(fact) }}</span></li>
           </ul>
           <p class="s-privacy-src">
             {{ t("firstrun.privacy.source") }}
@@ -359,40 +400,50 @@ onUnmounted(() => {
       <div class="s-fr-hero">
         <span class="s-appicon"><GIcon name="glyph" :size="32" /></span>
         <div>
-          <h1 class="g-page-title">{{ t("firstrun.fin.title") }}</h1>
-          <p class="s-fr-lead">{{ t("firstrun.fin.lead") }}</p>
+          <h1 class="g-page-title">{{ commandsOnly ? t("firstrun.fin.titleCommand") : t("firstrun.fin.title") }}</h1>
+          <p class="s-fr-lead">{{ commandsOnly ? t("firstrun.fin.leadCommand") : t("firstrun.fin.lead") }}</p>
         </div>
       </div>
 
-      <div role="radiogroup" :aria-label="t('firstrun.fin.title')" class="s-choices2">
-        <label class="s-choice-card">
-          <input v-model="choice" type="radio" class="g-radio" name="keyset" value="ours" />
-          <span class="s-choice-title">{{ t("firstrun.fin.ours") }}</span>
-          <KeyCaps :accelerator="ourKeys" />
-          <span class="g-help">{{ t("firstrun.fin.oursHelp") }}</span>
-        </label>
-        <label class="s-choice-card">
-          <input v-model="choice" type="radio" class="g-radio" name="keyset" value="replace" />
-          <span class="s-choice-title">{{ t("firstrun.fin.replace") }}</span>
-          <KeyCaps :accelerator="MAC_AREA_KEYS" />
-          <span class="g-help">{{ t("firstrun.fin.replaceHelp") }}</span>
-        </label>
-      </div>
-      <div v-if="choice === 'replace'" class="s-replace">
-        <p class="g-help">{{ t("firstrun.fin.replaceSteps") }}</p>
-        <button type="button" class="g-button" @click="openPane('keyboardShortcuts')">
-          <GIcon name="keyboard" :size="16" />{{ t("firstrun.fin.replaceOpen") }}
+      <div v-if="commandsOnly" class="s-replace">
+        <input class="g-field" data-kind="mono" readonly :value="AREA_COMMAND" :aria-label="t('firstrun.fin.command')" @focus="($event.target as HTMLInputElement).select()" />
+        <button type="button" class="g-button" @click="copyCommand">
+          <GIcon :name="commandCopied ? 'check' : 'copy'" :size="16" />{{ t("firstrun.fin.commandCopy") }}
         </button>
       </div>
+      <template v-else>
+        <div role="radiogroup" :aria-label="t('firstrun.fin.title')" class="s-choices2">
+          <label class="s-choice-card">
+            <input v-model="choice" type="radio" class="g-radio" name="keyset" value="ours" />
+            <span class="s-choice-title">{{ t("firstrun.fin.ours") }}</span>
+            <KeyCaps :accelerator="ourKeys" />
+            <span class="g-help">{{ tp("firstrun.fin.oursHelp") }}</span>
+          </label>
+          <label class="s-choice-card">
+            <input v-model="choice" type="radio" class="g-radio" name="keyset" value="replace" />
+            <span class="s-choice-title">{{ tp("firstrun.fin.replace") }}</span>
+            <KeyCaps :accelerator="MAC_AREA_KEYS" />
+            <span class="g-help">{{ tp("firstrun.fin.replaceHelp") }}</span>
+          </label>
+        </div>
+        <div v-if="choice === 'replace'" class="s-replace">
+          <p class="g-help">{{ tp("firstrun.fin.replaceSteps") }}</p>
+          <button v-if="can('systemSettingsPanes')" type="button" class="g-button" @click="openPane('keyboardShortcuts')">
+            <GIcon name="keyboard" :size="16" />{{ tp("firstrun.fin.replaceOpen") }}
+          </button>
+        </div>
+      </template>
 
       <div class="g-group">
         <div class="g-form-row">
           <div class="g-form-label">
             <label for="fr-login">{{ t("firstrun.fin.login") }}</label>
-            <span class="g-help">{{ t("firstrun.fin.loginHelp") }}</span>
+            <span class="g-help">{{ tp("firstrun.fin.loginHelp") }}</span>
             <template v-if="loginRefused">
-              <span class="g-help" data-tone="warn"><GIcon name="warning" :size="14" />{{ t("firstrun.fin.loginRefused") }}</span>
-              <button type="button" class="g-button s-login-open" @click="openPane('loginItems')">{{ t("firstrun.fin.loginOpen") }}</button>
+              <span class="g-help" data-tone="warn"><GIcon name="warning" :size="14" />{{ tp("firstrun.fin.loginRefused") }}</span>
+              <button v-if="can('systemSettingsPanes')" type="button" class="g-button s-login-open" @click="openPane('loginItems')">
+                {{ tp("firstrun.fin.loginOpen") }}
+              </button>
             </template>
           </div>
           <div class="g-form-control">
@@ -407,8 +458,8 @@ onUnmounted(() => {
         </span>
         <span class="s-try-text">
           <b>{{ t("firstrun.fin.tryTitle") }}</b>
-          <span v-if="tryKeys.length">{{ tryParts.before }}{{ tryKeys.join("") }}{{ tryParts.after }}</span>
-          <span v-else>{{ t("firstrun.fin.tryNoKeys") }}</span>
+          <span v-if="tryKeys.length">{{ tryParts.before }}{{ joinCaps(tryKeys) }}{{ tryParts.after }}</span>
+          <span v-else>{{ commandsOnly ? t("firstrun.fin.tryCommand") : tp("firstrun.fin.tryNoKeys") }}</span>
         </span>
       </div>
 

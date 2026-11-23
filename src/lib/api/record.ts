@@ -234,6 +234,9 @@ export type RecordSetup = {
   microphone: boolean;
   /** What Record will record; `null` until a window is chosen in window mode. */
   target: StreamTarget | null;
+  /** A still of the display (a `glimpsfy-frame://backdrop/…` address) that the target draws under
+   * the setup where windows cannot be transparent; `null` where the live screen shows through. */
+  backdrop?: string | null;
   /** The free bytes on the recordings folder's volume when the setup opened, which the options
    * compare with what a take of the time limit would write; `null` when unknown. */
   freeBytes?: number | null;

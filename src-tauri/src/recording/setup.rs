@@ -109,6 +109,9 @@ pub struct RecordSetup {
     /// changes it for this take only.
     pub microphone: bool,
     pub target: Option<StreamTarget>,
+    /// A still of the display that the target draws under the setup, where windows cannot be
+    /// transparent (`frames::set_backdrop`); `None` where the live screen shows through.
+    pub backdrop: Option<String>,
     /// The free bytes on the recordings folder's volume when the setup opened, which the options
     /// compare with what a take of the time limit would write; `None` when it could not be read.
     pub free_bytes: Option<u64>,
@@ -287,6 +290,7 @@ impl RecordSetup {
             camera,
             microphone,
             target: None,
+            backdrop: None,
             free_bytes: None,
         };
         setup.settle(Resolution::Native);

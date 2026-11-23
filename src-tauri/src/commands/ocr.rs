@@ -298,7 +298,12 @@ fn model_store(app: &AppHandle) -> CommandResult<ModelStore> {
 fn engine(app: &AppHandle) -> CommandResult<Arc<dyn OcrEngine>> {
     let choice = app.state::<AppState>().settings.get().ocr.engine;
     Ok(match choice {
-        OcrEngineChoice::System => glimpsfy_ocr::default_engine(),
+        OcrEngineChoice::System => {
+            // The system's engine is PP-OCR on Linux, which finds the app's models through the
+            // folder this names.
+            model_store(app)?;
+            glimpsfy_ocr::default_engine()
+        }
         OcrEngineChoice::PpOcr => {
             model_store(app)?;
             glimpsfy_ocr::engine(EngineId::PpOcr)?

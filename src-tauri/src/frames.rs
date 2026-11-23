@@ -15,7 +15,9 @@
 //! Each request encodes on its own thread, so the displays of a multi-display capture are served
 //! in parallel and the main thread never waits for a frame.
 //!
-//! The scheme also serves a still outside a capture: the preview of a beautify background
+//! The scheme also serves two stills outside a capture: the backdrop the recording target shows
+//! under its setup where windows cannot be transparent (`glimpsfy-frame://backdrop/<id>?t=<token>`,
+//! a BMP for an `<img>`; `recording::take_backdrop`), and the preview of a beautify background
 //! image (`glimpsfy-frame://background/<longest side>?t=<percent-encoded path>`, a PNG). A
 //! background is served only when a preset of Settings › Beautify, the open capture's style, an
 //! editor document or the user's own pick in a file panel names it, so a page cannot read any
@@ -25,7 +27,7 @@
 //! (`glimpsfy-frame://scroll/<display>?t=<token>&v=<n>`, a BMP; `scroll.rs`).
 
 use std::borrow::Cow;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use glimpsfy_capture::{DisplayId, Frame, PngEffort};
@@ -85,10 +87,11 @@ pub fn frame_url(display: DisplayId, token: &str) -> String {
     url(Kind::Display, display, token)
 }
 
-/// What a frame address names: a display's frame of the open capture, or a background preview.
+/// What a frame address names: a display's frame of the open capture, or the backdrop.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Kind {
     Display,
+    Backdrop,
     Background,
     Scroll,
 }
@@ -97,6 +100,7 @@ impl Kind {
     fn name(self) -> &'static str {
         match self {
             Kind::Display => "display",
+            Kind::Backdrop => "backdrop",
             Kind::Background => "background",
             Kind::Scroll => "scroll",
         }
@@ -117,10 +121,12 @@ fn parse(uri: &tauri::http::Uri) -> Option<(Kind, DisplayId, String)> {
     let path = uri.path().trim_matches('/');
     let (kind, id) = match uri.host() {
         Some("display") => (Kind::Display, path),
+        Some("backdrop") => (Kind::Backdrop, path),
         Some("background") => (Kind::Background, path),
         Some("scroll") => (Kind::Scroll, path),
         _ => match path.split_once('/')? {
             ("display", id) => (Kind::Display, id),
+            ("backdrop", id) => (Kind::Backdrop, id),
             ("background", id) => (Kind::Background, id),
             ("scroll", id) => (Kind::Scroll, id),
             _ => return None,
@@ -131,10 +137,31 @@ fn parse(uri: &tauri::http::Uri) -> Option<(Kind, DisplayId, String)> {
     Some((kind, DisplayId(id), token.to_string()))
 }
 
+/// The one backdrop: its display, its token and the still.
+static BACKDROP: Mutex<Option<(DisplayId, String, Arc<Frame>)>> = Mutex::new(None);
+
+fn backdrop() -> std::sync::MutexGuard<'static, Option<(DisplayId, String, Arc<Frame>)>> {
+    BACKDROP.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Keeps `frame` as the backdrop of `display`, in place of any earlier one, and gives the address
+/// the target page loads it from.
+pub fn set_backdrop(display: DisplayId, frame: Arc<Frame>) -> String {
+    let token = crate::session::token();
+    let address = url(Kind::Backdrop, display, &token);
+    *backdrop() = Some((display, token, frame));
+    address
+}
+
 /// The address of a scrolling capture's preview: the token belongs to the scroll, and `version`
 /// changes with every new preview, so the page's `<img>` loads the new one.
 pub fn scroll_url(display: DisplayId, token: &str, version: u64) -> String {
     format!("{}&v={version}", url(Kind::Scroll, display, token))
+}
+
+/// Lets the backdrop go when the setup closes; its address answers 404 from then on.
+pub fn clear_backdrop() {
+    backdrop().take();
 }
 
 /// The files the user picked in a file panel (`app_choose_file`), which a beautify panel may show
@@ -222,6 +249,20 @@ fn serve(app: &tauri::AppHandle, request: &Request<Vec<u8>>) -> Response<Cow<'st
             .header(header::CONTENT_TYPE, FrameFormat::Bmp.content_type())
             .header(header::CACHE_CONTROL, "no-store")
             .body(Cow::Owned(bmp))
+            .unwrap_or_else(|_| reply(StatusCode::INTERNAL_SERVER_ERROR));
+    }
+    if kind == Kind::Backdrop {
+        let still = backdrop().as_ref().filter(|(id, kept, _)| *id == display && *kept == token).map(|b| b.2.clone());
+        let Some(still) = still else {
+            return reply(StatusCode::NOT_FOUND);
+        };
+        // An `<img>` decodes a BMP without the page's help, and the pixels need no compression
+        // on their way across the process.
+        return Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, FrameFormat::Bmp.content_type())
+            .header(header::CACHE_CONTROL, "no-store")
+            .body(Cow::Owned(still.to_bmp()))
             .unwrap_or_else(|_| reply(StatusCode::INTERNAL_SERVER_ERROR));
     }
     let Some(session) = app.state::<AppState>().sessions.current() else {

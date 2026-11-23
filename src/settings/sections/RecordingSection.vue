@@ -15,7 +15,6 @@ import SelectControl from "../../components/SelectControl.vue";
 import SwitchControl from "../../components/SwitchControl.vue";
 import { ApiError, on } from "../../lib/api/core";
 import { record_devices, type Device, type RecordingDevices } from "../../lib/api/record";
-import { t } from "../../lib/i18n";
 import {
   TRANSCRIPT_MODEL_PROGRESS,
   transcript_cancel,
@@ -25,6 +24,8 @@ import {
   type SpeechModelInfo,
   type SpeechModelProgress,
 } from "../../lib/api/transcript";
+import { t, tp } from "../../lib/i18n";
+import { can } from "../../lib/platform";
 import type { Corner, KeysPosition, RecordingResolution, RingColor, Settings, Size2, Size3, VideoCodec, WebcamShape } from "../../lib/settings";
 import { update } from "../store";
 import { describeError, formatBytes, isNotImplemented, uid } from "../text";
@@ -82,7 +83,7 @@ function deviceHelp(kind: "microphones" | "cameras"): { text: string; tone: "war
 const micHelp = computed(() => deviceHelp("microphones"));
 const cameraHelp = computed(() => deviceHelp("cameras"));
 const systemAudioHelp = computed(() =>
-  devicesState.value === "ready" && devices.value && !devices.value.systemAudio ? t("settings.recording.systemAudioMissing") : null,
+  devicesState.value === "ready" && devices.value && !devices.value.systemAudio ? tp("settings.recording.systemAudioMissing") : null,
 );
 
 // ------------------------------------------------------------------------------------ choices
@@ -262,7 +263,7 @@ function swatchKey(event: KeyboardEvent): void {
 </script>
 
 <template>
-  <SectionHead :title="t('settings.recording.headVideo')" :desc="t('settings.recording.videoDesc')" />
+  <SectionHead :title="t('settings.recording.headVideo')" :desc="tp('settings.recording.videoDesc')" />
   <div class="g-group">
     <FormRow :label="t('settings.recording.codec')" :label-id="ids.codec" :help="t('settings.recording.codecHelp')">
       <SegmentedControl :labelledby="ids.codec" :model-value="r.codec" :options="codecs" @update:model-value="(v) => update((s) => (s.recording.codec = v))" />
@@ -303,6 +304,7 @@ function swatchKey(event: KeyboardEvent): void {
     <FormRow :label="t('settings.recording.countdown')" :label-id="ids.countdown">
       <SegmentedControl :labelledby="ids.countdown" :model-value="r.countdownSeconds" :options="countdowns" @update:model-value="(v) => update((s) => (s.recording.countdownSeconds = v))" />
     </FormRow>
+    <template v-if="can('inputOverlays')">
     <FormRow :label="t('settings.recording.clicks')" :for="ids.clicks">
       <SwitchControl :id="ids.clicks" :model-value="r.highlightClicks" @update:model-value="(v) => update((s) => (s.recording.highlightClicks = v))" />
     </FormRow>
@@ -335,11 +337,13 @@ function swatchKey(event: KeyboardEvent): void {
     <FormRow :label="t('settings.recording.keysSize')" :label-id="ids.keysSize" sub :disabled="!r.showKeys">
       <SegmentedControl :labelledby="ids.keysSize" :disabled="!r.showKeys" :model-value="r.keysSize" :options="sizes3" @update:model-value="(v) => update((s) => (s.recording.keysSize = v))" />
     </FormRow>
-    <FormRow :label="t('settings.recording.keysOnly')" :for="ids.keysOnly" sub :disabled="!r.showKeys" :help="t('settings.recording.keysOnlyHelp')">
+    <FormRow :label="t('settings.recording.keysOnly')" :for="ids.keysOnly" sub :disabled="!r.showKeys" :help="tp('settings.recording.keysOnlyHelp')">
       <SwitchControl :id="ids.keysOnly" :disabled="!r.showKeys" :model-value="r.keysOnlyShortcuts" @update:model-value="(v) => update((s) => (s.recording.keysOnlyShortcuts = v))" />
     </FormRow>
+    </template>
   </div>
 
+  <template v-if="can('cameraBubble')">
   <SectionHead :title="t('settings.recording.headWebcam')" :desc="t('settings.recording.webcamDesc')" />
   <div class="g-group">
     <FormRow :label="t('settings.recording.camera')" :for="ids.camera" :help="cameraHelp?.text" :tone="cameraHelp?.tone">
@@ -355,6 +359,7 @@ function swatchKey(event: KeyboardEvent): void {
       <SelectControl :id="ids.corner" :model-value="r.webcamCorner" :options="corners" @update:model-value="(v) => update((s) => (s.recording.webcamCorner = v))" />
     </FormRow>
   </div>
+  </template>
 
   <SectionHead :title="t('settings.recording.headFiles')" />
   <div class="g-group">

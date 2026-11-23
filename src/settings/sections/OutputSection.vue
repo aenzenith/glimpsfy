@@ -1,6 +1,7 @@
 <script setup lang="ts">
 // Settings › Output: where captures go and how they are named and encoded, the apps Send goes to
-// (macOS), window captures, and the history's retention, size and clearing.
+// (macOS), window captures (where single windows can be captured), and the history's retention,
+// size and clearing.
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 
 import ConfirmDialog from "../../components/ConfirmDialog.vue";
@@ -12,7 +13,7 @@ import SelectControl from "../../components/SelectControl.vue";
 import SwitchControl from "../../components/SwitchControl.vue";
 import { history_clear, history_usage, onHistoryChanged, type HistoryUsage } from "../../lib/api/history";
 import { settings_preview_name, type NamePreview, type TemplateProblem } from "../../lib/api/settings";
-import { t } from "../../lib/i18n";
+import { t, tp } from "../../lib/i18n";
 import { can } from "../../lib/platform";
 import type { HistoryRetention, ImageFormat, RetinaScale, Settings, WindowBackground } from "../../lib/settings";
 import { update } from "../store";
@@ -200,9 +201,9 @@ const nothingToClear = computed(() => usageState.value === "ready" && (usage.val
 
 const clearText = computed(() => {
   const u = usage.value;
-  if (!u) return t("settings.output.clearTextUnknown");
+  if (!u) return tp("settings.output.clearTextUnknown");
   const size = formatBytes(u.clearableBytes);
-  return u.clearableEntries === 1 ? t("settings.output.clearTextOne", { size }) : t("settings.output.clearText", { count: formatCount(u.clearableEntries), size });
+  return u.clearableEntries === 1 ? tp("settings.output.clearTextOne", { size }) : tp("settings.output.clearText", { count: formatCount(u.clearableEntries), size });
 });
 
 async function confirmClear(): Promise<void> {
@@ -291,7 +292,7 @@ function cancelClear(): void {
         <span class="p-val">{{ t("settings.output.percent", { n: quality }) }}</span>
       </div>
     </FormRow>
-    <FormRow :label="t('settings.output.retina')" :label-id="ids.retina" :help="t('settings.output.retinaHelp')">
+    <FormRow :label="tp('settings.output.retina')" :label-id="ids.retina" :help="t('settings.output.retinaHelp')">
       <SegmentedControl :labelledby="ids.retina" :model-value="o.retina" :options="retinas" @update:model-value="(v) => update((s) => (s.output.retina = v))" />
     </FormRow>
     <FormRow :label="t('settings.output.copyAfterSave')" :for="ids.copy">
@@ -301,9 +302,10 @@ function cancelClear(): void {
 
   <SendTargets v-if="can('sendToApp')" :settings="settings" />
 
+  <template v-if="can('windowCapture')">
   <SectionHead :title="t('settings.output.headWindows')" />
   <div class="g-group">
-    <FormRow :label="t('settings.output.shadow')" :for="ids.shadow">
+    <FormRow v-if="can('windowShadow')" :label="t('settings.output.shadow')" :for="ids.shadow">
       <SwitchControl :id="ids.shadow" :model-value="o.windowShadow" @update:model-value="(v) => update((s) => (s.output.windowShadow = v))" />
     </FormRow>
     <FormRow :label="t('settings.output.corners')" :for="ids.corners">
@@ -313,13 +315,14 @@ function cancelClear(): void {
       <SegmentedControl :labelledby="ids.background" :model-value="o.windowBackground" :options="backgrounds" @update:model-value="(v) => update((s) => (s.output.windowBackground = v))" />
     </FormRow>
   </div>
+  </template>
 
   <SectionHead :title="t('settings.output.headHistory')" />
   <div class="g-group">
-    <FormRow :label="t('settings.output.keep')" :for="ids.keep" :help="t(o.trashSavedFiles ? 'settings.output.keepHelpTrash' : 'settings.output.keepHelp')">
+    <FormRow :label="t('settings.output.keep')" :for="ids.keep" :help="tp(o.trashSavedFiles ? 'settings.output.keepHelpTrash' : 'settings.output.keepHelp')">
       <SelectControl :id="ids.keep" :model-value="o.historyRetention" :options="retentions" @update:model-value="(v) => update((s) => (s.output.historyRetention = v))" />
     </FormRow>
-    <FormRow :label="t('settings.output.trashSaved')" :for="ids.trash" :help="t('settings.output.trashSavedHelp')" sub :disabled="o.historyRetention === 'forever' || o.historyRetention === 'off'">
+    <FormRow :label="tp('settings.output.trashSaved')" :for="ids.trash" :help="tp('settings.output.trashSavedHelp')" sub :disabled="o.historyRetention === 'forever' || o.historyRetention === 'off'">
       <SwitchControl
         :id="ids.trash"
         :model-value="o.trashSavedFiles"

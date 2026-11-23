@@ -36,7 +36,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-use glimpsfy_capture::{LogicalPoint, LogicalRect, StreamTarget};
+use glimpsfy_capture::{CaptureOptions, DisplayId, LogicalPoint, LogicalRect, StreamTarget};
 use glimpsfy_record::devices::Meter;
 use glimpsfy_record::session::{Env, OwnWindows, Recorder, SystemClock, SystemWriters};
 use glimpsfy_record::{
@@ -64,6 +64,7 @@ pub const PANELS: [&str; 5] = [TARGET, BAR, CANVAS, BUBBLE_CONTROLS, RAIL];
 const CONTROLS_SIZE: (f64, f64) = (96.0, 44.0);
 
 /// The kit's menu bar glyph; while a take records, a red copy of it shows instead.
+#[cfg(target_os = "macos")]
 const TRAY_GLYPH: &[u8] = include_bytes!("../../icons/tray.png");
 
 /// The recorded part of a take: where it is and what the overlays draw over it.
@@ -86,6 +87,9 @@ struct Take {
     /// Return was pressed while the stream still opened, when the recorder cannot start yet: the
     /// take starts the moment the stream is open instead of counting down.
     skip: bool,
+    /// The countdown ended and the take is being armed (see `go_live`).
+    #[cfg(not(target_os = "macos"))]
+    going: bool,
 }
 
 /// The webcam bubble (`record://bubble`), in global points.
@@ -145,6 +149,10 @@ struct Inner {
     /// Whether the bar window takes the mouse now.
     bar_mouse: bool,
     meter: Option<Meter>,
+    /// Own windows that step aside for the length of a take, where the system cannot keep them
+    /// out of a recording; dropping it brings them back.
+    #[cfg(not(target_os = "macos"))]
+    hidden: Option<crate::desktop::CaptureGuard>,
 }
 
 /// The recording area's state, managed by Tauri.
@@ -228,23 +236,16 @@ pub fn setup(app: &AppHandle) {
 }
 
 /// Runs `f` on the main thread and waits for its answer (up to two seconds).
+#[cfg(target_os = "macos")]
 fn on_main_wait<T: Send + 'static>(
     app: &AppHandle,
     f: impl FnOnce(objc2::MainThreadMarker) -> T + Send + 'static,
 ) -> Option<T> {
-    #[cfg(target_os = "macos")]
-    {
-        let (tx, rx) = std::sync::mpsc::channel();
-        crate::macos::on_main(app, move |mtm| {
-            let _ = tx.send(f(mtm));
-        });
-        rx.recv_timeout(Duration::from_secs(2)).ok()
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = (app, f);
-        None
-    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    crate::macos::on_main(app, move |mtm| {
+        let _ = tx.send(f(mtm));
+    });
+    rx.recv_timeout(Duration::from_secs(2)).ok()
 }
 
 // ----------------------------------------------------------------------------- the windows
@@ -277,19 +278,24 @@ fn panel(app: &AppHandle, label: &str) -> Option<WebviewWindow> {
     let built = build();
     match built {
         Ok(window) => {
+            #[cfg(not(target_os = "macos"))]
+            use crate::desktop::recording::Panel;
+            #[cfg(target_os = "macos")]
+            use crate::macos::recording::Panel;
+            let kind = match label {
+                TARGET => Panel::Target,
+                BAR => Panel::Bar,
+                CANVAS => Panel::Canvas,
+                // The rail is a keyless panel at the bars' level, as the bubble's controls are.
+                _ => Panel::BubbleControls,
+            };
             #[cfg(target_os = "macos")]
             {
-                use crate::macos::recording::Panel;
-                let kind = match label {
-                    TARGET => Panel::Target,
-                    BAR => Panel::Bar,
-                    CANVAS => Panel::Canvas,
-                    // The rail is a keyless panel at the bars' level, as the bubble's controls are.
-                    _ => Panel::BubbleControls,
-                };
                 let w = window.clone();
                 crate::macos::on_main(app, move |mtm| crate::macos::recording::setup_panel(&w, kind, mtm));
             }
+            #[cfg(not(target_os = "macos"))]
+            crate::desktop::recording::setup_panel(&window, kind);
             Some(window)
         }
         Err(error) => {
@@ -305,10 +311,8 @@ fn show(app: &AppHandle, label: &str, frame: LogicalRect, key: bool, through: bo
     crate::macos::on_main(app, move |mtm| crate::macos::recording::show(&window, frame, key, through, mtm));
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (app, key, through);
-        let _ = window.set_position(tauri::LogicalPosition::new(frame.x, frame.y));
-        let _ = window.set_size(tauri::LogicalSize::new(frame.width, frame.height));
-        let _ = window.show();
+        let _ = app;
+        crate::desktop::recording::show(&window, frame, key, through);
     }
 }
 
@@ -316,18 +320,16 @@ fn show(app: &AppHandle, label: &str, frame: LogicalRect, key: bool, through: bo
 /// turn of the main thread, so the blur and the shadow move with the bar; `through` lets the
 /// clicks pass while the pointer is off the glass.
 fn show_bar(app: &AppHandle, frame: LogicalRect, key: bool, through: bool, pieces: Vec<setup::GlassPiece>) {
+    let Some(window) = panel(app, BAR) else { return };
     #[cfg(target_os = "macos")]
-    {
-        let Some(window) = panel(app, BAR) else { return };
-        crate::macos::on_main(app, move |mtm| {
-            crate::macos::recording::show(&window, frame, key, through, mtm);
-            crate::macos::recording::backdrop_show(&window, frame, &pieces, mtm);
-        });
-    }
+    crate::macos::on_main(app, move |mtm| {
+        crate::macos::recording::show(&window, frame, key, through, mtm);
+        crate::macos::recording::backdrop_show(&window, frame, &pieces, mtm);
+    });
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (pieces, through);
-        show(app, BAR, frame, key, false);
+        crate::desktop::recording::show(&window, frame, key, through);
+        crate::desktop::recording::backdrop_show(&window, frame, &pieces);
     }
 }
 
@@ -337,11 +339,14 @@ fn bar_take_mouse(app: &AppHandle, takes: bool) {
     #[cfg(target_os = "macos")]
     crate::macos::on_main(app, move |mtm| crate::macos::recording::take_mouse(&window, takes, mtm));
     #[cfg(not(target_os = "macos"))]
-    let _ = (window, takes);
+    {
+        let _ = app;
+        crate::desktop::recording::take_mouse(&window, takes);
+    }
 }
 
-/// Whether the pointer is over one of `rects` (global points). Off macOS there is no pointer to
-/// read, and the bar always takes the mouse.
+/// Whether the pointer is over one of `rects` (global points). Where the system does not tell
+/// where the pointer is (Wayland), the bar always takes the mouse.
 fn pointer_over(rects: &[LogicalRect]) -> bool {
     #[cfg(target_os = "macos")]
     {
@@ -349,10 +354,7 @@ fn pointer_over(rects: &[LogicalRect]) -> bool {
         rects.iter().any(|r| r.contains(pointer))
     }
     #[cfg(not(target_os = "macos"))]
-    {
-        let _ = rects;
-        true
-    }
+    crate::desktop::recording::pointer_over(rects)
 }
 
 /// Hides a `rec-*` window; its caller holds no lock on the recording's state.
@@ -374,21 +376,24 @@ fn hide(app: &AppHandle, label: &str) {
     #[cfg(not(target_os = "macos"))]
     {
         let _ = app;
-        let _ = window.hide();
+        crate::desktop::recording::hide(&window);
+        if label == BAR {
+            crate::desktop::recording::backdrop_hide();
+        }
     }
 }
 
 /// The window numbers of the app's own windows: those the file must not show, and those it
 /// shows (the canvas and the bubble).
 fn own_windows(app: &AppHandle) -> OwnWindows {
-    let labels: Vec<(String, WebviewWindow)> = app.webview_windows().into_iter().collect();
-    on_main_wait(app, move |_mtm| {
-        #[cfg(target_os = "macos")]
-        {
-            use glimpsfy_capture::WindowId;
+    #[cfg(target_os = "macos")]
+    {
+        use glimpsfy_capture::WindowId;
+        let labels: Vec<(String, WebviewWindow)> = app.webview_windows().into_iter().collect();
+        on_main_wait(app, move |mtm| {
             let mut own = OwnWindows::default();
             for (label, window) in &labels {
-                if let Some(n) = crate::macos::recording::window_number(window, _mtm) {
+                if let Some(n) = crate::macos::recording::window_number(window, mtm) {
                     if label == CANVAS {
                         own.shown.push(WindowId(n));
                     } else {
@@ -396,21 +401,18 @@ fn own_windows(app: &AppHandle) -> OwnWindows {
                     }
                 }
             }
-            if let Some(n) = crate::macos::recording::bubble_window_number(_mtm) {
+            if let Some(n) = crate::macos::recording::bubble_window_number(mtm) {
                 own.shown.push(WindowId(n));
             }
-            if let Some(n) = crate::macos::recording::backdrop_window_number(_mtm) {
+            if let Some(n) = crate::macos::recording::backdrop_window_number(mtm) {
                 own.hidden.push(WindowId(n));
             }
             own
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            let _ = labels;
-            OwnWindows::default()
-        }
-    })
-    .unwrap_or_default()
+        })
+        .unwrap_or_default()
+    }
+    #[cfg(not(target_os = "macos"))]
+    crate::desktop::recording::own_windows(app)
 }
 
 fn visible_frame(app: &AppHandle, display: glimpsfy_capture::DisplayId) -> Option<LogicalRect> {
@@ -418,8 +420,8 @@ fn visible_frame(app: &AppHandle, display: glimpsfy_capture::DisplayId) -> Optio
     return on_main_wait(app, move |mtm| crate::macos::recording::visible_frame(display, mtm)).flatten();
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (app, display);
-        None
+        let _ = app;
+        crate::desktop::recording::visible_frame(display)
     }
 }
 
@@ -429,6 +431,15 @@ fn emit_state(app: &AppHandle) {
     let now = state(app).recorder.state();
     let _ = app.emit(events::STATE, &now);
     tray(app, &now, None);
+    // Linux keeps the bar off the recorded rectangle while the take records, and brings it back
+    // while it pauses (`bar_off_the_take`).
+    #[cfg(target_os = "linux")]
+    if matches!(now, RecordingState::Recording { .. } | RecordingState::Paused { .. }) {
+        let bar = lock(&state(app).inner).bar;
+        if let Some((bar, pop, glass)) = bar {
+            let _ = fit_bar(app, bar, pop, glass);
+        }
+    }
 }
 
 fn emit_setup(app: &AppHandle) {
@@ -472,7 +483,7 @@ pub fn open_setup(app: &AppHandle, request: SetupRequest) -> CommandResult<Recor
             #[cfg(target_os = "macos")]
             let pointer = crate::macos::pointer();
             #[cfg(not(target_os = "macos"))]
-            let pointer = LogicalPoint { x: 0.0, y: 0.0 };
+            let pointer = crate::desktop::pointer();
             setup::display_at(&displays, pointer)
         }
     }
@@ -488,9 +499,11 @@ pub fn open_setup(app: &AppHandle, request: SetupRequest) -> CommandResult<Recor
     let kept = lock(&rec.inner).setup.as_ref().map(|s| (s.camera.clone(), s.microphone));
     let (camera, microphone) = kept
         .unwrap_or_else(|| (camera_from_settings(app), app.state::<AppState>().settings.get().recording.microphone));
-    let resolution = setup::resolution(&app.state::<AppState>().settings.get().recording);
+    let recording = app.state::<AppState>().settings.get().recording;
+    let resolution = setup::resolution(&recording);
     let mut next = RecordSetup::new(mode, described, windows, request.rect, request.window_id, camera, microphone);
     next.settle(resolution);
+    next.backdrop = take_backdrop(app, display.id);
     next.free_bytes = glimpsfy_record::files::free_bytes(&recording.recordings_folder).ok();
     lock(&rec.inner).setup = Some(next.clone());
     show_setup(app);
@@ -498,6 +511,32 @@ pub fn open_setup(app: &AppHandle, request: SetupRequest) -> CommandResult<Recor
     sync_bubble(app);
     watch(app);
     Ok(next)
+}
+
+/// Where windows cannot be transparent (an X11 desktop without a compositor) the target is an
+/// opaque slab over its display and the user would pick blind, so it draws a still of the display
+/// under the setup instead, as the capture overlay draws its frozen frame. The still is taken with
+/// the app's own windows out of the way and served through `glimpsfy-frame://`.
+fn take_backdrop(app: &AppHandle, display: DisplayId) -> Option<String> {
+    if crate::commands::windows::app_platform().capabilities.transparent_windows {
+        return None;
+    }
+    let backend = app.state::<AppState>().backend.clone();
+    #[cfg(not(target_os = "macos"))]
+    let hidden = crate::desktop::hide_for_capture(app, &[]);
+    #[cfg(not(target_os = "macos"))]
+    hidden.settle();
+    let taken = backend.capture_display(display, &CaptureOptions { shows_cursor: false, exclude_own_windows: true });
+    #[cfg(not(target_os = "macos"))]
+    drop(hidden);
+    match taken {
+        Ok(frame) => Some(crate::frames::set_backdrop(display, Arc::new(frame))),
+        Err(error) => {
+            // The setup still opens, over the opaque page, rather than not at all.
+            trace::log(format!("[glimpsfy] the recording target's still failed: {error}"));
+            None
+        }
+    }
 }
 
 /// Shows the target over the setup's display with the keyboard, and the bar once the page has
@@ -615,6 +654,7 @@ pub fn close_setup(app: &AppHandle) {
         inner.meter = None;
     }
     state(app).meter_generation.fetch_add(1, Ordering::SeqCst);
+    crate::frames::clear_backdrop();
     for label in [TARGET, BAR, BUBBLE_CONTROLS, CANVAS] {
         hide(app, label);
     }
@@ -645,6 +685,21 @@ pub fn fit_bar(app: &AppHandle, bar: Size, pop: Option<Size>, glass: BarGlass) -
         return Ok(setup::BarLayout { popover_side: setup::PopoverSide::Below, width: 0.0, height: 0.0 });
     };
     let (frame, side) = setup::place_bar(mode, rect, &display, bar, pop);
+    #[cfg(target_os = "linux")]
+    let (frame, side) = {
+        let recording = matches!(now, RecordingState::Recording { .. });
+        match inner.take.as_ref().filter(|_| recording) {
+            Some(take) => match bar_off_the_take(app, take.rect, (frame, side), bar, pop, glass) {
+                Some(place) => place,
+                None => {
+                    drop(inner);
+                    hide(app, BAR);
+                    return Ok(setup::BarLayout { popover_side: side, width: frame.width, height: frame.height });
+                }
+            },
+            None => (frame, side),
+        }
+    };
     let layout = setup::BarLayout { popover_side: side, width: frame.width, height: frame.height };
     if side != glass.side {
         // The page draws the bar at the stage's other edge: shown now, the bar would sit a
@@ -668,6 +723,40 @@ pub fn fit_bar(app: &AppHandle, bar: Size, pop: Option<Size>, glass: BarGlass) -
     // window after this one.
     show_bar(app, frame, key, !inner.bar_mouse, pieces);
     Ok(layout)
+}
+
+/// Where the bar goes while a take records on Linux, which cannot keep any window out of the
+/// file (an X11 grab and the ScreenCast portal show whatever is on screen): where `placed` puts
+/// it when its glass stays off the recorded rectangle, else at the foot of another display that
+/// the take does not record, else nowhere (`None`), and the take is paused, stopped and
+/// discarded from the tray menu, the shortcuts and `glimpsfy --action`, while the tray shows its
+/// time. A paused take records nothing, so the bar comes back while it pauses.
+#[cfg(target_os = "linux")]
+fn bar_off_the_take(
+    app: &AppHandle,
+    recorded: LogicalRect,
+    placed: (LogicalRect, setup::PopoverSide),
+    bar: Size,
+    pop: Option<Size>,
+    glass: BarGlass,
+) -> Option<(LogicalRect, setup::PopoverSide)> {
+    let covers = |(frame, side): (LogicalRect, setup::PopoverSide)| {
+        setup::glass_pieces(frame, bar, pop, side, glass).iter().any(|piece| {
+            let global = LogicalRect { x: frame.x + piece.rect.x, y: frame.y + piece.rect.y, ..piece.rect };
+            global.intersection(&recorded).is_some()
+        })
+    };
+    // Without a tray host (stock GNOME) the bar is the only control on screen, so it stays where
+    // it is, and the file shows it, rather than leave a take nobody can see how to stop.
+    if !covers(placed) || crate::desktop::tray_host_absent() {
+        return Some(placed);
+    }
+    let displays = app.state::<AppState>().backend.displays().ok()?;
+    displays.iter().filter(|display| display.frame.intersection(&recorded).is_none()).find_map(|display| {
+        let described = setup::describe(display, visible_frame(app, display.id));
+        let place = setup::place_bar(TargetMode::Display, display.frame, &described, bar, pop);
+        (!covers(place)).then_some(place)
+    })
 }
 
 // ------------------------------------------------------------------------------- the bubble
@@ -738,7 +827,10 @@ fn sync_bubble(app: &AppHandle) {
                 });
             }
             #[cfg(not(target_os = "macos"))]
-            let _ = (device, rect, round);
+            if let Err(error) = crate::desktop::recording::bubble_show(device.as_deref(), rect, round) {
+                trace::log(format!("[glimpsfy] webcam bubble: {error}"));
+                let _ = app.emit(events::BUBBLE, None::<BubbleState>);
+            }
         }
         None => hide_bubble(app),
     }
@@ -749,6 +841,8 @@ fn hide_bubble(app: &AppHandle) {
     hide(app, BUBBLE_CONTROLS);
     #[cfg(target_os = "macos")]
     crate::macos::on_main(app, crate::macos::recording::bubble_hide);
+    #[cfg(not(target_os = "macos"))]
+    crate::desktop::recording::bubble_hide();
 }
 
 pub fn bubble_state(app: &AppHandle) -> Option<BubbleState> {
@@ -819,7 +913,7 @@ fn snap_bubble(app: &AppHandle, dropped: LogicalRect) {
     #[cfg(target_os = "macos")]
     crate::macos::on_main(app, move |mtm| crate::macos::recording::bubble_move(rect, round, true, mtm));
     #[cfg(not(target_os = "macos"))]
-    let _ = (rect, round);
+    crate::desktop::recording::bubble_move(rect, round, true);
     emit_bubble(app);
     let store = &app.state::<AppState>().settings;
     let mut settings = store.get();
@@ -879,8 +973,11 @@ fn watch(app: &AppHandle) {
             }
             #[cfg(target_os = "macos")]
             let (pointer, down) = (crate::macos::pointer(), crate::macos::recording::left_button_down());
+            // Where the system does not tell where the pointer is, there is nothing to follow.
             #[cfg(not(target_os = "macos"))]
-            let (pointer, down) = (LogicalPoint { x: 0.0, y: 0.0 }, false);
+            let Some((pointer, down)) = crate::desktop::recording::pointer_and_button() else {
+                continue;
+            };
 
             // While a window is picked, the target outlines the window under the pointer. Its web
             // view gets no mouse moves while the bar holds the keyboard, so the pointer comes
@@ -903,7 +1000,6 @@ fn watch(app: &AppHandle) {
 
             // The bar's window takes the mouse only over its glass; with a button down nothing
             // changes, so a press keeps its window until it is let go.
-            #[cfg(target_os = "macos")]
             {
                 let mut inner = lock(&state(&app).inner);
                 if !inner.bar_hit.is_empty() && !down {
@@ -1126,6 +1222,8 @@ pub async fn start(app: AppHandle, config: Option<RecordingConfig>) -> CommandRe
         from_setup,
         limit_ms: settings.recording.time_limit_minutes.map(|m| m.clamp(1, 240) as u64 * 60_000),
         skip: false,
+        #[cfg(not(target_os = "macos"))]
+        going: false,
     };
 
     {
@@ -1230,6 +1328,7 @@ pub fn skip_countdown(app: &AppHandle) -> CommandResult<()> {
 }
 
 /// The countdown ended: buffers belong to the take from now on.
+#[cfg(target_os = "macos")]
 fn go_live(app: &AppHandle, id: &RecordingId) {
     let rec = state(app);
     if rec.recorder.current().as_ref() != Some(id) {
@@ -1242,10 +1341,63 @@ fn go_live(app: &AppHandle, id: &RecordingId) {
     emit_state(app);
     // The target keeps the red frame and lets every click through to the app being recorded,
     // which gets the keyboard back.
-    #[cfg(target_os = "macos")]
     if let Some(target) = app.get_webview_window(TARGET) {
         crate::macos::on_main(app, move |mtm| crate::macos::recording::pass_through(&target, mtm));
     }
+    went_live(app, id);
+}
+
+/// The countdown ended: buffers belong to the take from now on. Where the system cannot keep the
+/// countdown, the red frame, the pins, the toast and the popover out of the file, they leave the
+/// screen first and the take is armed once the screen has lost them; armed at once, its first
+/// frames showed the countdown's last digit and the frame. The bar stays, since it is how the
+/// take is ended. The wait runs on a thread of its own: the main thread has to take the windows
+/// off the screen meanwhile.
+#[cfg(not(target_os = "macos"))]
+fn go_live(app: &AppHandle, id: &RecordingId) {
+    let rec = state(app);
+    if rec.recorder.current().as_ref() != Some(id) {
+        return;
+    }
+    // Return and the countdown's last tick can both end the countdown; one of them arms.
+    match lock(&rec.inner).take.as_mut().filter(|t| t.id == *id) {
+        Some(take) if !take.going => take.going = true,
+        _ => return,
+    }
+    let concealed = app.get_webview_window(TARGET).is_some_and(|t| crate::desktop::recording::pass_through(&t));
+    let hidden = crate::desktop::hide_for_capture(app, &[BAR, TARGET]);
+    let (app, id) = (app.clone(), id.clone());
+    std::thread::spawn(move || {
+        if concealed || hidden.hid_any() {
+            std::thread::sleep(crate::desktop::HIDE_SETTLE);
+        }
+        let rec = state(&app);
+        let armed = if rec.recorder.current().as_ref() != Some(&id) {
+            Err("the take ended meanwhile".to_string())
+        } else {
+            rec.recorder.go().map_err(|e| e.to_string())
+        };
+        match armed {
+            Ok(()) => {
+                lock(&rec.inner).hidden = Some(hidden);
+                emit_state(&app);
+                went_live(&app, &id);
+            }
+            Err(error) => {
+                trace::log(format!("[glimpsfy] recording {}: {error}", id.0));
+                // The stream may still be opening (Return during its start); `start` arms the
+                // take again once it is open. The hidden windows come back with `hidden`.
+                if let Some(take) = lock(&rec.inner).take.as_mut().filter(|t| t.id == id) {
+                    take.going = false;
+                }
+            }
+        }
+    });
+}
+
+/// What follows the arming on every platform: the click and key watch, the bar, the ticks.
+fn went_live(app: &AppHandle, id: &RecordingId) {
+    let rec = state(app);
     let watch_input = lock(&rec.inner).take.as_ref().map(|t| (t.config.clicks.enabled, t.config.keystrokes));
     if let Some((clicks, keys)) = watch_input {
         #[cfg(target_os = "macos")]
@@ -1266,7 +1418,16 @@ fn go_live(app: &AppHandle, id: &RecordingId) {
             });
         }
         #[cfg(not(target_os = "macos"))]
-        let _ = (clicks, keys);
+        crate::desktop::recording::watch_input(
+            app,
+            crate::desktop::recording::InputWatch {
+                clicks,
+                keys: keys.enabled,
+                only_shortcuts: keys.only_shortcuts,
+                on_click,
+                on_keys,
+            },
+        );
     }
     // The bar page fits the control bar when its size differs from the last one it reported; when
     // it is the same the page stays silent, so the last sizes place the window here.
@@ -1466,6 +1627,13 @@ fn end_take_windows(app: &AppHandle, back_to_setup: bool) {
     present::end(app);
     #[cfg(target_os = "macos")]
     crate::macos::on_main(app, crate::macos::recording::unwatch_input);
+    #[cfg(not(target_os = "macos"))]
+    {
+        crate::desktop::recording::unwatch_input();
+        // Taken out under the lock and dropped after it: the drop shows windows again.
+        let hidden = lock(&state(app).inner).hidden.take();
+        drop(hidden);
+    }
     {
         let mut inner = lock(&state(app).inner);
         inner.canvas = None;
@@ -1484,6 +1652,7 @@ fn end_take_windows(app: &AppHandle, back_to_setup: bool) {
         inner.setup = None;
         inner.bubble = None;
     }
+    crate::frames::clear_backdrop();
     for label in [TARGET, BAR, BUBBLE_CONTROLS] {
         hide(app, label);
     }
@@ -1676,7 +1845,6 @@ fn keep_take(
 /// The tray while a take runs: the glyph turns red and the elapsed time follows it; paused shows
 /// the plain glyph, a pause mark and the frozen time; the countdown shows its seconds.
 fn tray(app: &AppHandle, now: &RecordingState, elapsed: Option<u64>) {
-    let Some(icon) = crate::tray::icon(app) else { return };
     let clock = |ms: u64| {
         let s = ms / 1000;
         if s >= 3600 {
@@ -1685,33 +1853,57 @@ fn tray(app: &AppHandle, now: &RecordingState, elapsed: Option<u64>) {
             format!("{}:{:02}", s / 60, s % 60)
         }
     };
-    let glyph = tauri::image::Image::from_bytes(TRAY_GLYPH).ok();
-    match now {
-        RecordingState::Recording { elapsed_ms, .. } => {
-            if let Some(red) = glyph.as_ref().map(red_glyph) {
-                let _ = icon.set_icon(Some(red));
-                let _ = icon.set_icon_as_template(false);
+    #[cfg(target_os = "macos")]
+    {
+        let Some(icon) = crate::tray::icon(app) else { return };
+        let glyph = tauri::image::Image::from_bytes(TRAY_GLYPH).ok();
+        match now {
+            RecordingState::Recording { elapsed_ms, .. } => {
+                if let Some(red) = glyph.as_ref().map(red_glyph) {
+                    let _ = icon.set_icon(Some(red));
+                    let _ = icon.set_icon_as_template(false);
+                }
+                let _ = icon.set_title(Some(clock(elapsed.unwrap_or(*elapsed_ms))));
             }
-            let _ = icon.set_title(Some(clock(elapsed.unwrap_or(*elapsed_ms))));
+            RecordingState::Paused { elapsed_ms, .. } => {
+                let _ = icon.set_icon(glyph);
+                let _ = icon.set_icon_as_template(true);
+                let _ = icon.set_title(Some(format!("❚❚ {}", clock(elapsed.unwrap_or(*elapsed_ms)))));
+            }
+            RecordingState::Countdown { remaining_seconds, .. } => {
+                let _ = icon.set_title(Some(remaining_seconds.to_string()));
+            }
+            RecordingState::Finishing { .. } => {}
+            RecordingState::Idle => {
+                let _ = icon.set_icon(glyph);
+                let _ = icon.set_icon_as_template(true);
+                let _ = icon.set_title(None::<String>);
+            }
         }
-        RecordingState::Paused { elapsed_ms, .. } => {
-            let _ = icon.set_icon(glyph);
-            let _ = icon.set_icon_as_template(true);
-            let _ = icon.set_title(Some(format!("❚❚ {}", clock(elapsed.unwrap_or(*elapsed_ms)))));
-        }
-        RecordingState::Countdown { remaining_seconds, .. } => {
-            let _ = icon.set_title(Some(remaining_seconds.to_string()));
-        }
-        RecordingState::Finishing { .. } => {}
-        RecordingState::Idle => {
-            let _ = icon.set_icon(glyph);
-            let _ = icon.set_icon_as_template(true);
-            let _ = icon.set_title(None::<String>);
-        }
+    }
+    // The same states with the platform's own glyph, and the text where its tray can show one.
+    #[cfg(not(target_os = "macos"))]
+    {
+        // Linux's menu starts, pauses and stops the take, so its items follow the state.
+        #[cfg(target_os = "linux")]
+        crate::tray::follow_recording(app, now);
+        let (red, text) = match now {
+            RecordingState::Recording { elapsed_ms, .. } => (true, Some(clock(elapsed.unwrap_or(*elapsed_ms)))),
+            RecordingState::Paused { elapsed_ms, .. } => {
+                (false, Some(format!("❚❚ {}", clock(elapsed.unwrap_or(*elapsed_ms)))))
+            }
+            RecordingState::Countdown { remaining_seconds, .. } => (false, Some(remaining_seconds.to_string())),
+            RecordingState::Finishing { .. } => return,
+            RecordingState::Idle => (false, None),
+        };
+        // The ticks come four times a second; both calls leave alone what is already right.
+        crate::desktop::tray_look(app, red);
+        crate::desktop::tray_text(app, text);
     }
 }
 
 /// The glyph in the kit's recording red, keeping its shape.
+#[cfg(target_os = "macos")]
 fn red_glyph(glyph: &tauri::image::Image<'_>) -> tauri::image::Image<'static> {
     let mut rgba = glyph.rgba().to_vec();
     for pixel in rgba.chunks_exact_mut(4) {

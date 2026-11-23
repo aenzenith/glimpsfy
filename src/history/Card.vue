@@ -6,9 +6,10 @@ import { computed, inject, onBeforeUnmount, onMounted } from "vue";
 import GIcon from "../components/GIcon.vue";
 import { entryName, fileUrl, thumbUrl, type HistoryItem } from "../lib/api/history";
 import { t } from "../lib/i18n";
+import { commandHeld } from "../lib/keys";
 import { HISTORY, type HistoryContext } from "./context";
 import Marked from "./Marked.vue";
-import { formatBytes, formatDuration, formatTime, GRID } from "./model";
+import { copyable, formatBytes, formatDuration, formatTime, GRID } from "./model";
 import { seriesSub, skippedMark } from "./series";
 import Shot from "./Shot.vue";
 
@@ -86,7 +87,7 @@ onBeforeUnmount(up);
 
 function click(event: MouseEvent): void {
   if ((event.target as HTMLElement).closest("button")) return;
-  const mode = event.shiftKey ? "range" : event.metaKey ? "toggle" : "one";
+  const mode = event.shiftKey ? "range" : commandHeld(event) ? "toggle" : "one";
   ctx.act.pick(id.value, mode);
   // A plain click on a series opens its frames under the row; its chevron closes them again.
   if (mode === "one" && isSeries.value && !open.value) ctx.act.toggleSeries(id.value);
@@ -179,7 +180,7 @@ function more(event: MouseEvent): void {
       </div>
       <div v-else class="g-card-actions g-glass" role="toolbar" :aria-label="t('history.card.actions')">
         <button
-          v-if="entry.kind !== 'textCopy'"
+          v-if="entry.kind !== 'textCopy' && copyable(entry)"
           type="button"
           class="g-btn"
           data-size="small"

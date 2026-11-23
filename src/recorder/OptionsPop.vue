@@ -11,6 +11,7 @@ import SwitchControl from "../components/SwitchControl.vue";
 import type { PhysicalSize } from "../lib/api/capture";
 import type { Resolution } from "../lib/api/record";
 import { language, t } from "../lib/i18n";
+import { can } from "../lib/platform";
 import { clock } from "./format";
 
 const props = defineProps<{
@@ -146,15 +147,18 @@ const tooBig = computed(() => {
       }}</span>
     </p>
     <p v-else-if="limitMinutes !== null" class="g-pop-help r-pop-indent">{{ t("record.options.limitHelp", { time: clock(limitMs) }) }}</p>
-    <div class="g-pop-sep" role="separator" />
-    <label class="g-pop-row">
-      <span class="g-pop-label"><GIcon name="click" :size="16" />{{ t("record.options.clicks") }}</span>
-      <SwitchControl :model-value="clicks" @update:model-value="emit('clicks', $event)" />
-    </label>
-    <label class="g-pop-row">
-      <span class="g-pop-label"><GIcon name="keyboard" :size="16" />{{ t("record.options.keys") }}</span>
-      <SwitchControl :model-value="keys" @update:model-value="emit('keys', $event)" />
-    </label>
+    <!-- The click ring and the key caps only where the platform draws them (`inputOverlays`). -->
+    <template v-if="can('inputOverlays')">
+      <div class="g-pop-sep" role="separator" />
+      <label class="g-pop-row">
+        <span class="g-pop-label"><GIcon name="click" :size="16" />{{ t("record.options.clicks") }}</span>
+        <SwitchControl :model-value="clicks" @update:model-value="emit('clicks', $event)" />
+      </label>
+      <label class="g-pop-row">
+        <span class="g-pop-label"><GIcon name="keyboard" :size="16" />{{ t("record.options.keys") }}</span>
+        <SwitchControl :model-value="keys" @update:model-value="emit('keys', $event)" />
+      </label>
+    </template>
     <div class="g-pop-sep" role="separator" />
     <p class="g-pop-foot">{{ t("record.options.persist") }}</p>
   </div>

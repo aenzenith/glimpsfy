@@ -28,12 +28,12 @@ import RedactionNotice from "../annotate/RedactionNotice.vue";
 import Surface from "../annotate/Surface.vue";
 import type { ToolId as AnnotateTool } from "../annotate/prefs";
 import { TEXT_LAYER, textLayerComponent, type TextLayerContext } from "../annotate/textLayer";
+import { thumbnail, thumbnailOfPixels, uploadFlow } from "../annotate/upload";
 import { useSnapWords } from "../annotate/useSnapWords";
 import { useRecognition } from "../ocr/useRecognition";
 import SensitiveMarks from "../ocr/SensitiveMarks.vue";
 import SensitivePanel from "../ocr/SensitivePanel.vue";
 import { useSensitive } from "../ocr/sensitive";
-import { thumbnail, thumbnailOfPixels, uploadFlow } from "../annotate/upload";
 import { clamped, edgeMedian, useBackgroundImage } from "../annotate/beautify";
 import { writeBeautify, type BeautifyStyle } from "../lib/annotate";
 import {
@@ -71,9 +71,10 @@ import { output_save_as_rendered } from "../lib/api/render";
 import { subject_copy, subject_copy_rendered } from "../lib/api/subject";
 import { upload_capture } from "../lib/api/upload";
 import { pin_open, window_open_settings } from "../lib/api/windows";
-import { can } from "../lib/platform";
 import { CAPTURE_CLOSED, CAPTURE_STARTED, OVERLAY_SELECTION_ENDED, OVERLAY_SELECTION_STARTED } from "../lib/events";
-import { t, type Key } from "../lib/i18n";
+import { t, tp, type Key } from "../lib/i18n";
+import { chord, commandHeld, commandKeyName } from "../lib/keys";
+import { can, isMac } from "../lib/platform";
 import type { SavedSize } from "../lib/settings";
 import {
   FREE,
@@ -97,14 +98,15 @@ import { cssColor, drawLens, ensureContext, hex, loadFrame, pixelAt } from "./fr
 import { place, placeLoupe, type Placement, type Rect } from "./layout";
 import { ACTIONS, TOOLS, WORKING_ACTIONS, actionForChord, toolForKey, type ActionId, type ToolId } from "./tools";
 import FirstUploadDialog from "../upload/FirstUploadDialog.vue";
+import { modelsMissing } from "../ocr/models";
 import { jobName } from "../ocr/text";
 import "./overlay.css";
 import * as modes from "./modes";
 import Ruler from "./ruler/Ruler.vue";
 import ColorCard from "./ColorCard.vue";
-import { pixelSource } from "./ruler/edges";
-import { useOverlayBeautify } from "./beautify";
 import ScrollMode from "./ScrollMode.vue";
+import { useOverlayBeautify } from "./beautify";
+import { pixelSource } from "./ruler/edges";
 
 /** `pick` is the colour picker (`ColorCard.vue`): its shortcut opens it, or I before a selection.
  * `scroll` is the scrolling capture of the selection (⌘↓). */
@@ -121,10 +123,10 @@ const LENS_SIZE = 136;
  * holds back the frames of a window it believes occluded, and the overlay follows the pointer
  * even then. */
 const MOVE_WAIT_MS = 48;
-/** The selection's iris line outside its edge, in points (the kit's `.g-selection::before`). */
-const EDGE_IRIS = 1.5;
 /** How long the scrolling capture says that a wheel turned outside the selection. */
 const OUTSIDE_MS = 3500;
+/** The selection's iris line outside its edge, in points (the kit's `.g-selection::before`). */
+const EDGE_IRIS = 1.5;
 const HANDLES: [number, number, "x" | "y" | null][] = [
   [0, 0, null],
   [0.5, 0, "x"],
@@ -143,6 +145,8 @@ const displayId = Number(getCurrentWebviewWindow().label.replace("overlay-", "")
 const frame = shallowRef<OverlayFrame | null>(null);
 const mode = ref<Mode>("idle");
 const windowMode = ref(false);
+/** Copy text found no PP-OCR models to read with (`ocr/models.ts`). */
+const noModels = ref(false);
 const sel = shallowRef<Rect | null>(null);
 const pointer = shallowRef<Point | null>(null);
 const hovered = shallowRef<OverlayWindow | null>(null);
@@ -159,12 +163,6 @@ const cursor = ref("crosshair");
 const heldElsewhere = ref<number | null>(null);
 const view = reactive({ w: window.innerWidth, h: window.innerHeight });
 const loupeShown = ref(false);
-/** The ruler is on: no dim, loupe, window hover or size label, and the measures take the pointer. */
-const rulerOn = ref(false);
-/** This page holds the keyboard, so the ruler's bar shows here and on no other display. */
-const keyHeld = ref(false);
-const rulerEl = ref<InstanceType<typeof Ruler> | null>(null);
-const pickerEl = ref<InstanceType<typeof ColorCard> | null>(null);
 /** The size menu's choice (`lib/sizes.ts`): free, a locked ratio or a fixed size. It holds for
  * this capture only; every capture starts free. */
 const choice = shallowRef<SizeChoice>(FREE);
@@ -192,6 +190,12 @@ const actions = computed(() =>
 /** Copy subject has been looking for 300 ms: its button turns into a ring and a light passes
  * over the selection. */
 const subjectSlow = ref(false);
+/** The ruler is on: no dim, loupe, window hover or size label, and the measures take the pointer. */
+const rulerOn = ref(false);
+/** This page holds the keyboard, so the ruler's bar shows here and on no other display. */
+const keyHeld = ref(false);
+const rulerEl = ref<InstanceType<typeof Ruler> | null>(null);
+const pickerEl = ref<InstanceType<typeof ColorCard> | null>(null);
 /** Beautify for this capture (`beautify.ts`); its panel stands beside the action bar. */
 const beautify = useOverlayBeautify(say);
 const beautifyEl = ref<InstanceType<typeof BeautifyPanel> | null>(null);
@@ -680,14 +684,15 @@ function resetAll(): void {
   lensAt.x = lensAt.y = -1;
   hintFaded.value = false;
   notice.value = null;
+  noModels.value = false;
   allTips.value = false;
   choice.value = FREE;
   fitted.value = false;
   menu.value = null;
+  rulerOn.value = false;
   scroll.value = null;
   scrollOutside.value = false;
   scrollAsking.value = false;
-  rulerOn.value = false;
   clearTimeout(hintTimer);
   clearTimeout(noticeTimer);
   clearTimeout(outsideTimer);
@@ -842,7 +847,9 @@ async function finishByMode(r: Rect, windowId: number | null): Promise<void> {
     }
     if (finished !== "done") void showBars();
   } catch (error) {
-    say(errorText(error));
+    // Copy text without the PP-OCR models (a fresh Linux install) says so and offers Settings.
+    if (f.afterSelection === "copyText" && (await modelsMissing(error))) noModels.value = true;
+    else say(errorText(error));
     void showBars();
   } finally {
     busy = false;
@@ -864,6 +871,12 @@ function close(): void {
   if (frame.value) void capture_close(frame.value.captureId);
 }
 
+/** Closes the capture and opens Settings › Text recognition, where the models are downloaded. */
+function openModels(): void {
+  close();
+  void window_open_settings("ocr").catch((error) => console.warn("window_open_settings", error));
+}
+
 function say(text: string): void {
   notice.value = text;
   clearTimeout(noticeTimer);
@@ -874,7 +887,7 @@ function errorText(error: unknown): string {
   const code = error instanceof ApiError ? error.code : "internal";
   const key = `error.${code}` as Key;
   const known: Key[] = ["error.permission_denied", "error.not_implemented", "error.io", "error.not_found"];
-  return t(known.includes(key) ? key : "error.other");
+  return tp(known.includes(key) ? key : "error.other");
 }
 
 async function act(id: ActionId): Promise<void> {
@@ -1299,7 +1312,7 @@ function coverScroll(rects: Rect[]): void {
 
 /** The scrolling capture's keys: Space, ↩, Esc and ⌘Z; the rest do nothing while it runs. */
 function scrollKey(e: KeyboardEvent): void {
-  const command = e.metaKey || e.ctrlKey;
+  const command = isMac() ? e.metaKey || e.ctrlKey : e.ctrlKey;
   if (e.key === "Escape") {
     e.preventDefault();
     if (scrollAsking.value) {
@@ -1592,9 +1605,9 @@ function onMouseDown(e: MouseEvent): void {
   if (e.button !== 0 || !frame.value) return;
   const p = point(e);
   e.preventDefault();
-  if (rulerOn.value) return rulerEl.value?.press(p, e);
   // While the page scrolls, a press outside the selection keeps it: the bar ends the mode.
   if (mode.value === "scroll") return;
+  if (rulerOn.value) return rulerEl.value?.press(p, e);
   if (mode.value === "pick") return pickerEl.value?.press(e.shiftKey);
   // A press beside the open size menu only closes it.
   if (menu.value) return closeMenu();
@@ -1605,7 +1618,7 @@ function onMouseDown(e: MouseEvent): void {
     const fp = toFrame(p);
     // With ⌘ held a press only draws: inside the selection the tool starts a new object even on
     // top of another one or on a handle, and no object is picked up.
-    const over = e.metaKey;
+    const over = commandHeld(e);
     // ⌥ held draws freely; the tips it opened close once a drawing starts.
     const free = e.altKey;
     if (over && engine.tool && inside(sel.value, p)) {
@@ -1660,11 +1673,11 @@ function handleMove(e: MouseEvent): void {
   if (!frame.value) return;
   const p = point(e);
   pointer.value = p;
-  if (rulerOn.value) return rulerEl.value?.move(p, e);
   if (mode.value === "scroll") {
     cursor.value = "default";
     return;
   }
+  if (rulerOn.value) return rulerEl.value?.move(p, e);
   if (mode.value === "pick") return pickerEl.value?.move(p);
   if (mode.value !== "sel") annotations.hover(null, reach.value);
 
@@ -1729,7 +1742,7 @@ function handleMove(e: MouseEvent): void {
         annotations.move(toFrame(p), { shift: e.shiftKey, alt: e.altKey });
         break;
       }
-      aim(p, e.metaKey, e.altKey);
+      aim(p, commandHeld(e), e.altKey);
       break;
   }
 }
@@ -1921,7 +1934,8 @@ function onKeyDown(e: KeyboardEvent): void {
     openRuler();
     return;
   }
-  if (e.key === " " && mode.value === "idle") {
+  // Space picks a window only where a single window can be captured (`windowCapture`).
+  if (e.key === " " && mode.value === "idle" && can("windowCapture")) {
     e.preventDefault();
     windowMode.value = !windowMode.value;
     hintFaded.value = true;
@@ -1936,11 +1950,11 @@ function onKeyDown(e: KeyboardEvent): void {
     if (annotations.busy()) annotations.setFree(true);
     else {
       allTips.value = true;
-      if (pointer.value) aim(pointer.value, e.metaKey, true);
+      if (pointer.value) aim(pointer.value, commandHeld(e), true);
     }
     return;
   }
-  if (e.key === "Meta" && mode.value === "sel" && pointer.value && !annotations.busy()) {
+  if (e.key === commandKeyName() && mode.value === "sel" && pointer.value && !annotations.busy()) {
     aim(pointer.value, true, e.altKey);
     return;
   }
@@ -1951,24 +1965,26 @@ function onKeyDown(e: KeyboardEvent): void {
     e.preventDefault();
     return;
   }
-  if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key.toLowerCase() === "o") {
+  // ⌘ on macOS, where ⌃ has always worked too; Ctrl elsewhere, where the Windows key is the system's.
+  const command = isMac() ? e.metaKey || e.ctrlKey : e.ctrlKey;
+  if (command && !e.shiftKey && e.key.toLowerCase() === "o") {
     e.preventDefault();
     void handOff();
     return;
   }
   // ⌘↩ opens the send list (macOS only), before Return copies. ⌥⌘C copies the path; ⌥ turns
   // the key's character into another one ("ç"), so the key is read by its code.
-  if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+  if (command && e.key === "Enter") {
     e.preventDefault();
     if (!e.shiftKey && !e.altKey && can("sendToApp")) void act("send");
     return;
   }
-  if ((e.metaKey || e.ctrlKey) && e.altKey && !e.shiftKey && e.code === "KeyC") {
+  if (command && e.altKey && !e.shiftKey && e.code === "KeyC") {
     e.preventDefault();
     void copyPath();
     return;
   }
-  if ((e.metaKey || e.ctrlKey) && e.altKey && !e.shiftKey && e.code === "KeyB") {
+  if (command && e.altKey && !e.shiftKey && e.code === "KeyB") {
     e.preventDefault();
     void act("copy-subject");
     return;
@@ -1981,7 +1997,7 @@ function onKeyDown(e: KeyboardEvent): void {
     return;
   }
   // ⌘↓ starts the scrolling capture, before the arrows move the selection.
-  if ((e.metaKey || e.ctrlKey) && e.key === "ArrowDown" && !e.shiftKey && !e.altKey) {
+  if (command && e.key === "ArrowDown" && !e.shiftKey && !e.altKey) {
     e.preventDefault();
     if (can("scrollCapture")) void act("scroll");
     return;
@@ -1997,12 +2013,18 @@ function onKeyDown(e: KeyboardEvent): void {
     void layoutBars();
     return;
   }
-  if (e.metaKey || e.ctrlKey) {
+  if (command) {
     const k = e.key.toLowerCase();
     if (k === "z") {
       e.preventDefault();
       if (e.shiftKey) annotations.redo();
       else annotations.undo();
+      return;
+    }
+    // Windows and Linux apps also redo with Ctrl+Y.
+    if (k === "y" && !isMac() && !e.shiftKey) {
+      e.preventDefault();
+      annotations.redo();
       return;
     }
     if (k === "s" && e.shiftKey) {
@@ -2028,9 +2050,9 @@ function onKeyUp(e: KeyboardEvent): void {
   if (e.key === "Alt") {
     allTips.value = false;
     if (mode.value === "sel" && annotations.busy()) annotations.setFree(false);
-    else if (mode.value === "sel" && pointer.value) aim(pointer.value, e.metaKey, false);
+    else if (mode.value === "sel" && pointer.value) aim(pointer.value, commandHeld(e), false);
   }
-  if (e.key === "Meta" && mode.value === "sel" && pointer.value && !annotations.busy()) aim(pointer.value, false, e.altKey);
+  if (e.key === commandKeyName() && mode.value === "sel" && pointer.value && !annotations.busy()) aim(pointer.value, false, e.altKey);
 }
 
 function onFocus(): void {
@@ -2252,24 +2274,8 @@ onUnmounted(() => {
       <!-- Mount point of the text recognition layer (src/ocr/TextLayer.vue); its context comes
            from `provide(TEXT_LAYER)` above. -->
       <div v-if="textLayerComponent && hasSel && mode === 'sel'" class="o-textlayer">
-        <component :is="textLayerComponent" leaves @leave="leave" />
+        <component :is="textLayerComponent" leaves @settings="close" @leave="leave" />
       </div>
-      <!-- The scrolling capture's strip, bar and pops (⌘↓). -->
-      <ScrollMode
-        v-if="mode === 'scroll' && sel"
-        :progress="scroll"
-        :sel="sel"
-        :view="view"
-        :scale="ratio.x"
-        :outside="scrollOutside"
-        :asking="scrollAsking"
-        @auto="toggleAuto"
-        @done="finishScroll"
-        @cancel="cancelScroll"
-        @manual="scrollAsking = false"
-        @settings="openAccessibility"
-        @cover="coverScroll"
-      />
       <!-- The colour picker: the cross and the card that follow the pointer while the mode is "pick". -->
       <ColorCard
         ref="pickerEl"
@@ -2295,6 +2301,22 @@ onUnmounted(() => {
         :bar="keyHeld"
         @close="close"
       />
+      <!-- The scrolling capture's strip, bar and pops (⌘↓). -->
+      <ScrollMode
+        v-if="mode === 'scroll' && sel"
+        :progress="scroll"
+        :sel="sel"
+        :view="view"
+        :scale="ratio.x"
+        :outside="scrollOutside"
+        :asking="scrollAsking"
+        @auto="toggleAuto"
+        @done="finishScroll"
+        @cancel="cancelScroll"
+        @manual="scrollAsking = false"
+        @settings="openAccessibility"
+        @cover="coverScroll"
+      />
     </template>
 
     <div ref="loupeEl" v-show="frame && loupeShown" class="g-glass o-loupe o-moving" aria-hidden="true">
@@ -2313,10 +2335,14 @@ onUnmounted(() => {
     <div v-if="frame && !rulerOn && mode !== 'pick'" class="g-hint o-float hint" :class="{ 'o-hint-fade': hintFaded }">
       <span>{{ t("overlay.hintDrag") }}</span>
       <span class="g-divider" role="separator" />
-      <kbd class="g-kbd">Space</kbd><span class="g-muted">{{ t("overlay.hintWindow") }}</span>
+      <template v-if="can('windowCapture')"><kbd class="g-kbd">Space</kbd><span class="g-muted">{{ t("overlay.hintWindow") }}</span></template>
       <kbd class="g-kbd">Esc</kbd><span class="g-muted">{{ t("overlay.hintCancel") }}</span>
     </div>
     <div v-if="notice" class="g-hint o-float hint notice" role="status">{{ notice }}</div>
+    <div v-else-if="noModels" class="g-hint o-float hint notice" role="alert">
+      <span>{{ t("ocr.modelsMissing") }}</span>
+      <button type="button" class="g-button" data-variant="primary" @click="openModels">{{ t("ocr.openSettings") }}</button>
+    </div>
 
     <!-- The bars stay in the page while hidden, so they can be measured before they show. -->
     <div
@@ -2343,7 +2369,7 @@ onUnmounted(() => {
           >
             <GIcon :name="item.id" />
           </button>
-          <span class="g-tip" role="tooltip">{{ t(item.label) }}<kbd class="g-kbd">{{ item.key }}</kbd></span>
+          <span class="g-tip" role="tooltip">{{ t(item.label) }}<kbd class="g-kbd">{{ chord(item.key) }}</kbd></span>
         </span>
       </template>
     </div>
@@ -2405,7 +2431,7 @@ onUnmounted(() => {
             <GIcon v-else :name="item.icon" />
           </button>
           <span class="g-tip" role="tooltip" :data-state="allTips ? 'show' : undefined"
-            >{{ item.id === "beautify" && beautify.on.value ? t("beautify.turnOff") : t(item.label) }}<kbd class="g-kbd">{{ item.key }}</kbd></span
+            >{{ item.id === "beautify" && beautify.on.value ? t("beautify.turnOff") : t(item.label) }}<kbd class="g-kbd">{{ chord(item.key) }}</kbd></span
           >
         </span>
       </template>

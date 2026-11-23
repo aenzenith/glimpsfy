@@ -60,7 +60,7 @@ fn system() -> &'static str {
         }
         #[cfg(not(target_os = "macos"))]
         {
-            "en"
+            pick(crate::desktop::preferred_languages())
         }
     })
 }

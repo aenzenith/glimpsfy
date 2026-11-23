@@ -5,7 +5,8 @@
 // `data-tip` and `data-keys`, which the bar page shows inside its own window.
 import GIcon from "../components/GIcon.vue";
 import type { TargetMode } from "../lib/api/record";
-import { t } from "../lib/i18n";
+import { t, tp } from "../lib/i18n";
+import { can } from "../lib/platform";
 
 export type SetupAction =
   | "close"
@@ -45,7 +46,8 @@ const props = defineProps<{
 }>();
 const emit = defineEmits<{ action: [id: SetupAction] }>();
 
-const MODES = ["display", "window", "area"] as const;
+/** A single window is offered only where it can be recorded on its own (`windowCapture`). */
+const MODES = (["display", "window", "area"] as const).filter((m) => m !== "window" || can("windowCapture"));
 const modeLabel = { display: "record.mode.display", window: "record.mode.window", area: "record.mode.area" } as const;
 
 /** Arrow keys move the choice of target, as in a native segmented control. */
@@ -101,7 +103,7 @@ const level = (v: number) => Math.max(0, Math.min(1, v));
       data-id="system"
       :aria-pressed="system.on"
       :disabled="!system.available"
-      :data-tip="system.available ? t('record.system.tip') : t('record.system.unavailable')"
+      :data-tip="system.available ? t('record.system.tip') : tp('record.system.unavailable')"
       :data-keys="system.available ? SETUP_KEYS.system : undefined"
       @click="emit('action', 'system')"
     >
@@ -156,37 +158,40 @@ const level = (v: number) => Math.max(0, Math.min(1, v));
     >
       <GIcon name="chevron-down" :size="16" />
     </button>
-    <button
-      type="button"
-      class="g-toggle"
-      data-id="camera"
-      :aria-pressed="camera.on"
-      :aria-label="camera.denied ? t('record.camera.denied') : t('record.camera')"
-      :aria-haspopup="camera.denied ? 'dialog' : undefined"
-      :data-perm="camera.denied ? 'denied' : undefined"
-      :data-tip="camera.denied ? t('record.camera.denied') : t('record.camera')"
-      :data-keys="SETUP_KEYS.camera"
-      @click="emit('action', 'camera')"
-    >
-      <GIcon :name="camera.on ? 'webcam' : 'webcam-off'" />
-      <GIcon v-if="camera.denied" name="warning" :size="16" class="r-warn" />
-    </button>
-    <button
-      type="button"
-      class="g-btn"
-      data-size="small"
-      data-tone="muted"
-      data-id="cameraMenu"
-      :aria-label="t('record.camera.choose')"
-      aria-haspopup="menu"
-      :aria-expanded="open === 'cam'"
-      :data-state="open === 'cam' ? 'pressed' : undefined"
-      :data-tip="t('record.camera.choose')"
-      :data-keys="SETUP_KEYS.cameraMenu"
-      @click="emit('action', 'cameraMenu')"
-    >
-      <GIcon name="chevron-down" :size="16" />
-    </button>
+    <!-- The webcam bubble only where the platform draws it (`cameraBubble`). -->
+    <template v-if="can('cameraBubble')">
+      <button
+        type="button"
+        class="g-toggle"
+        data-id="camera"
+        :aria-pressed="camera.on"
+        :aria-label="camera.denied ? t('record.camera.denied') : t('record.camera')"
+        :aria-haspopup="camera.denied ? 'dialog' : undefined"
+        :data-perm="camera.denied ? 'denied' : undefined"
+        :data-tip="camera.denied ? t('record.camera.denied') : t('record.camera')"
+        :data-keys="SETUP_KEYS.camera"
+        @click="emit('action', 'camera')"
+      >
+        <GIcon :name="camera.on ? 'webcam' : 'webcam-off'" />
+        <GIcon v-if="camera.denied" name="warning" :size="16" class="r-warn" />
+      </button>
+      <button
+        type="button"
+        class="g-btn"
+        data-size="small"
+        data-tone="muted"
+        data-id="cameraMenu"
+        :aria-label="t('record.camera.choose')"
+        aria-haspopup="menu"
+        :aria-expanded="open === 'cam'"
+        :data-state="open === 'cam' ? 'pressed' : undefined"
+        :data-tip="t('record.camera.choose')"
+        :data-keys="SETUP_KEYS.cameraMenu"
+        @click="emit('action', 'cameraMenu')"
+      >
+        <GIcon name="chevron-down" :size="16" />
+      </button>
+    </template>
     <span class="g-divider" role="separator" />
     <button
       type="button"

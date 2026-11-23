@@ -2,7 +2,7 @@
 // popover and the pins word their failures with it.
 
 import type { ErrorCode } from "../lib/api/core";
-import { t, type Key } from "../lib/i18n";
+import { tp, type Key } from "../lib/i18n";
 
 const REASON: Partial<Record<ErrorCode, Key>> = {
   permission_denied: "error.permission_denied",
@@ -31,14 +31,14 @@ const FIX: Partial<Record<ErrorCode, Key>> = {
 /** One sentence that says what went wrong. */
 export function reasonText(code: ErrorCode | null | undefined): string {
   const key = code ? REASON[code] : undefined;
-  return t(key ?? "error.other");
+  return tp(key ?? "error.other");
 }
 
 /** One sentence that says what to do next, or `null` when nothing helps (not implemented yet). */
 export function fixText(code: ErrorCode | null | undefined): string | null {
   if (code === "not_implemented" || code === "cancelled") return null;
   const key = code ? FIX[code] : undefined;
-  return t(key ?? "toast.fix.other");
+  return tp(key ?? "toast.fix.other");
 }
 
 /** The code of a thrown error, when it came from a command. */

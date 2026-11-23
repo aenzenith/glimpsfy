@@ -37,3 +37,38 @@ html[data-surface="popover"] body {
   overflow: hidden;
   color: var(--win-text);
 }
+
+/* ------------------------------------------------------------------------ other platforms
+   macOS keeps every rule above as it is; these follow `data-platform`, `data-session` and
+   `data-opaque` (src/lib/platform.ts) on Windows and Linux. */
+
+/* The system's own text face: Segoe UI Variable on Windows 11 (Segoe UI on Windows 10), and the
+   GTK desktop's font through system-ui on Linux. The kit's type tokens read --font on the same
+   element, so they follow. */
+:root[data-platform="windows"] {
+  --font: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+}
+:root[data-platform="linux"] {
+  --font: system-ui, Cantarell, Ubuntu, "Noto Sans", sans-serif;
+}
+
+/* Without a native blur (`nativeGlass`), the toast and the recorder's panels sit over the live
+   desktop, where a backdrop filter blurs nothing: they take the kit's solid glass instead
+   (`html.no-blur`, set by platform.ts), and the recorder's bar draws its edge inside the window,
+   which the core cannot ring from outside there. */
+:root:not([data-platform="macos"]).no-blur .r-bar-page > :is(.r-bar-slot, .r-pop-slot) > :is(.g-bar, .g-pop, .g-tip) {
+  box-shadow: inset 0 0 0 1px var(--edge-inner), inset 0 1px 0 0 var(--edge-top), inset 0 -1px 0 0 var(--edge-bottom);
+}
+
+/* A desktop without a compositor draws a transparent window black (`transparentWindows` false):
+   the floating pages lose their see-through margins and their rounded cut-outs, and the popover
+   its corners. */
+:root[data-opaque][data-surface="floating"],
+:root[data-opaque][data-surface="floating"] body,
+:root[data-opaque][data-surface="popover"],
+:root[data-opaque][data-surface="popover"] body {
+  background: var(--glass-solid);
+}
+:root[data-opaque] :is(.g-toast, .g-bar, .g-pop, .g-popover) {
+  border-radius: 0;
+}

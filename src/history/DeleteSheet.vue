@@ -6,7 +6,7 @@ import { computed, inject, nextTick, onMounted, ref } from "vue";
 
 import GIcon from "../components/GIcon.vue";
 import { entryName, thumbUrl, type DeleteOptions, type Entry } from "../lib/api/history";
-import { t } from "../lib/i18n";
+import { t, tp } from "../lib/i18n";
 import { HISTORY, type HistoryContext } from "./context";
 import { fileName } from "./model";
 
@@ -30,9 +30,9 @@ const fileOn = computed(() => saved.value.length > 0 && file.value);
 const hostOn = computed(() => uploaded.value.length > 0 && hosted.value);
 
 const summary = computed(() => {
-  if (oneSeries.value) return t("history.series.deleteSummary");
+  if (oneSeries.value) return tp("history.series.deleteSummary");
   const rest = ownSummary.value;
-  return many.value && series.value.length ? `${rest} ${t("history.series.deleteSummaryMany", { n: series.value.length })}` : rest;
+  return many.value && series.value.length ? `${rest} ${tp("history.series.deleteSummaryMany", { n: series.value.length })}` : rest;
 });
 
 const ownSummary = computed(() => {
@@ -41,31 +41,31 @@ const ownSummary = computed(() => {
   const s = saved.value.length > 0;
   const u = uploaded.value.length > 0;
   if (many.value) {
-    if (fileOn.value && hostOn.value) return t("history.delete.many.both", { n, host: h });
-    if (fileOn.value) return u ? t("history.delete.many.fileKeepHost", { n, host: h }) : t("history.delete.many.file", { n });
-    if (hostOn.value) return s ? t("history.delete.many.hostKeepFile", { n, host: h }) : t("history.delete.many.host", { n, host: h });
-    return s || u ? t("history.delete.many.none", { n }) : t("history.delete.many.own", { n });
+    if (fileOn.value && hostOn.value) return tp("history.delete.many.both", { n, host: h });
+    if (fileOn.value) return u ? tp("history.delete.many.fileKeepHost", { n, host: h }) : tp("history.delete.many.file", { n });
+    if (hostOn.value) return s ? t("history.delete.many.hostKeepFile", { n, host: h }) : tp("history.delete.many.host", { n, host: h });
+    return s || u ? t("history.delete.many.none", { n }) : tp("history.delete.many.own", { n });
   }
   if (s && u) {
-    if (fileOn.value && hostOn.value) return t("history.delete.both");
-    if (fileOn.value) return t("history.delete.fileOnly", { host: h });
+    if (fileOn.value && hostOn.value) return tp("history.delete.both");
+    if (fileOn.value) return tp("history.delete.fileOnly", { host: h });
     if (hostOn.value) return t("history.delete.hostOnly", { host: h });
     return t("history.delete.none");
   }
-  if (s) return fileOn.value ? t("history.delete.file") : t("history.delete.keepFile");
-  if (u) return hostOn.value ? t("history.delete.ownAndHost", { host: h }) : t("history.delete.ownKeepHost", { host: h });
-  return t("history.delete.own");
+  if (s) return fileOn.value ? tp("history.delete.file") : t("history.delete.keepFile");
+  if (u) return hostOn.value ? tp("history.delete.ownAndHost", { host: h }) : tp("history.delete.ownKeepHost", { host: h });
+  return tp("history.delete.own");
 });
 
 const label = computed(() => {
-  if (oneSeries.value) return t("history.series.deleteLabel");
+  if (oneSeries.value) return tp("history.series.deleteLabel");
   const s = saved.value.length > 0;
   const u = uploaded.value.length > 0;
   if (fileOn.value && hostOn.value) return t("history.delete.label.everywhere");
   if (hostOn.value) return s ? t("history.delete.label.host", { host: host.value }) : t("history.delete.label.everywhere");
-  if (fileOn.value) return t("history.delete.label.mac");
+  if (fileOn.value) return tp("history.delete.label.mac");
   if (s || u) return t("history.delete.label.history");
-  return t("history.delete.label.mac");
+  return tp("history.delete.label.mac");
 });
 
 const dialog = ref<HTMLElement | null>(null);
@@ -115,8 +115,8 @@ function confirm(): void {
         <label v-if="saved.length" class="hv-choice">
           <input v-model="file" type="checkbox" class="g-checkbox" />
           <span>
-            <span>{{ saved.length > 1 ? t("history.delete.fileChoiceMany", { n: saved.length }) : t("history.delete.fileChoice") }}</span>
-            <span class="g-help">{{ saved.length > 1 ? t("history.delete.fileHelpMany") : fileName(saved[0].savedPath) }}</span>
+            <span>{{ saved.length > 1 ? tp("history.delete.fileChoiceMany", { n: saved.length }) : tp("history.delete.fileChoice") }}</span>
+            <span class="g-help">{{ saved.length > 1 ? tp("history.delete.fileHelpMany") : fileName(saved[0].savedPath) }}</span>
           </span>
         </label>
         <label v-if="uploaded.length" class="hv-choice">

@@ -53,12 +53,32 @@ pub fn skipped(app: &AppHandle, what: &str, reason: &str) {
     let _ = append(app, &line);
 }
 
+/// The way this system takes stills, for the trace and for a line whose backend kept no report:
+/// ScreenCaptureKit on macOS, GDI's copy of the screen on Windows, and on Linux the X server's
+/// root window or the Screenshot portal, by the session.
+pub fn system_path() -> &'static str {
+    #[cfg(target_os = "macos")]
+    return "screencapturekit";
+    #[cfg(target_os = "windows")]
+    return "gdi";
+    #[cfg(target_os = "linux")]
+    return match glimpsfy_capture::linux_session() {
+        glimpsfy_capture::LinuxSession::X11 => "x11",
+        glimpsfy_capture::LinuxSession::Wayland => "portal",
+    };
+}
+
 fn line(what: &str, waited: Duration, report: Option<&CaptureReport>, error: Option<&CaptureError>) -> String {
     let mut parts = vec![
         chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f").to_string(),
         what.to_string(),
         format!("{:.0} ms since the trigger", trace::ms(waited)),
     ];
+    // The Linux backend keeps no report, so its line names the path the session decides.
+    #[cfg(target_os = "linux")]
+    if report.is_none() {
+        parts.push(system_path().to_string());
+    }
     if let Some(report) = report {
         parts.push(report.path.as_str().to_string());
         if let Some(rect) = report.rect {

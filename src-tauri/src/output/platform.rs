@@ -57,13 +57,8 @@ fn copy_items(pngs: &[Vec<u8>]) -> CommandResult<()> {
 /// plugin takes.
 #[cfg(not(target_os = "macos"))]
 pub fn copy_pngs(app: &AppHandle, pngs: &[Vec<u8>], frames: &[&glimpsfy_capture::Frame]) -> CommandResult<()> {
-    use tauri_plugin_clipboard_manager::ClipboardExt;
-    let _ = pngs;
-    let Some(frame) = frames.first() else {
-        return Ok(());
-    };
-    let image = tauri::image::Image::new_owned(frame.to_rgba(), frame.size.width, frame.size.height);
-    app.clipboard().write_image(&image).map_err(|e| CommandError::internal(e.to_string()))
+    let _ = (app, pngs);
+    crate::desktop::copy_frames(frames).map_err(CommandError::internal)
 }
 
 /// Brings Glimpsfy to the front, so a panel it opens (Save as) is not behind the app the user is
@@ -78,7 +73,9 @@ pub fn bring_forward(app: &AppHandle) {
 }
 
 #[cfg(not(target_os = "macos"))]
-pub fn bring_forward(_app: &AppHandle) {}
+pub fn bring_forward(app: &AppHandle) {
+    crate::desktop::bring_forward(app);
+}
 
 /// Plays the system's screenshot sound. It is a user interface sound, so the system keeps it
 /// silent when "Play user interface sound effects" is off or the output is muted, and plays it
@@ -119,4 +116,6 @@ pub fn shutter() {
 }
 
 #[cfg(not(target_os = "macos"))]
-pub fn shutter() {}
+pub fn shutter() {
+    crate::desktop::shutter();
+}

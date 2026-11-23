@@ -1,6 +1,6 @@
 //! Window commands: open the app's windows, fit the toast, the popover, the pins, the pickers,
 //! links and quitting. Owner: app shell (milestone 1). The native side is `popover.rs`,
-//! `pins.rs` and the app shell section of `macos.rs`.
+//! `pins.rs` and the app shell section of `macos.rs`, and `desktop/` on Windows and Linux.
 
 use std::path::PathBuf;
 
@@ -148,8 +148,8 @@ pub fn app_copy_text(app: AppHandle, text: String) -> CommandResult<()> {
     }
     #[cfg(not(target_os = "macos"))]
     {
-        use tauri_plugin_clipboard_manager::ClipboardExt;
-        app.clipboard().write_text(text).map_err(|e| CommandError::internal(e.to_string()))
+        let _ = app;
+        crate::desktop::copy_text(&text).map_err(CommandError::internal)
     }
 }
 
@@ -237,17 +237,173 @@ pub enum SystemPane {
     LoginItems,
 }
 
+/// Opens a pane of the system's settings: System Settings on macOS, the matching page of
+/// Settings on Windows (`ms-settings:`). Linux desktops share no such pages, so there the command
+/// answers `not_implemented`, and `app_platform` says so beforehand (`systemSettingsPanes`).
 #[tauri::command]
 pub fn app_open_system_settings(app: AppHandle, pane: SystemPane) -> CommandResult<()> {
-    use tauri_plugin_opener::OpenerExt;
-    if !cfg!(target_os = "macos") {
-        return Err(CommandError::not_implemented("System Settings panes outside macOS"));
+    #[cfg(target_os = "macos")]
+    {
+        use tauri_plugin_opener::OpenerExt;
+        let url = match pane {
+            SystemPane::KeyboardShortcuts => {
+                "x-apple.systempreferences:com.apple.Keyboard-Settings.extension?Shortcuts"
+            }
+            SystemPane::LoginItems => "x-apple.systempreferences:com.apple.LoginItems-Settings.extension",
+        };
+        app.opener().open_url(url, None::<&str>).map_err(|e| CommandError::internal(e.to_string()))
     }
-    let url = match pane {
-        SystemPane::KeyboardShortcuts => "x-apple.systempreferences:com.apple.Keyboard-Settings.extension?Shortcuts",
-        SystemPane::LoginItems => "x-apple.systempreferences:com.apple.LoginItems-Settings.extension",
-    };
-    app.opener().open_url(url, None::<&str>).map_err(|e| CommandError::internal(e.to_string()))
+    #[cfg(not(target_os = "macos"))]
+    match crate::desktop::open_system_settings(&app, pane) {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(CommandError::not_implemented("opening the system's settings on this platform")),
+        Err(error) => Err(CommandError::internal(error)),
+    }
+}
+
+// ------------------------------------------------------------------------------ the platform
+
+/// The system Glimpsfy runs on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Os {
+    Macos,
+    Windows,
+    Linux,
+}
+
+/// The kind of session a Linux desktop runs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DisplaySession {
+    X11,
+    Wayland,
+}
+
+/// What this platform can do, so a page hides or changes what it cannot. A feature whose native
+/// part is not written yet reads `false` until it is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Capabilities {
+    /// A single window can be listed, snapped to, captured and recorded on its own. `false` on
+    /// Wayland, where an app sees no other app's windows.
+    pub window_capture: bool,
+    /// The system keeps Glimpsfy's own windows (toast, pins, popover, the recorder's bars) out of
+    /// captures and recordings. Where it is `false` they are hidden around a still capture
+    /// instead, and a recording shows whichever of them is on screen.
+    pub capture_exclusion: bool,
+    /// The capture overlay takes keys without becoming the active window. Where it is `false`
+    /// the overlay takes the keyboard focus and gives it back when it closes.
+    pub non_activating_overlay: bool,
+    /// The click ring and the key caps of a recording (clicks and keys of other apps can be
+    /// watched).
+    pub input_overlays: bool,
+    /// The webcam bubble of a recording.
+    pub camera_bubble: bool,
+    /// A pin can show on every Space or virtual desktop (`pin_set_all_spaces`).
+    pub pin_all_spaces: bool,
+    /// A pin can be locked (click-through) and woken by holding ⌥ or Alt (`pin_set_locked`).
+    pub pin_lock: bool,
+    /// The toast and the recorder's bar get a native blur behind them. Where it is `false` the
+    /// pages draw their own background.
+    pub native_glass: bool,
+    /// A capture can be dragged out of the popover as a file (`popover_drag_out`).
+    pub drag_out: bool,
+    /// A file itself can be put on the clipboard: a recording, a GIF, an image that is neither
+    /// PNG nor JPEG (`record_export` with copy, `history_copy`).
+    pub copy_file: bool,
+    /// The system has a capture sound for Settings › General › Shutter sound.
+    pub shutter_sound: bool,
+    /// `app_open_system_settings` opens a page of the system's settings.
+    pub system_settings_panes: bool,
+    /// Screen capture needs a permission the user grants (the first-run window asks for it).
+    pub screen_recording_permission: bool,
+    /// This copy can install an update by itself. Where it is `false` (a `.deb` or `.rpm`
+    /// install) `update://changed` only reports `available` with `releaseUrl`.
+    pub self_update: bool,
+    /// The system gives the app global shortcuts. Where it is `false` (Wayland) the user binds
+    /// `glimpsfy --action <name>` in the desktop's own keyboard settings.
+    pub global_shortcuts: bool,
+    /// The tray icon reports clicks, so a left click opens the popover or captures (Settings ›
+    /// General › Icon click). Where it is `false` (Linux) the icon only opens its menu.
+    pub tray_popover: bool,
+    /// The system tells where the pointer is. Where it is `false` (Wayland) "the display under
+    /// the pointer" is the primary display, and windows open there.
+    pub global_pointer: bool,
+    /// A transparent window shows what lies under it. Where it is `false` (an X11 window manager
+    /// without a compositor) its transparent parts are black, so a page draws an opaque
+    /// background, and a dim over the live screen cannot be drawn.
+    pub transparent_windows: bool,
+    /// A window capture can keep the window's shadow (Settings › Output › Shadow). Windows draws
+    /// the shadow outside every surface a capture reads, so it is `false` there.
+    pub window_shadow: bool,
+    /// The subjects of an image can be lifted from its background: the editor's Remove
+    /// background and the overlay's Copy subject (`subject_*`). Vision does it on macOS; Windows
+    /// and Linux have no engine for it yet, so both stay hidden there.
+    pub subject_lift: bool,
+    /// Send to app brings an app forward and presses its paste key (`send_to_app`). Only macOS
+    /// has it for now; Copy path works everywhere.
+    pub send_to_app: bool,
+    /// The local MCP server and its approval card (Settings › Agents). Only macOS has them.
+    pub agents: bool,
+    /// The scrolling capture (⌘↓ in the overlay, `capture_start_scroll`): a live stream of the
+    /// selection while the page under it scrolls. Only macOS has it for now.
+    pub scroll_capture: bool,
+}
+
+/// What `app_platform` answers.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Platform {
+    pub os: Os,
+    /// The Linux session; `null` on macOS and Windows.
+    pub session: Option<DisplaySession>,
+    pub capabilities: Capabilities,
+    /// Where a `<video>` loads a history recording from when the webview cannot play the app's
+    /// URL schemes: a loopback address on Linux, whose WebKitGTK player loads none
+    /// (`desktop/loopback.rs`); `null` on macOS and Windows, which play `glimpsfy-history://`.
+    pub video_base: Option<String>,
+}
+
+/// The system, the Linux session and what the platform can do, so a page hides or changes what
+/// this platform cannot do. It does not change while the app runs.
+#[tauri::command]
+pub fn app_platform() -> Platform {
+    #[cfg(target_os = "macos")]
+    {
+        Platform {
+            os: Os::Macos,
+            session: None,
+            capabilities: Capabilities {
+                window_capture: true,
+                capture_exclusion: true,
+                non_activating_overlay: true,
+                input_overlays: true,
+                camera_bubble: true,
+                pin_all_spaces: true,
+                pin_lock: true,
+                native_glass: true,
+                drag_out: true,
+                copy_file: true,
+                shutter_sound: true,
+                system_settings_panes: true,
+                screen_recording_permission: true,
+                self_update: true,
+                global_shortcuts: true,
+                tray_popover: true,
+                global_pointer: true,
+                transparent_windows: true,
+                window_shadow: true,
+                subject_lift: true,
+                send_to_app: true,
+                agents: true,
+                scroll_capture: true,
+            },
+            video_base: None,
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    crate::desktop::describe()
 }
 
 /// Quits and starts Glimpsfy again, as macOS asks after the screen recording permission changes.
@@ -348,8 +504,11 @@ pub async fn popover_drag_out(
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (app, window, file, image);
-        Err(CommandError::not_implemented("dragging a capture out outside macOS"))
+        let _ = app;
+        if !crate::desktop::describe().capabilities.drag_out {
+            return Err(CommandError::not_implemented("dragging a capture out on this platform"));
+        }
+        crate::desktop::drag_out(&window, &file, &image, (64.0, 44.0)).map_err(CommandError::internal)
     }
 }
 

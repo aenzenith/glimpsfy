@@ -9,7 +9,7 @@ import { shallowRef } from "vue";
 import { ApiError } from "../lib/api/core";
 import type { ConsentInfo, ProviderId } from "../lib/api/upload";
 import { window_open_settings } from "../lib/api/windows";
-import { t } from "../lib/i18n";
+import { t, tp } from "../lib/i18n";
 import type { DialogFile } from "../upload/FirstUploadDialog.vue";
 import { prepareUpload } from "../upload/flow";
 import { issueText } from "../upload/text";
@@ -61,7 +61,7 @@ export function uploadFlow(options: {
   const fail = (error: unknown) => {
     const code = error instanceof ApiError ? error.code : "internal";
     const known = ["permission_denied", "not_found", "io", "not_implemented", "not_confirmed", "keychain"];
-    options.say(t(known.includes(code) ? (`error.${code}` as "error.other") : "error.other"));
+    options.say(tp(known.includes(code) ? (`error.${code}` as "error.other") : "error.other"));
   };
 
   async function send(provider: ProviderId): Promise<void> {

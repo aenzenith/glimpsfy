@@ -60,7 +60,8 @@ import {
 import { settings_get, settings_set } from "../lib/api/settings";
 import { PERMISSIONS_CHANGED, SETTINGS_CHANGED } from "../lib/events";
 import { t } from "../lib/i18n";
-import { capsText } from "../lib/keys";
+import { capsText, chord } from "../lib/keys";
+import { can } from "../lib/platform";
 import type { Recording, Settings } from "../lib/settings";
 import ControlBar, { type ControlAction } from "./ControlBar.vue";
 import DeviceMenu from "./DeviceMenu.vue";
@@ -199,7 +200,7 @@ const controlModel = computed(() => ({
   mic: { recorded: takeHasMic.value, live: !muted.value, level: !muted.value && state.value.kind === "recording" ? take.micLevel : 0 },
   asked: asked.value,
   present: {
-    shown: true,
+    shown: can("globalPointer"),
     pressed: popover.value === "present" || !!present.value?.drawing || !!present.value?.spotlight,
   },
   keys: {
@@ -730,13 +731,13 @@ function onKeyDown(event: KeyboardEvent): void {
     }
     const keys: Record<string, SetupAction> = {
       d: "display",
-      w: "window",
       a: "area",
       s: "system",
       m: event.shiftKey ? "micMenu" : "mic",
-      c: event.shiftKey ? "cameraMenu" : "camera",
       o: "more",
     };
+    if (can("windowCapture")) keys.w = "window";
+    if (can("cameraBubble")) keys.c = event.shiftKey ? "cameraMenu" : "camera";
     const id = keys[event.key.toLowerCase()];
     if (!id) return;
     event.preventDefault();
@@ -924,7 +925,7 @@ const onLimit = (minutes: number | null) => persist((r) => void (r.timeLimitMinu
         </button>
       </div>
       <div v-else-if="drawn.kind === 'tip' && drawn.tip" class="g-tip" role="tooltip">
-        {{ drawn.tip.text }}<KeyCaps v-if="drawn.tip.keys" :caps="[drawn.tip.keys]" />
+        {{ drawn.tip.text }}<KeyCaps v-if="drawn.tip.keys" :caps="[chord(drawn.tip.keys)]" />
       </div>
     </div>
   </div>

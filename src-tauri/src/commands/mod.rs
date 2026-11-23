@@ -212,6 +212,7 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Syn
         windows::app_can_open_url,
         windows::app_add_to_calendar,
         windows::app_open_system_settings,
+        windows::app_platform,
         windows::app_restart,
         windows::app_choose_folder,
         windows::app_choose_file,

@@ -250,15 +250,7 @@ pub(crate) mod login_item {
             }
         };
         #[cfg(not(target_os = "macos"))]
-        let result = {
-            use tauri_plugin_autostart::ManagerExt;
-            let autostart = app.autolaunch();
-            if on {
-                autostart.enable()
-            } else {
-                autostart.disable()
-            }
-        };
+        let result = crate::desktop::set_login_item(app, on);
         result.map_err(|error| error.to_string())
     }
 

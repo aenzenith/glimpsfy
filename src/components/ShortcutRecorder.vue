@@ -3,7 +3,8 @@
 // with a dashed slot for the key; the recorder's rule (`recorderStep` in src/lib/keys.ts) refuses
 // a key that would stop typing in other apps. Esc and Tab cancel, ⌫ clears, and a click elsewhere
 // cancels. While it listens, Glimpsfy's own global shortcuts are off (`settings_pause_shortcuts`),
-// so their keys reach the recorder instead of starting a capture.
+// so their keys reach the recorder instead of starting a capture. The caps follow the platform
+// (`capsOfModifiers`): ⌘ ⌥ ⇧ ⌃ on macOS, Ctrl, Alt, Shift and Win or Super elsewhere.
 //
 // The recorder only reports what was typed (`captured`); the row decides what a clash with another
 // action or with macOS means, and shows it through `pending` and `warn`.
@@ -11,7 +12,7 @@ import { computed, onBeforeUnmount, ref } from "vue";
 
 import { settings_pause_shortcuts } from "../lib/api/settings";
 import { t } from "../lib/i18n";
-import { capsOf, recorderStep, type Modifier } from "../lib/keys";
+import { capsOf, capsOfModifiers, joinCaps, modifiersOf, recorderStep } from "../lib/keys";
 import GIcon from "./GIcon.vue";
 
 const props = defineProps<{
@@ -36,25 +37,28 @@ const root = ref<HTMLElement | null>(null);
 const keysButton = ref<HTMLButtonElement | null>(null);
 const listening = ref(false);
 const held = ref<string[]>([]);
+/** Modifiers are held and no key yet, so a dashed slot waits for it. */
+const slot = ref(false);
+/** Print Screen's key-down reached the page since listening began. */
+let printScreenDown = false;
 
 const caps = computed(() => (listening.value ? held.value : (props.pending ?? capsOf(props.accelerator))));
 const state = computed(() =>
   listening.value ? "recording" : props.pending || props.warn ? "conflict" : props.accelerator ? "set" : "empty",
 );
 /** While modifiers are held without a key, a dashed slot waits for it. */
-const waiting = computed(
-  () => listening.value && held.value.length > 0 && held.value.every((c) => ["⌃", "⌥", "⇧", "⌘"].includes(c)),
-);
+const waiting = computed(() => listening.value && held.value.length > 0 && slot.value);
 const aria = computed(() => {
   if (listening.value) return t("settings.recorder.ariaListening", { name: props.name });
   if (!caps.value.length) return t("settings.recorder.ariaEmpty", { name: props.name });
-  return t("settings.recorder.ariaSet", { name: props.name, keys: caps.value.join("") });
+  return t("settings.recorder.ariaSet", { name: props.name, keys: joinCaps(caps.value) });
 });
 
 function start(): void {
   if (listening.value) return;
   listening.value = true;
   held.value = [];
+  printScreenDown = false;
   emit("listening", true);
   void settings_pause_shortcuts(true).catch(() => {});
   window.addEventListener("keydown", onKeyDown, true);
@@ -74,13 +78,17 @@ function stop(): void {
   window.removeEventListener("pointerdown", onPointerDown, true);
 }
 
+const isPrintScreen = (event: KeyboardEvent) => event.code === "PrintScreen" || event.key === "PrintScreen";
+
 function onKeyDown(event: KeyboardEvent): void {
   event.preventDefault();
   event.stopPropagation();
+  if (event.type === "keydown" && isPrintScreen(event)) printScreenDown = true;
   const step = recorderStep(event);
   switch (step.kind) {
     case "held":
-      held.value = [...step.mods];
+      held.value = capsOfModifiers(step.mods);
+      slot.value = true;
       return;
     case "cancel":
       stop();
@@ -94,6 +102,7 @@ function onKeyDown(event: KeyboardEvent): void {
       return;
     case "refuse":
       held.value = step.caps;
+      slot.value = false;
       emit("refused", step.reason, step.caps);
       return;
     case "keys":
@@ -103,13 +112,16 @@ function onKeyDown(event: KeyboardEvent): void {
 }
 
 function onKeyUp(event: KeyboardEvent): void {
+  // WebView2 hands Print Screen to the page as a key-up alone, since Windows keeps the key-down,
+  // so a Print Screen whose key-down never came is taken from its key-up.
+  if (isPrintScreen(event)) {
+    if (!printScreenDown) onKeyDown(event);
+    printScreenDown = false;
+    return;
+  }
   if (!["Shift", "Control", "Alt", "Meta"].includes(event.key)) return;
-  const mods: Modifier[] = [];
-  if (event.ctrlKey) mods.push("⌃");
-  if (event.altKey) mods.push("⌥");
-  if (event.shiftKey) mods.push("⇧");
-  if (event.metaKey) mods.push("⌘");
-  held.value = mods;
+  held.value = capsOfModifiers(modifiersOf(event));
+  slot.value = true;
 }
 
 function onPointerDown(event: PointerEvent): void {

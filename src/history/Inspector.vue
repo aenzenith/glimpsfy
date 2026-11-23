@@ -5,15 +5,15 @@
 import { computed, inject, ref, watch } from "vue";
 
 import GIcon from "../components/GIcon.vue";
-import { entryName, fileUrl, thumbUrl, type Entry, type HistoryItem } from "../lib/api/history";
+import { entryName, fileUrl, thumbUrl, videoUrl, type Entry, type HistoryItem } from "../lib/api/history";
 import type { HistoryRetention } from "../lib/settings";
-import { t } from "../lib/i18n";
+import { t, tp } from "../lib/i18n";
 import { can } from "../lib/platform";
 import AppIcon from "./AppIcon.vue";
 import { HISTORY, type HistoryContext } from "./context";
 import { matchRanges } from "./fold";
 import Marked from "./Marked.vue";
-import { extensionOf, fileName, formatBytes, formatDuration, formatWhen, mediaPath, seriesSpan } from "./model";
+import { copyable, extensionOf, fileName, formatBytes, formatDuration, formatWhen, mediaPath, seriesSpan } from "./model";
 import { everyText, framesText } from "./series";
 import Player from "./Player.vue";
 import Shot from "./Shot.vue";
@@ -139,7 +139,7 @@ const preview = computed(() => (linkOnly.value ? null : (thumbUrl(entry.value) ?
     </div>
 
     <div class="hv-psec hv-psec-top">
-      <Player v-if="kind === 'recording' && !linkOnly" :src="fileUrl(id)" :poster="thumbUrl(entry)" />
+      <Player v-if="kind === 'recording' && !linkOnly" :src="videoUrl(id)" :poster="thumbUrl(entry)" />
       <div v-else-if="kind === 'screenshot' || kind === 'series' || linkOnly" class="hv-preview">
         <Shot :src="preview" :size="match?.imageSize ?? entry.size" mode="contain" :boxes="boxes" :current="boxes.length ? current : null" all>
           <template #missing>
@@ -178,8 +178,8 @@ const preview = computed(() => (linkOnly.value ? null : (thumbUrl(entry.value) ?
         </template>
         <!-- A series is a folder of frames: it opens in the file manager and copies its newest frame. -->
         <template v-else-if="kind === 'series'">
-          <button type="button" class="g-button" data-variant="primary" :data-tip="t('history.series.revealFolder')" data-key="⌥⌘R" @click="ctx.act.reveal(id)">
-            <GIcon name="folder" :size="16" />{{ t("history.series.revealFolder") }}
+          <button type="button" class="g-button" data-variant="primary" :data-tip="tp('history.series.revealFolder')" data-key="⌥⌘R" @click="ctx.act.reveal(id)">
+            <GIcon name="folder" :size="16" />{{ tp("history.series.revealFolder") }}
           </button>
           <button type="button" class="g-button" :data-tip="t('history.series.copyLast')" data-key="⌘C" @click="ctx.act.copy(id)">
             <GIcon name="copy" :size="16" />{{ t("history.series.copyLast") }}
@@ -189,7 +189,7 @@ const preview = computed(() => (linkOnly.value ? null : (thumbUrl(entry.value) ?
           <button type="button" class="g-button" data-variant="primary" :data-tip="t('history.action.trim')" data-key="⌘T" @click="ctx.act.trim(id, 'mp4')">
             <GIcon name="trim" :size="16" />{{ t("history.action.trim") }}
           </button>
-          <button type="button" class="g-button" :data-tip="t('history.action.copy')" data-key="⌘C" @click="ctx.act.copy(id)">
+          <button v-if="copyable(entry)" type="button" class="g-button" :data-tip="t('history.action.copy')" data-key="⌘C" @click="ctx.act.copy(id)">
             <GIcon name="copy" :size="16" />{{ t("history.action.copy") }}
           </button>
         </template>
@@ -197,7 +197,7 @@ const preview = computed(() => (linkOnly.value ? null : (thumbUrl(entry.value) ?
           <button type="button" class="g-button" data-variant="primary" :data-tip="t('history.action.open')" data-key="⌘O" @click="ctx.act.open(id)">
             <GIcon name="external-link" :size="16" />{{ t("history.action.open") }}
           </button>
-          <button type="button" class="g-button" :data-tip="t('history.action.copy')" data-key="⌘C" @click="ctx.act.copy(id)">
+          <button v-if="copyable(entry)" type="button" class="g-button" :data-tip="t('history.action.copy')" data-key="⌘C" @click="ctx.act.copy(id)">
             <GIcon name="copy" :size="16" />{{ t("history.action.copy") }}
           </button>
         </template>
@@ -248,7 +248,7 @@ const preview = computed(() => (linkOnly.value ? null : (thumbUrl(entry.value) ?
         <button v-if="kind === 'recording'" type="button" class="g-btn" :aria-label="t('history.action.gif')" :data-tip="t('history.action.gif')" data-key="⇧⌘E" @click="ctx.act.trim(id, 'gif')">
           <GIcon name="gif" />
         </button>
-        <button v-if="kind !== 'textCopy'" type="button" class="g-btn" :aria-label="t('history.action.reveal')" :data-tip="t('history.action.reveal')" data-key="⌥⌘R" @click="ctx.act.reveal(id)">
+        <button v-if="kind !== 'textCopy'" type="button" class="g-btn" :aria-label="tp('history.action.reveal')" :data-tip="tp('history.action.reveal')" data-key="⌥⌘R" @click="ctx.act.reveal(id)">
           <GIcon name="folder" />
         </button>
         </template>
@@ -345,7 +345,7 @@ const preview = computed(() => (linkOnly.value ? null : (thumbUrl(entry.value) ?
         <template v-else>
           <div class="hv-sec-head"><span class="hv-sec-title">{{ t("history.link.title") }}</span></div>
           <div class="hv-linkmeta">
-            <span>{{ t("history.link.notUploaded") }}</span>
+            <span>{{ tp("history.link.notUploaded") }}</span>
             <button type="button" class="g-button" :data-tip="t('history.action.upload')" data-key="⌘U" @click="ctx.act.upload([id])">
               <GIcon name="upload" :size="16" />{{ t("history.action.upload") }}
             </button>
@@ -381,7 +381,7 @@ const preview = computed(() => (linkOnly.value ? null : (thumbUrl(entry.value) ?
           <p v-else-if="textState === 'pending'" class="g-help">{{ t("history.text.pending") }}</p>
           <p v-else-if="textState === 'failed'" class="g-help" data-tone="warn">{{ t("history.text.failed") }}</p>
           <p v-else class="g-help">{{ t("history.text.none") }}</p>
-          <div v-if="lines.length && kind === 'screenshot'" class="hv-text-meta">{{ t("history.text.readHere") }}</div>
+          <div v-if="lines.length && kind === 'screenshot'" class="hv-text-meta">{{ tp("history.text.readHere") }}</div>
         </template>
       </div>
 

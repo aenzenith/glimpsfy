@@ -11,6 +11,7 @@ import KeyCaps from "../components/KeyCaps.vue";
 import SegmentedControl from "../components/SegmentedControl.vue";
 import SelectControl from "../components/SelectControl.vue";
 import { t } from "../lib/i18n";
+import { can } from "../lib/platform";
 import type { IntervalEnd, IntervalPlan, IntervalTarget } from "../lib/settings";
 
 const props = defineProps<{ plan: IntervalPlan; accelerator: string | null | undefined; busy: boolean }>();
@@ -40,11 +41,15 @@ const plan = reactive<IntervalPlan>({ ...props.plan });
 const custom = ref(!EVERY.includes(plan.everySeconds as (typeof EVERY)[number]));
 const root = ref<HTMLElement | null>(null);
 
-const targets = computed<{ value: IntervalTarget; label: string }[]>(() => [
-  { value: "area", label: t("popover.interval.area") },
-  { value: "window", label: t("popover.interval.window") },
-  { value: "display", label: t("popover.interval.display") },
-]);
+const targets = computed(() =>
+  (
+    [
+      { value: "area", label: t("popover.interval.area") },
+      { value: "window", label: t("popover.interval.window") },
+      { value: "display", label: t("popover.interval.display") },
+    ] satisfies { value: IntervalTarget; label: string }[]
+  ).filter((option) => option.value !== "window" || can("windowCapture")),
+);
 
 const seconds = (n: number) => (n === 1 ? t("popover.interval.seconds.one") : t("popover.interval.seconds.many", { n }));
 const minutes = (n: number) => (n === 1 ? t("popover.interval.minutes.one") : t("popover.interval.minutes.many", { n }));

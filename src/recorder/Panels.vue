@@ -6,6 +6,8 @@
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { defineAsyncComponent, type Component } from "vue";
 
+import { can } from "../lib/platform";
+
 const PAGES: Record<string, () => Promise<Component>> = {
   "rec-target": () => import("./Target.vue"),
   "rec-bar": () => import("./Bar.vue"),
@@ -15,6 +17,9 @@ const PAGES: Record<string, () => Promise<Component>> = {
 };
 
 const label = getCurrentWebviewWindow().label;
+// Without a native blur under the bar (`nativeGlass`), the panels over the live desktop take the
+// kit's solid glass, since a backdrop filter there blurs nothing.
+if (!can("nativeGlass")) document.documentElement.classList.add("no-blur");
 const load = PAGES[label];
 if (!load) console.error(`The recorder has no panel named ${label}.`);
 const page = load ? defineAsyncComponent(load) : null;

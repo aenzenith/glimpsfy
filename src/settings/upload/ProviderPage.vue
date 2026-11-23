@@ -23,7 +23,7 @@ import {
   type Issue,
 } from "../../lib/api/upload";
 import { app_open_url } from "../../lib/api/windows";
-import { t } from "../../lib/i18n";
+import { t, tp } from "../../lib/i18n";
 import type { Settings } from "../../lib/settings";
 import FirstUploadDialog from "../../upload/FirstUploadDialog.vue";
 import { hostTerms, issueText, testKind, tk } from "../../upload/text";
@@ -275,7 +275,7 @@ async function askAgain(): Promise<void> {
     <div class="g-group">
       <FormRow
         :label="t('settings.upload.importSxcu')"
-        :help="sxcu ? sxcu.text : t('settings.upload.importHelp')"
+        :help="sxcu ? sxcu.text : tp('settings.upload.importHelp')"
         :tone="sxcu ? (sxcu.ok ? 'ok' : 'danger') : null"
       >
         <template v-if="sxcu?.warnings.length" #after>

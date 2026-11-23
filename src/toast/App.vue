@@ -65,7 +65,7 @@ import {
   type ToastGlass,
 } from "../lib/api/windows";
 import { TOAST_SHOW } from "../lib/events";
-import { language, t } from "../lib/i18n";
+import { language, t, tp } from "../lib/i18n";
 import { can } from "../lib/platform";
 import { doneText, failureText as uploadFailure } from "../upload/text";
 import { CARD_WIDTH } from "./agent";
@@ -150,9 +150,11 @@ type Item = {
   card?: boolean;
 };
 
-/** macOS draws the blur under each toast natively; the page then drops its own backdrop filter. */
-const NATIVE_GLASS = /Mac/.test(navigator.platform || navigator.userAgent);
+/** macOS draws the blur under each toast natively; the page then drops its own backdrop filter.
+ * Elsewhere nothing blurs the desktop behind the window, so the toasts take the kit's solid glass. */
+const NATIVE_GLASS = can("nativeGlass");
 if (NATIVE_GLASS) document.documentElement.dataset.glass = "native";
+else document.documentElement.classList.add("no-blur");
 
 const items = ref<Item[]>([]);
 const stack = ref<HTMLElement | null>(null);
@@ -358,9 +360,10 @@ function frame(now: number): void {
 // -------------------------------------------------------------------------------- the window
 
 /** Where each toast is drawn at `now`, from the window's bottom-right corner, and how opaque it
- * is: the native blur under it copies both. */
+ * is: the native blur under it copies both. Without a native blur the core still needs the
+ * rectangles, to let clicks through outside the toasts and, on Linux without a compositor, to cut
+ * the window to them. */
 function glass(now: number): ToastGlass[] {
-  if (!NATIVE_GLASS) return [];
   const list: ToastGlass[] = [];
   for (const [key, motion] of motions) {
     const layout = layouts.get(key);
@@ -1233,13 +1236,13 @@ function icons(item: Item): Action[] {
     }
     if (toast.kind === "saved" && toast.path) {
       const path = toast.path;
-      list.push({ key: "reveal", icon: "folder", label: t("toast.showInFinder"), run: () => reveal(path) });
+      list.push({ key: "reveal", icon: "folder", label: tp("toast.showInFinder"), run: () => reveal(path) });
     }
     if (toast.kind === "timeUp") {
       const id = toast.recordingId;
       if (id) list.push({ key: "trim", icon: "trim", label: t("popover.act.trim"), run: () => trimRecording(item, id) });
       const path = toast.path;
-      if (path) list.push({ key: "reveal", icon: "folder", label: t("toast.showInFinder"), run: () => reveal(path) });
+      if (path) list.push({ key: "reveal", icon: "folder", label: tp("toast.showInFinder"), run: () => reveal(path) });
     }
     // An app that is still opening has one button, which stops the wait.
     if (toast.kind === "sent" && toast.send?.phase === "opening") {
@@ -1271,19 +1274,19 @@ function foot(item: Item): Action[] {
   if (toast) {
     if (toast.kind === "diskFull" && toast.path) {
       const path = toast.path;
-      return [{ key: "reveal", label: t("toast.showInFinder"), run: () => reveal(path) }];
+      return [{ key: "reveal", label: tp("toast.showInFinder"), run: () => reveal(path) }];
     }
     if (toast.kind === "seriesStopped") return seriesFoot(item, toast);
     if (toast.kind === "sent" && toast.send?.phase === "noPermission") {
       const run = () => void permissions_open_settings("accessibility").catch((error) => console.warn("permissions_open_settings", error));
-      return [{ key: "settings", label: t("toast.openSettings"), primary: true, run }];
+      return [{ key: "settings", label: tp("toast.openSettings"), primary: true, run }];
     }
     if (toast.kind === "sent" && (toast.send?.phase === "timedOut" || toast.send?.phase === "failed") && toast.send.retry) {
       return [{ key: "retry", label: t("toast.send.retry"), primary: true, run: () => retrySend(item) }];
     }
-    if (toast.kind === "failed" && toast.errorCode === "permission_denied") {
+    if (toast.kind === "failed" && toast.errorCode === "permission_denied" && can("systemSettingsPanes")) {
       const run = () => void permissions_open_settings("screenRecording").catch((error) => console.warn("permissions_open_settings", error));
-      return [{ key: "settings", label: t("toast.openSettings"), primary: true, run }];
+      return [{ key: "settings", label: tp("toast.openSettings"), primary: true, run }];
     }
     return [];
   }
@@ -1304,13 +1307,13 @@ function seriesFoot(item: Item, toast: Toast): Action[] {
     };
     return [{ key: "restart", label: t("toast.series.restart"), primary: true, run }];
   }
-  if (toast.seriesStop === "permission") {
+  if (toast.seriesStop === "permission" && can("systemSettingsPanes")) {
     const run = () => void permissions_open_settings("screenRecording").catch((error) => console.warn("permissions_open_settings", error));
-    return [{ key: "settings", label: t("toast.openSettings"), primary: true, run }];
+    return [{ key: "settings", label: tp("toast.openSettings"), primary: true, run }];
   }
   if (toast.path) {
     const path = toast.path;
-    return [{ key: "reveal", label: t("toast.showInFinder"), run: () => reveal(path) }];
+    return [{ key: "reveal", label: tp("toast.showInFinder"), run: () => reveal(path) }];
   }
   return [];
 }

@@ -6,6 +6,7 @@
 //!
 //! The request carries the plugin's user agent and nothing of the user's.
 
+#[cfg(target_os = "macos")]
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
@@ -48,6 +49,9 @@ pub struct UpdateView {
     pub offline: bool,
     /// With `failed`: `download` | `signature` | `install`.
     pub error: Option<&'static str>,
+    /// With `available`: the page of the latest release, where the user gets the new version
+    /// that this copy cannot install by itself.
+    pub release_url: Option<String>,
 }
 
 pub struct Update {
@@ -78,7 +82,15 @@ fn public_key(app: &AppHandle) -> String {
         .to_string()
 }
 
+/// The page of the latest release: the updater's endpoint without the file it downloads.
+fn release_page(app: &AppHandle) -> Option<String> {
+    let plugins = &app.config().plugins.0;
+    let endpoint = plugins.get("updater")?.get("endpoints")?.get(0)?.as_str()?;
+    endpoint.strip_suffix("/download/latest.json").map(str::to_string)
+}
+
 /// The `.app` bundle the running executable sits in, when it sits in one.
+#[cfg(target_os = "macos")]
 fn install_path() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?.canonicalize().ok()?;
     let macos = exe.parent()?;
@@ -93,18 +105,32 @@ fn install_path() -> Option<PathBuf> {
 /// A release build running from an app bundle. A development run never replaces itself, and the
 /// login item is written again only from such a build (`lib.rs`).
 pub fn is_bundled() -> bool {
-    !cfg!(debug_assertions) && install_path().is_some()
+    #[cfg(target_os = "macos")]
+    return !cfg!(debug_assertions) && install_path().is_some();
+    #[cfg(not(target_os = "macos"))]
+    crate::desktop::is_bundled()
+}
+
+/// Whether this copy can put a downloaded update in its own place. Where it cannot (a disk
+/// image, a place the user may not write, a `.deb` or `.rpm` install that belongs to the package
+/// manager), nothing is downloaded and the pages hear `available`.
+fn can_replace_itself() -> bool {
+    #[cfg(target_os = "macos")]
+    return install_path().is_some_and(|path| !read_only_place(&path) && writable(&path));
+    #[cfg(not(target_os = "macos"))]
+    crate::desktop::can_self_update()
 }
 
 /// A disk image, or the randomised read-only place macOS runs a quarantined app from: nothing
 /// can be replaced there, whatever the permissions say.
+#[cfg(target_os = "macos")]
 fn read_only_place(path: &Path) -> bool {
     let path = path.to_string_lossy();
     path.starts_with("/Volumes/") || path.contains("/AppTranslocation/")
 }
 
 /// The user may replace `path` without being asked for a password.
-#[cfg(unix)]
+#[cfg(target_os = "macos")]
 fn writable(path: &Path) -> bool {
     use std::os::unix::ffi::OsStrExt;
 
@@ -114,11 +140,6 @@ fn writable(path: &Path) -> bool {
             .is_ok_and(|path| unsafe { libc::access(path.as_ptr(), libc::W_OK) } == 0)
     };
     allowed(path) && path.parent().is_some_and(allowed)
-}
-
-#[cfg(not(unix))]
-fn writable(_: &Path) -> bool {
-    false
 }
 
 /// Which step a failed download failed at.
@@ -142,6 +163,7 @@ impl Update {
                 checked_at: None,
                 offline: false,
                 error: None,
+                release_url: None,
             }),
             ready: Mutex::new(None),
             busy: AtomicBool::new(false),
@@ -239,9 +261,11 @@ impl Update {
         };
 
         let version = update.version.clone();
-        if install_path().is_none_or(|path| read_only_place(&path) || !writable(&path)) {
+        if !can_replace_itself() {
+            let page = release_page(app);
             return self.set(app, |view| {
                 view.status = "available";
+                view.release_url = page;
                 view.version = Some(version);
                 view.checked_at = Some(now_ms());
                 view.offline = false;

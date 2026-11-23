@@ -122,6 +122,12 @@ fn library(app: &AppHandle) -> &Library {
 }
 
 fn scheme_url(id: &RecordingId) -> String {
+    // WebKitGTK's player loads no URI scheme of the app's, so Linux plays from the loopback
+    // server (`desktop/loopback.rs`) and keeps the scheme only when that could not start.
+    #[cfg(target_os = "linux")]
+    if let Some(url) = crate::desktop::loopback::recording_url(&id.0) {
+        return url;
+    }
     if cfg!(target_os = "windows") {
         format!("http://{SCHEME}.localhost/file/{}", id.0)
     } else {
@@ -233,6 +239,16 @@ pub fn open_trim(app: &AppHandle, source: TrimSource, format: StartFormat) -> Co
 /// The recording the trim window shows, for its first read.
 pub fn current(app: &AppHandle) -> Option<RecordingInfo> {
     library(app).current()
+}
+
+/// The file of a take or a history entry this run knows, which the Linux loopback server
+/// (`desktop/loopback.rs`) serves as the scheme would.
+#[cfg(target_os = "linux")]
+pub fn known_file(app: &AppHandle, id: &str) -> Option<PathBuf> {
+    if !RecordingId::is_well_formed(id) {
+        return None;
+    }
+    library(app).get(id).map(|known| known.result.path)
 }
 
 pub fn recording_info(app: &AppHandle, id: &RecordingId) -> CommandResult<RecordingInfo> {
@@ -359,8 +375,8 @@ fn copy_file(path: &Path) -> CommandResult<()> {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn copy_file(_path: &Path) -> CommandResult<()> {
-    Err(CommandError::not_implemented("copying a file to the clipboard on this platform"))
+fn copy_file(path: &Path) -> CommandResult<()> {
+    crate::desktop::recording::copy_file(path).map_err(|e| CommandError::new(ErrorCode::Io, e))
 }
 
 /// The toast after an export: a saved file with Show in Finder, or why it failed. A cancelled

@@ -5,6 +5,7 @@ import { computed, ref } from "vue";
 
 import GIcon from "../components/GIcon.vue";
 import { t } from "../lib/i18n";
+import { commandHeld } from "../lib/keys";
 import { formatDuration } from "./model";
 
 defineProps<{ src: string; poster: string | null }>();
@@ -37,7 +38,7 @@ function key(event: KeyboardEvent): void {
   if (event.key === " ") toggle();
   else if (event.key === "ArrowLeft") v.currentTime = Math.max(0, v.currentTime - 5);
   else if (event.key === "ArrowRight") v.currentTime = Math.min(length.value, v.currentTime + 5);
-  else if (event.key.toLowerCase() === "m" && !event.metaKey) mute();
+  else if (event.key.toLowerCase() === "m" && !commandHeld(event)) mute();
   else return;
   event.preventDefault();
   event.stopPropagation();

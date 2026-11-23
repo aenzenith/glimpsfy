@@ -103,7 +103,8 @@ impl Sessions {
 /// Where a session's frames came from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Source {
-    ScreenCaptureKit,
+    /// The system's capture (`capture_log::system_path` names it).
+    System,
     /// Generated frames (`GLIMPSFY_SYNTHETIC`), for measuring without the permission.
     Synthetic,
 }
@@ -531,7 +532,14 @@ fn capture_frozen(
     let frames: Vec<(DisplayId, Arc<Frame>)> = if synthetic {
         synthetic_frames(&displays)
     } else {
+        // Own windows the system cannot keep out of a frame step aside while it is taken.
+        #[cfg(not(target_os = "macos"))]
+        let hidden = crate::desktop::hide_for_capture(app, &[]);
+        #[cfg(not(target_os = "macos"))]
+        hidden.settle();
         let taken = backend.capture_displays(&ids, &options);
+        #[cfg(not(target_os = "macos"))]
+        drop(hidden);
         capture_log::record(app, &format!("{mode:?}"), at.elapsed(), backend.take_report(), taken.as_ref().err());
         taken?.into_iter().map(|(id, frame)| (id, Arc::new(frame))).collect()
     };
@@ -571,7 +579,7 @@ fn capture_frozen(
         id: state.sessions.next_id(),
         mode,
         trace,
-        source: if synthetic { Source::Synthetic } else { Source::ScreenCaptureKit },
+        source: if synthetic { Source::Synthetic } else { Source::System },
         format: FrameFormat::current(),
         displays: entries,
         pointer_display,
@@ -796,7 +804,13 @@ fn capture_direct(
     let mut frames: Vec<(DisplayId, Frame)> = if synthetic {
         synthetic_frames(&targets).into_iter().map(|(id, frame)| (id, (*frame).clone())).collect()
     } else {
+        #[cfg(not(target_os = "macos"))]
+        let hidden = crate::desktop::hide_for_capture(app, &[]);
+        #[cfg(not(target_os = "macos"))]
+        hidden.settle();
         let taken = backend.capture_displays(&ids, &options);
+        #[cfg(not(target_os = "macos"))]
+        drop(hidden);
         let what = format!("{:?}", kind.mode());
         capture_log::record(app, &what, at.elapsed(), backend.take_report(), taken.as_ref().err());
         taken?
@@ -914,7 +928,7 @@ pub fn painted(app: &AppHandle, id: CaptureId, display: DisplayId, report: Paint
     }
 
     let source = match session.source {
-        Source::ScreenCaptureKit => "screencapturekit",
+        Source::System => crate::capture_log::system_path(),
         Source::Synthetic => "synthetic",
     };
     let count = session.displays.len();
@@ -1131,7 +1145,7 @@ pub(crate) fn hide_overlay(app: &AppHandle, display: DisplayId) {
     #[cfg(not(target_os = "macos"))]
     {
         let _ = app;
-        let _ = window.hide();
+        crate::desktop::hide_overlay(&window);
     }
 }
 
@@ -1215,7 +1229,7 @@ fn pointer() -> LogicalPoint {
     #[cfg(target_os = "macos")]
     return crate::macos::pointer();
     #[cfg(not(target_os = "macos"))]
-    LogicalPoint { x: 0.0, y: 0.0 }
+    crate::desktop::pointer()
 }
 
 /// A token no earlier capture used, so a page never shows a stale frame.
@@ -1256,7 +1270,7 @@ fn ramp(size: PhysicalSize) -> Frame {
     let mut data = vec![0u8; w * h * 4];
     for (y, row) in data.chunks_exact_mut(w * 4).enumerate() {
         for (x, px) in row.chunks_exact_mut(4).enumerate() {
-            let grid = x % 100 == 0 || y % 100 == 0;
+            let grid = x.is_multiple_of(100) || y.is_multiple_of(100);
             let r = (x * 255 / w.max(1)) as u8;
             let g = (y * 255 / h.max(1)) as u8;
             let b = 160u8;

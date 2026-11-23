@@ -45,9 +45,9 @@ import { settings_get, settings_set } from "../lib/api/settings";
 import { onUploadDone, onUploadFailed, onUploadProgress, upload_cancel, upload_file, upload_providers } from "../lib/api/upload";
 import { app_copy_text, app_open_url, pin_open, popover_drag_out, window_open, window_open_settings } from "../lib/api/windows";
 import { SETTINGS_CHANGED } from "../lib/events";
-import { language, t } from "../lib/i18n";
-import { capsText } from "../lib/keys";
-import { can } from "../lib/platform";
+import { language, t, tp } from "../lib/i18n";
+import { ariaKeys, capsText, chord, commandHeld } from "../lib/keys";
+import { can, isMac } from "../lib/platform";
 import type { Settings } from "../lib/settings";
 import AppIcon from "./AppIcon.vue";
 import { pieceOf } from "./combine";
@@ -62,6 +62,7 @@ import ListView from "./ListView.vue";
 import Menu, { type MenuItem } from "./Menu.vue";
 import { sendMenuItems } from "./send";
 import {
+  copyable,
   formatBytes,
   keepOnly,
   LIBRARY_FILTERS,
@@ -554,8 +555,8 @@ const act: Actions = {
     menu.value = { items: menuItems(), at };
   },
   dragOut(id) {
-    // A series is a folder of frames, not one file to drag out.
-    if (entryOf(id)?.kind === "series") return;
+    // A capture leaves as a file only where the platform starts that drag (`dragOut`).
+    if (!can("dragOut") || entryOf(id)?.kind === "series") return;
     popover_drag_out(id).catch((e) => failed(e, t("history.action.drag")));
   },
   wantPreview(id) {
@@ -591,9 +592,9 @@ const act: Actions = {
     if (!first) return toast(t("history.toast.missing"), undefined, "warn");
     output_reveal(first).catch((e) => {
       if (entry.savedPath && entry.file && e instanceof ApiError && e.code === "not_found") {
-        output_reveal(entry.file).catch((again) => failed(again, t("history.action.reveal")));
+        output_reveal(entry.file).catch((again) => failed(again, tp("history.action.reveal")));
       } else {
-        failed(e, t("history.action.reveal"));
+        failed(e, tp("history.action.reveal"));
       }
     });
   },
@@ -630,14 +631,14 @@ const act: Actions = {
     history_series_export(id, format).catch((e) => failed(e, t("history.series.exportAction")));
   },
   revealPath(path) {
-    output_reveal(path).catch((e) => failed(e, t("history.action.reveal")));
+    output_reveal(path).catch((e) => failed(e, tp("history.action.reveal")));
   },
 };
 
 /** What a series exports to: its folder, a timelapse MP4 or GIF, and deleting it. */
 function seriesItems(id: EntryId): MenuItem[] {
   return [
-    { label: t("history.series.revealFolder"), icon: "folder", keys: "⌥⌘R", run: () => act.reveal(id) },
+    { label: tp("history.series.revealFolder"), icon: "folder", keys: "⌥⌘R", run: () => act.reveal(id) },
     { label: t("history.series.mp4"), icon: "film", run: () => act.exportSeries(id, "mp4") },
     { label: t("history.series.gif"), icon: "gif", run: () => act.exportSeries(id, "gif") },
     "separator",
@@ -718,7 +719,7 @@ function menuItems(): MenuItem[] {
     own.push({ label: t("history.action.gif"), icon: "gif", keys: "⇧⌘E", run: () => act.trim(id, "gif") });
   }
   if (entry.kind === "textCopy") own.push({ label: t("history.action.copyText"), icon: "copy", keys: "⇧⌘C", run: () => act.copyText(id) });
-  else own.push({ label: t("history.action.copy"), icon: "copy", keys: "⌘C", run: () => act.copy(id) });
+  else if (copyable(entry)) own.push({ label: t("history.action.copy"), icon: "copy", keys: "⌘C", run: () => act.copy(id) });
   if (entry.kind !== "textCopy") own.push({ label: t("send.copyPath"), icon: "path", keys: "⌥⌘C", run: () => act.copyPath(id) });
   if (can("sendToApp")) own.push({ label: t("send.send"), icon: "send", children: sendItems(id) });
   if (entry.hosted) own.push({ label: t("history.action.copyLink"), icon: "link", keys: "⇧⌘L", run: () => act.copyLink(id) });
@@ -728,7 +729,7 @@ function menuItems(): MenuItem[] {
   if (entry.kind === "screenshot") own.push({ label: t("history.action.pinToScreen"), icon: "pin", keys: "⌘P", run: () => act.pinToScreen(id) });
   if (entry.kind !== "textCopy") {
     own.push({ label: t("history.action.saveAs"), icon: "save-as", keys: "⇧⌘S", run: () => act.saveAs(id) });
-    own.push({ label: t("history.action.reveal"), icon: "folder", keys: "⌥⌘R", run: () => act.reveal(id) });
+    own.push({ label: tp("history.action.reveal"), icon: "folder", keys: "⌥⌘R", run: () => act.reveal(id) });
   }
   own.push("separator");
   own.push({ label: t("history.action.deleteOne"), icon: "trash", keys: "⌘⌫", destructive: true, run: () => act.remove([id]) });
@@ -754,7 +755,7 @@ async function confirmDelete(options: DeleteOptions): Promise<void> {
       const title = removed.length === 1 ? t("history.toast.deletedOne") : t("history.toast.deleted", { n: removed.length });
       const trashed = removed.filter((o) => o.savedFile.state === "removed").length;
       const hosted = removed.filter((o) => o.hostedCopy.state === "removed").length;
-      const body = [trashed ? t("history.toast.trashed", { n: trashed }) : "", hosted ? t("history.toast.hostedDeleted", { n: hosted }) : "", report.freedBytes ? t("history.toast.freed", { size: formatBytes(report.freedBytes, language.value) }) : ""]
+      const body = [trashed ? tp("history.toast.trashed", { n: trashed }) : "", hosted ? t("history.toast.hostedDeleted", { n: hosted }) : "", report.freedBytes ? t("history.toast.freed", { size: formatBytes(report.freedBytes, language.value) }) : ""]
         .filter(Boolean)
         .join(" ");
       toast(title, body || undefined);
@@ -867,7 +868,7 @@ function key(event: KeyboardEvent): void {
   const target = event.target as HTMLElement;
   const typing = target.matches("input:not([type=range]):not([type=checkbox]), textarea, select");
   const k = event.key.toLowerCase();
-  const cmd = event.metaKey;
+  const cmd = commandHeld(event);
   const ids = selection.value.ids;
   const one = ids.length === 1 ? ids[0] : null;
   const run = (fn: () => void) => {
@@ -899,7 +900,7 @@ function key(event: KeyboardEvent): void {
   if ((event.key === " " || event.key === "Enter") && target.dataset.id) return run(() => pick(target.dataset.id as EntryId, event.shiftKey ? "range" : cmd ? "toggle" : "one"));
   if (!ids.length) return;
   if (cmd && !event.shiftKey && k === "o" && one) return run(() => act.open(one));
-  if (cmd && !event.shiftKey && !event.altKey && k === "c" && one) {
+  if (cmd && !event.shiftKey && !event.altKey && k === "c" && one && entryOf(one) && copyable(entryOf(one)!)) {
     if (window.getSelection()?.toString()) return;
     return run(() => act.copy(one));
   }
@@ -914,6 +915,8 @@ function key(event: KeyboardEvent): void {
   if (cmd && !event.shiftKey && k === "e") return run(() => exportSelected(ids));
   if (cmd && !event.shiftKey && k === "t" && one && entryOf(one)?.kind === "recording") return run(() => act.trim(one, "mp4"));
   if (cmd && (event.key === "Backspace" || event.key === "Delete")) return run(() => act.remove(ids));
+  // Windows and Linux file managers delete with Delete alone (`deleteChord`).
+  if (!isMac() && event.key === "Delete" && !event.altKey && !event.shiftKey) return run(() => act.remove(ids));
 }
 
 // ------------------------------------------------------------------------------- tooltips
@@ -923,7 +926,7 @@ let tipTimer = 0;
 let tipFor: HTMLElement | null = null;
 function showTip(el: HTMLElement): void {
   const r = el.getBoundingClientRect();
-  tip.value = { text: el.dataset.tip ?? "", keys: el.dataset.key ?? "", x: r.left + r.width / 2, y: r.top };
+  tip.value = { text: el.dataset.tip ?? "", keys: chord(el.dataset.key ?? ""), x: r.left + r.width / 2, y: r.top };
   void nextTick(() => {
     const t = tipEl.value;
     if (!t || !tip.value) return;
@@ -1223,7 +1226,7 @@ const zoomPercent = computed(() => `${(((zoom.value - 140) / 140) * 100).toFixed
         </button>
         <label class="g-search hv-search" :data-wide="narrow ? '' : undefined" :style="narrow ? undefined : { '--search-w': compact ? '240px' : '300px' }">
           <GIcon name="search" :size="16" />
-          <input ref="search" v-model="searchText" type="search" :placeholder="t('history.toolbar.search')" :aria-label="t('history.toolbar.search')" aria-keyshortcuts="Meta+F" />
+          <input ref="search" v-model="searchText" type="search" :placeholder="t('history.toolbar.search')" :aria-label="t('history.toolbar.search')" :aria-keyshortcuts="ariaKeys('Meta+F')" />
           <button
             v-if="searchText"
             type="button"
@@ -1237,7 +1240,7 @@ const zoomPercent = computed(() => `${(((zoom.value - 140) / 140) * 100).toFixed
           >
             <GIcon name="close" :size="14" />
           </button>
-          <kbd v-else-if="!narrow" class="g-kbd">⌘F</kbd>
+          <kbd v-else-if="!narrow" class="g-kbd">{{ chord("⌘F") }}</kbd>
         </label>
       </header>
 
@@ -1256,7 +1259,7 @@ const zoomPercent = computed(() => `${(((zoom.value - 140) / 140) * 100).toFixed
           <EmptyState v-if="emptyKind === 'error'" icon="warning" :title="t('history.error.title')" :text="t('history.error.text', { reason: errorText })">
             <button type="button" class="g-button" data-variant="primary" @click="reload()"><GIcon name="retry" :size="16" />{{ t("history.error.retry") }}</button>
           </EmptyState>
-          <EmptyState v-else-if="emptyKind === 'first'" icon="history" :title="t('history.empty.first.title')" :text="captureKeys ? t('history.empty.first.text') : t('history.empty.first.textNoKeys')" :keys="captureKeys">
+          <EmptyState v-else-if="emptyKind === 'first'" icon="history" :title="t('history.empty.first.title')" :text="captureKeys ? t('history.empty.first.text') : tp('history.empty.first.textNoKeys')" :keys="captureKeys">
             <button type="button" class="g-button" data-variant="primary" @click="capture_start('area').catch((e) => failed(e, t('history.empty.first.capture')))">
               <GIcon name="area" :size="16" />{{ t("history.empty.first.capture") }}
             </button>

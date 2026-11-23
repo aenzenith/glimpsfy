@@ -7,6 +7,7 @@
 import { ref } from "vue";
 
 import en from "../locales/en.json";
+import { platform } from "./platform";
 import type { Language as LanguageChoice } from "./settings";
 
 export type Key = keyof typeof en;
@@ -90,6 +91,23 @@ export async function setLanguage(choice: LanguageChoice): Promise<void> {
 }
 
 export function t(key: Key, params: Record<string, string | number> = {}): string {
-  const text = (catalogs[language.value] ?? en)[key] ?? en[key];
+  const text: string | undefined = (catalogs[language.value] ?? en)[key] ?? en[key];
+  // A key built at run time that no catalog holds shows as itself rather than stop the page.
+  if (typeof text !== "string") {
+    console.warn("No catalog holds this text.", key);
+    return key;
+  }
   return text.replace(/\{(\w+)\}/g, (whole, name: string) => (name in params ? String(params[name]) : whole));
+}
+
+/** `t` for a sentence that names something of macOS (the menu bar, Finder, the Trash, System
+ * Settings, "this Mac"). The catalogs word it for the other systems under `<key>@windows`,
+ * `<key>@linux`, or `<key>@other` when Windows and Linux share the words; macOS reads `key`. */
+export function tp(key: Key, params: Record<string, string | number> = {}): string {
+  if (platform.os !== "macos") {
+    for (const variant of [`${key}@${platform.os}`, `${key}@other`]) {
+      if (variant in en) return t(variant as Key, params);
+    }
+  }
+  return t(key, params);
 }

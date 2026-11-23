@@ -1426,8 +1426,14 @@ pub(crate) fn copy_to_clipboard(what: Clipboard<'_>) -> CommandResult<()> {
 }
 
 #[cfg(not(target_os = "macos"))]
-pub(crate) fn copy_to_clipboard(_what: Clipboard<'_>) -> CommandResult<()> {
-    Err(CommandError::not_implemented("copying from the history on this platform"))
+pub(crate) fn copy_to_clipboard(what: Clipboard<'_>) -> CommandResult<()> {
+    let done = match what {
+        Clipboard::Text(text) => crate::desktop::copy_text(text),
+        Clipboard::Png(png) => crate::desktop::copy_png(png),
+        Clipboard::Jpeg(jpeg) => crate::desktop::copy_image(jpeg, true),
+        Clipboard::File(path) => crate::desktop::copy_file(path),
+    };
+    done.map_err(|reason| CommandError::new(ErrorCode::Io, reason))
 }
 
 /// Saves a copy of an entry's capture where the user picks in the save panel (Save as… ⇧⌘S),
@@ -1628,6 +1634,16 @@ fn content_type(path: &Path) -> &'static str {
         Some("mov") => "video/quicktime",
         _ => "application/octet-stream",
     }
+}
+
+/// The capture file of an entry, which the Linux loopback server (`desktop/loopback.rs`) serves
+/// to the history's player as this scheme would.
+#[cfg(target_os = "linux")]
+pub fn entry_file(app: &AppHandle, id: &str) -> Option<PathBuf> {
+    if !EntryId::is_well_formed(id) {
+        return None;
+    }
+    store(app).ok()?.media(&EntryId(id.to_string()), Media::File).ok().flatten()
 }
 
 /// The byte range of a `Range: bytes=a-b` header, clamped to the file and to [`MAX_CHUNK`].

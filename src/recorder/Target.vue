@@ -122,6 +122,10 @@ const phase = computed(() => {
 });
 
 const mode = computed(() => setup.value?.mode ?? "area");
+/** The still under the setup and the countdown; the take is drawn over the live screen. */
+const backdrop = computed(() =>
+  phase.value === "setup" || phase.value === "countdown" ? (setup.value?.backdrop ?? null) : null,
+);
 const bounds = computed<Rect>(() => {
   const f = setup.value?.display.frame;
   return { x: 0, y: 0, width: f?.width ?? window.innerWidth, height: f?.height ?? window.innerHeight };
@@ -762,6 +766,9 @@ onUnmounted(() => {
 
 <template>
   <div class="r-target-page" :style="{ cursor }" @mousedown="onMouseDown" @mouseleave="onMouseLeave">
+    <!-- Without a compositor this window cannot show the screen under it, so the core hands it a
+         still of the display, drawn below everything as the capture overlay draws its frame. -->
+    <img v-if="backdrop" class="r-backdrop" :src="backdrop" alt="" draggable="false" aria-hidden="true" />
     <!-- The dim, under everything else: bands above, below, left and right of the hole, then the
          corners of a window's rounded hole (`paintDim`). -->
     <div v-if="dim" ref="dimEl" class="r-dim" aria-hidden="true">
@@ -864,6 +871,7 @@ onUnmounted(() => {
 .r-target-page { position: fixed; inset: 0; overflow: hidden; }
 .r-abs { position: absolute; }
 .r-sizemenu { z-index: 2; }
+.r-backdrop { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; user-select: none; }
 
 /* The dim as the capture overlay draws it (overlay.css): bands of one solid colour and, for a
    window's rounded hole, corner pieces that each clip the kit's own drawing, a spread shadow

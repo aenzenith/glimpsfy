@@ -47,7 +47,8 @@ import {
   type UploadId,
 } from "../lib/api/upload";
 import { window_open_settings } from "../lib/api/windows";
-import { t } from "../lib/i18n";
+import { t, tp } from "../lib/i18n";
+import { can, isMac } from "../lib/platform";
 import type { Settings } from "../lib/settings";
 import FirstUploadDialog, { type DialogFile } from "../upload/FirstUploadDialog.vue";
 import { prepareUpload } from "../upload/flow";
@@ -556,7 +557,8 @@ async function trash(): Promise<void> {
 function onKeyDown(event: KeyboardEvent): void {
   if (event.defaultPrevented || confirming.value || asking.value || !info.value) return;
   const target = event.target as Element | null;
-  const mod = event.metaKey || event.ctrlKey;
+  // ⌘ on macOS, where ⌃ has always worked too; Ctrl elsewhere, where the Windows key is the system's.
+  const mod = isMac() ? event.metaKey || event.ctrlKey : event.ctrlKey;
   const inField = !!target?.closest("input, select, textarea");
   // ⇧⌘Z puts back the cut ⌘Z took away; inside a field both belong to the field's own text.
   if (mod && !event.altKey && event.shiftKey && event.key.toLowerCase() === "z" && !inField) {
@@ -571,8 +573,10 @@ function onKeyDown(event: KeyboardEvent): void {
       event.preventDefault();
       return;
     }
+    // A file on the clipboard needs the system's support (`copyFile`), so Copy is left out without it.
     const run: Record<string, () => void> = { s: save, u: () => void startUpload(), backspace: askDiscard, f: openSearch };
     if (!inField) run.z = undo;
+    if (can("copyFile")) run.c = copy;
     const action = run[key];
     if (!action) return;
     // ⌘C copies text the user selected in a field instead of the recording.
@@ -700,7 +704,7 @@ onUnmounted(() => {
       <h1 class="g-window-title">{{ t("record.trim.title") }}</h1>
       <span class="r-subtitle">{{ subtitle }}</span>
       <span class="g-spacer" />
-      <TipWrap :tip="t('record.trim.discardTip')" :caps="['⌘', '⌫']" side="below" align="end">
+      <TipWrap :tip="tp('record.trim.discardTip')" :caps="['⌘', '⌫']" side="below" align="end">
         <button type="button" class="g-button" data-variant="destructive" :disabled="!info || locked" @click="askDiscard">
           <GIcon name="trash" :size="16" />{{ t("record.trim.discard") }}
         </button>
@@ -829,7 +833,7 @@ onUnmounted(() => {
                   <GIcon name="upload" :size="16" />{{ t("record.export.upload") }}
                 </button>
               </TipWrap>
-              <TipWrap :tip="t('record.export.copyTip')" :caps="['⌘', 'C']" align="end">
+              <TipWrap v-if="can('copyFile')" :tip="t('record.export.copyTip')" :caps="['⌘', 'C']" align="end">
                 <button type="button" class="g-button" @click="copy"><GIcon name="copy" :size="16" />{{ t("record.export.copy") }}</button>
               </TipWrap>
               <TipWrap :tip="t('record.export.saveTip')" :caps="['⌘', 'S']" align="end">
@@ -852,11 +856,11 @@ onUnmounted(() => {
 
     <ConfirmDialog
       v-if="confirming"
-      :title="t('record.trim.trashTitle')"
-      :text="t('record.trim.trashText')"
+      :title="tp('record.trim.trashTitle')"
+      :text="tp('record.trim.trashText')"
       icon="trash"
       tone="danger"
-      :confirm-label="t('record.trim.trashConfirm')"
+      :confirm-label="tp('record.trim.trashConfirm')"
       :cancel-label="t('record.cancel')"
       destructive
       :busy="trashing"

@@ -12,6 +12,8 @@
 //! - `colors`: the colour picker's recent colours and format (`colors.json`).
 //! - `settings`, `shortcuts`, `tray`, `permissions`: what their names say.
 //! - `macos`: AppKit glue (panels, levels, pasteboard, display changes).
+//! - `desktop/`: the same on Windows and Linux: `mod.rs` holds what Tauri's cross-platform API
+//!   does for both, `windows.rs` and `linux.rs` what needs the system itself.
 //! - `trace`, `dev`: latency marks and the dev-only measurement switches.
 //! - `agents/`: the local MCP server's listener, the approval card's answers and the log; the
 //!   protocol and the gate are `crates/mcp`.
@@ -21,6 +23,8 @@ mod calendar;
 mod capture_log;
 mod colors;
 pub mod commands;
+#[cfg(not(target_os = "macos"))]
+mod desktop;
 mod dev;
 #[cfg(debug_assertions)]
 mod driver;
@@ -65,19 +69,31 @@ pub fn run() {
     if std::env::args().nth(1).as_deref() == Some("mcp") {
         std::process::exit(glimpsfy_mcp::bridge::run(cfg!(debug_assertions)));
     }
+    // GTK's backend is chosen before anything starts it, and a process without a display stops.
+    #[cfg(target_os = "linux")]
+    desktop::prepare_environment();
     // The screen recording probe (`permissions::probe`) answers and exits before anything starts.
     if let Some(code) = permissions::probe() {
         std::process::exit(code);
     }
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         // A second launch (a login item racing a manual start) does nothing, unless the menu bar
-        // icon is hidden: then it opens Settings, the only way back to them.
-        .plugin(tauri_plugin_single_instance::init(|app, _, _| popover::second_launch(app)))
+        // icon is hidden: then it opens Settings, the only way back to them. One that names an
+        // action (`glimpsfy --action capture-area`) runs it here instead.
+        .plugin(tauri_plugin_single_instance::init(|app, arguments, _| {
+            match shortcuts::action_from_arguments(&arguments) {
+                Some(action) => shortcuts::run(app, action, std::time::Instant::now()),
+                None => popover::second_launch(app),
+            }
+        }))
         .plugin(shortcuts::plugin())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, None))
-        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_updater::Builder::new().build());
+    // macOS writes its pasteboard through AppKit; the others go through the clipboard plugin.
+    #[cfg(not(target_os = "macos"))]
+    let builder = builder.plugin(tauri_plugin_clipboard_manager::init());
+    builder
         .register_asynchronous_uri_scheme_protocol(frames::SCHEME, frames::handle)
         .register_asynchronous_uri_scheme_protocol(commands::history::SCHEME, commands::history::serve)
         .register_asynchronous_uri_scheme_protocol(recording::media::SCHEME, recording::media::serve)
@@ -95,6 +111,9 @@ pub fn run() {
             app.manage(AppState { backend: backend.clone(), settings: store, sessions: session::Sessions::default() });
 
             let handle = app.handle().clone();
+            // The screens and the app's handle, before any window is placed.
+            #[cfg(not(target_os = "macos"))]
+            desktop::setup(&handle);
             shortcuts::apply(&handle, &app.state::<AppState>().settings.get().shortcuts);
             tray::create(&handle)?;
             windows::setup(&handle);
@@ -113,6 +132,13 @@ pub fn run() {
             popover::setup(&handle);
             pins::clear_cache(&handle);
             permissions::at_launch(&handle);
+            // Linux: the portal's state, a word when nothing can be captured, Settings when no
+            // tray host shows the icon, and the GlobalShortcuts portal on Wayland.
+            #[cfg(target_os = "linux")]
+            {
+                desktop::start(&handle);
+                shortcuts::bind_portal(&handle);
+            }
 
             // The login item points at whichever binary registered it; it is written again from
             // the installed app, so it never starts a stale or dev build, and an agent written
@@ -132,6 +158,9 @@ pub fn run() {
             // The dev-only driver, when `GLIMPSFY_DRIVER` asks for it.
             #[cfg(debug_assertions)]
             driver::setup(&handle);
+
+            // `glimpsfy --action <name>` on the first launch.
+            shortcuts::run_launch_action(&handle);
 
             let runs = dev::options().autocapture;
             if runs > 0 {

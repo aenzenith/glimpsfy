@@ -3,7 +3,7 @@
 
 import { ApiError, type ErrorCode } from "../lib/api/core";
 import type { DeviceTransport } from "../lib/api/record";
-import { language, t, type Key } from "../lib/i18n";
+import { language, t, tp, type Key } from "../lib/i18n";
 
 /** "0:42" or "1:02:05" for an elapsed time. */
 export function clock(ms: number): string {
@@ -113,7 +113,7 @@ export function codeOf(error: unknown): ErrorCode {
 /** The sentence that says what failed and what to do. */
 export function errorText(error: unknown, place: ErrorPlace): string {
   const code = codeOf(error);
-  return t(BY_PLACE[place][code] ?? GENERAL[code] ?? "record.error.other");
+  return tp(BY_PLACE[place][code] ?? GENERAL[code] ?? "record.error.other");
 }
 
 /** Whether the user's reduced-motion preference is on. */

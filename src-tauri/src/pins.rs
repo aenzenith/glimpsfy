@@ -292,6 +292,10 @@ fn screen_at(app: &AppHandle, point: Option<(f64, f64)>) -> ScreenArea {
             return ScreenArea { visible, scale };
         }
     }
+    #[cfg(not(target_os = "macos"))]
+    if let Some((visible, scale)) = crate::desktop::screen_area(point) {
+        return ScreenArea { visible, scale };
+    }
     let _ = (app, point);
     ScreenArea { visible: LogicalRect { x: 0.0, y: 0.0, width: 1440.0, height: 900.0 }, scale: 2.0 }
 }
@@ -323,7 +327,7 @@ fn build(app: &AppHandle, info: &PinInfo) -> tauri::Result<()> {
         crate::macos::on_main(app, move |mtm| crate::macos::setup_pin(&window, frame, mtm));
     }
     #[cfg(not(target_os = "macos"))]
-    build()?.show()?;
+    crate::desktop::setup_pin(&build()?, frame);
     Ok(())
 }
 
@@ -362,8 +366,7 @@ pub fn set_frame(app: &AppHandle, id: u64, frame: LogicalRect) -> CommandResult<
     #[cfg(not(target_os = "macos"))]
     {
         let _ = app;
-        window.set_size(tauri::LogicalSize::new(frame.width, frame.height))?;
-        window.set_position(tauri::LogicalPosition::new(frame.x, frame.y))?;
+        crate::desktop::set_frame(&window, frame);
     }
     Ok(())
 }
@@ -382,11 +385,21 @@ pub fn frame(app: &AppHandle, id: u64) -> CommandResult<LogicalRect> {
             return Ok(frame);
         }
     }
-    let _ = app;
-    let scale = window.scale_factor()?;
-    let position = window.outer_position()?.to_logical::<f64>(scale);
-    let size = window.outer_size()?.to_logical::<f64>(scale);
-    Ok(LogicalRect { x: position.x, y: position.y, width: size.width, height: size.height })
+    // Tao's own answer divides by the window's scale alone, which is not where a pin sits when
+    // Windows displays of different scales meet; a pin that cannot be read is better than one
+    // moved to the wrong place.
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = app;
+        crate::desktop::frame_of(&window).ok_or_else(|| CommandError::internal("the pin's frame could not be read"))
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let scale = window.scale_factor()?;
+        let position = window.outer_position()?.to_logical::<f64>(scale);
+        let size = window.outer_size()?.to_logical::<f64>(scale);
+        Ok(LogicalRect { x: position.x, y: position.y, width: size.width, height: size.height })
+    }
 }
 
 /// Locks or unlocks a pin. A locked pin lets clicks through until ⌥ is held.
@@ -398,7 +411,7 @@ pub fn set_locked(app: &AppHandle, id: u64, locked: bool) -> CommandResult<()> {
     #[cfg(target_os = "macos")]
     crate::macos::on_main(app, move |mtm| crate::macos::set_click_through(&window, locked, mtm));
     #[cfg(not(target_os = "macos"))]
-    window.set_ignore_cursor_events(locked)?;
+    crate::desktop::set_click_through(&window, locked);
     if locked {
         watch_option_key(app);
     }
@@ -419,10 +432,7 @@ pub fn copy(id: u64) -> CommandResult<()> {
     #[cfg(target_os = "macos")]
     return crate::macos::copy_image(&bytes, kind == ImageType::Jpeg).map_err(CommandError::internal);
     #[cfg(not(target_os = "macos"))]
-    {
-        let _ = (bytes, kind);
-        Err(CommandError::not_implemented("copying a pin outside macOS"))
-    }
+    crate::desktop::copy_image(&bytes, kind == ImageType::Jpeg).map_err(CommandError::internal)
 }
 
 /// Saves the pin's image into the save folder under the file name template, never over a file.
@@ -453,7 +463,7 @@ pub fn close(app: &AppHandle, id: u64) {
         #[cfg(target_os = "macos")]
         crate::macos::destroy_panel(app, window);
         #[cfg(not(target_os = "macos"))]
-        let _ = window.destroy();
+        crate::desktop::destroy_panel(window);
     }
     forget(app, id);
 }
@@ -485,37 +495,38 @@ static WATCHING: AtomicBool = AtomicBool::new(false);
 /// unlock button; released, clicks go through them again. One thread, which ends when no pin is
 /// locked.
 fn watch_option_key(app: &AppHandle) {
-    #[cfg(target_os = "macos")]
-    {
-        if WATCHING.swap(true, Ordering::SeqCst) {
-            return;
-        }
-        let app = app.clone();
-        std::thread::spawn(move || {
-            let mut held = false;
-            loop {
-                std::thread::sleep(std::time::Duration::from_millis(60));
-                let locked: Vec<u64> = pins().iter().filter(|(_, p)| p.locked).map(|(id, _)| *id).collect();
-                if locked.is_empty() {
-                    WATCHING.store(false, Ordering::SeqCst);
-                    return;
-                }
-                let now = crate::macos::option_key_down();
-                if now == held {
-                    continue;
-                }
-                held = now;
-                for id in locked {
-                    if let Some(window) = app.get_webview_window(&label(id)) {
-                        let _ = window.emit(OPTION_KEY, serde_json::json!({ "held": held }));
-                        crate::macos::on_main(&app, move |mtm| crate::macos::set_click_through(&window, !held, mtm));
-                    }
+    if WATCHING.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let mut held = false;
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(60));
+            let locked: Vec<u64> = pins().iter().filter(|(_, p)| p.locked).map(|(id, _)| *id).collect();
+            if locked.is_empty() {
+                WATCHING.store(false, Ordering::SeqCst);
+                return;
+            }
+            #[cfg(target_os = "macos")]
+            let now = crate::macos::option_key_down();
+            #[cfg(not(target_os = "macos"))]
+            let now = crate::desktop::option_key_down();
+            if now == held {
+                continue;
+            }
+            held = now;
+            for id in locked {
+                if let Some(window) = app.get_webview_window(&label(id)) {
+                    let _ = window.emit(OPTION_KEY, serde_json::json!({ "held": held }));
+                    #[cfg(target_os = "macos")]
+                    crate::macos::on_main(&app, move |mtm| crate::macos::set_click_through(&window, !held, mtm));
+                    #[cfg(not(target_os = "macos"))]
+                    crate::desktop::set_click_through(&window, !held);
                 }
             }
-        });
-    }
-    #[cfg(not(target_os = "macos"))]
-    let _ = (app, &WATCHING);
+        }
+    });
 }
 
 /// The kind and pixel size of a PNG or JPEG, read from its header.

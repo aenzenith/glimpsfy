@@ -23,6 +23,7 @@ use tauri::plugin::TauriPlugin;
 use tauri::{AppHandle, Emitter, Wry};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
+use crate::agents::ApprovalKey;
 use crate::commands::capture::CaptureMode;
 use crate::commands::windows::WindowKind;
 use crate::recording::present::{InkKey, INK_KEYS};
@@ -55,7 +56,56 @@ pub enum Action {
     ScrollCapture,
 }
 
+/// Every action, for the command line.
+const ACTIONS: [Action; 19] = [
+    Action::CaptureArea,
+    Action::CaptureWindow,
+    Action::CaptureDisplay,
+    Action::CaptureAllDisplays,
+    Action::CaptureAreaDelayed,
+    Action::RepeatLastArea,
+    Action::CopyText,
+    Action::RecordScreen,
+    Action::RecordDisplay,
+    Action::PauseRecording,
+    Action::MuteMicrophone,
+    Action::DiscardRecording,
+    Action::OpenHistory,
+    Action::MeasureScreen,
+    Action::DrawOnScreen,
+    Action::Spotlight,
+    Action::PickColor,
+    Action::IntervalCapture,
+    Action::ScrollCapture,
+];
+
 impl Action {
+    /// The action's name on the command line: its name in kebab-case (`capture-area`,
+    /// `record-screen`, `open-history`).
+    fn cli_name(self) -> &'static str {
+        match self {
+            Action::CaptureArea => "capture-area",
+            Action::CaptureWindow => "capture-window",
+            Action::CaptureDisplay => "capture-display",
+            Action::CaptureAllDisplays => "capture-all-displays",
+            Action::CaptureAreaDelayed => "capture-area-delayed",
+            Action::RepeatLastArea => "repeat-last-area",
+            Action::CopyText => "copy-text",
+            Action::RecordScreen => "record-screen",
+            Action::RecordDisplay => "record-display",
+            Action::PauseRecording => "pause-recording",
+            Action::MuteMicrophone => "mute-microphone",
+            Action::DiscardRecording => "discard-recording",
+            Action::OpenHistory => "open-history",
+            Action::MeasureScreen => "measure-screen",
+            Action::PickColor => "pick-color",
+            Action::DrawOnScreen => "draw-on-screen",
+            Action::Spotlight => "spotlight",
+            Action::IntervalCapture => "interval-capture",
+            Action::ScrollCapture => "scroll-capture",
+        }
+    }
+
     /// Whether the action does something in this build.
     fn works(self) -> bool {
         self.mode().is_some()
@@ -115,6 +165,9 @@ static WANT_TAKE: AtomicBool = AtomicBool::new(false);
 /// Drawing mode's keys registered now, and whether drawing mode wants them.
 static INK: Mutex<Vec<(Shortcut, InkKey)>> = Mutex::new(Vec::new());
 static WANT_INK: AtomicBool = AtomicBool::new(false);
+/// The approval card's keys registered now, and whether a request waits for them.
+static APPROVAL: Mutex<Vec<(Shortcut, ApprovalKey)>> = Mutex::new(Vec::new());
+static WANT_APPROVAL: AtomicBool = AtomicBool::new(false);
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|p| p.into_inner())
@@ -136,6 +189,11 @@ pub fn plugin() -> TauriPlugin<Wry> {
             let ink = lock(&INK).iter().find(|(s, _)| s == shortcut).map(|(_, k)| *k);
             if let Some(key) = ink {
                 crate::recording::present::ink_key(app, key);
+                return;
+            }
+            let approval = lock(&APPROVAL).iter().find(|(s, _)| s == shortcut).map(|(_, k)| *k);
+            if let Some(key) = approval {
+                crate::agents::key(app, key);
                 return;
             }
             let find =
@@ -175,22 +233,55 @@ pub(crate) fn run(app: &AppHandle, action: Action, at: Instant) {
     }
 }
 
+/// The action a launch names with `--action <name>` or `--action=<name>`, where the name is the
+/// action's in kebab-case. This is how a system shortcut starts a capture where Glimpsfy gets no
+/// global shortcuts of its own (Wayland): the desktop's keyboard settings run
+/// `glimpsfy --action capture-area`. An unknown name is logged and does nothing.
+pub fn action_from_arguments(arguments: &[String]) -> Option<Action> {
+    let mut rest = arguments.iter().skip(1);
+    let name = loop {
+        let argument = rest.next()?;
+        if argument == "--action" {
+            break rest.next()?.as_str();
+        }
+        if let Some(name) = argument.strip_prefix("--action=") {
+            break name;
+        }
+    };
+    let action = ACTIONS.into_iter().find(|action| action.cli_name() == name);
+    if action.is_none() {
+        trace::log(format!("[glimpsfy] --action {name}: no such action"));
+    }
+    action
+}
+
+/// How long the first launch's action waits for the windows that were just made to load.
+const LAUNCH_ACTION_AFTER: std::time::Duration = std::time::Duration::from_millis(1200);
+
+/// Runs the action this launch named on its command line, once the app is up. A launch while
+/// Glimpsfy already runs hands its arguments to the running one instead (`lib.rs`).
+pub fn run_launch_action(app: &AppHandle) {
+    let arguments: Vec<String> = std::env::args().collect();
+    let Some(action) = action_from_arguments(&arguments) else {
+        return;
+    };
+    let app = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(LAUNCH_ACTION_AFTER);
+        let handle = app.clone();
+        let _ = app.run_on_main_thread(move || run(&handle, action, Instant::now()));
+    });
+}
+
 /// The keys registered now, with their actions, for the dev driver.
 #[cfg(debug_assertions)]
 pub(crate) fn bound() -> Vec<(String, Action)> {
     BOUND.lock().unwrap_or_else(|p| p.into_inner()).iter().map(|(s, a)| (s.into_string(), *a)).collect()
 }
 
-/// Registers the working actions' keys, replacing whatever was registered before.
-pub fn apply(app: &AppHandle, shortcuts: &Shortcuts) -> Vec<ShortcutProblem> {
-    let manager = app.global_shortcut();
-    let previous = std::mem::take(&mut *BOUND.lock().unwrap_or_else(|p| p.into_inner()));
-    for (shortcut, _) in previous {
-        let _ = manager.unregister(shortcut);
-    }
-    let mut bound = Vec::new();
-
-    let wanted = [
+/// Every action with the keys Settings › Shortcuts gives it.
+fn assigned(shortcuts: &Shortcuts) -> [(Action, &Option<String>); 19] {
+    [
         (Action::CaptureArea, &shortcuts.capture_area),
         (Action::CaptureWindow, &shortcuts.capture_window),
         (Action::CaptureDisplay, &shortcuts.capture_display),
@@ -210,7 +301,56 @@ pub fn apply(app: &AppHandle, shortcuts: &Shortcuts) -> Vec<ShortcutProblem> {
         (Action::Spotlight, &shortcuts.spotlight),
         (Action::IntervalCapture, &shortcuts.interval_capture),
         (Action::ScrollCapture, &shortcuts.scroll_capture),
-    ];
+    ]
+}
+
+/// On a Wayland session, where the plugin's keys reach Glimpsfy only while one of its own
+/// windows has the focus, every working action is bound through the GlobalShortcuts portal as
+/// well, where the desktop has it (`desktop::bind_portal_shortcuts`): named in the language of
+/// Settings › General, with the keys of Settings › Shortcuts as the desktop's suggestion. A press
+/// runs the action as the plugin's would. Without the portal nothing changes, and
+/// `glimpsfy --action <name>` stays the way to bind a key. Once, at start.
+#[cfg(target_os = "linux")]
+pub fn bind_portal(app: &AppHandle) {
+    use tauri::Manager;
+    if crate::desktop::describe().capabilities.global_shortcuts {
+        return;
+    }
+    let settings = app.state::<crate::AppState>().settings.get();
+    let language = settings.general.language;
+    let wanted = assigned(&settings.shortcuts)
+        .into_iter()
+        .filter(|(action, _)| action.works())
+        .map(|(action, accelerator)| {
+            let name =
+                serde_json::to_value(action).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default();
+            crate::desktop::PortalShortcut {
+                id: action.cli_name().to_string(),
+                description: crate::i18n::text(language, &format!("settings.shortcuts.action.{name}"), &[]),
+                trigger: accelerator.as_deref().and_then(crate::desktop::portal_trigger),
+            }
+        })
+        .collect();
+    let app = app.clone();
+    crate::desktop::bind_portal_shortcuts(wanted, move |id| {
+        let Some(action) = ACTIONS.into_iter().find(|action| action.cli_name() == id) else {
+            return;
+        };
+        let handle = app.clone();
+        let _ = app.run_on_main_thread(move || run(&handle, action, Instant::now()));
+    });
+}
+
+/// Registers the working actions' keys, replacing whatever was registered before.
+pub fn apply(app: &AppHandle, shortcuts: &Shortcuts) -> Vec<ShortcutProblem> {
+    let manager = app.global_shortcut();
+    let previous = std::mem::take(&mut *BOUND.lock().unwrap_or_else(|p| p.into_inner()));
+    for (shortcut, _) in previous {
+        let _ = manager.unregister(shortcut);
+    }
+    let mut bound = Vec::new();
+
+    let wanted = assigned(shortcuts);
 
     let mut problems = Vec::new();
     let mut take_keys = Vec::new();
@@ -271,6 +411,39 @@ pub fn bind_ink(app: &AppHandle) {
 pub fn unbind_ink(app: &AppHandle) {
     WANT_INK.store(false, Ordering::SeqCst);
     settle(app, &INK, ink_wanted, ink_refused);
+}
+
+/// Registers the approval card's keys (⌥⇧⌘Y N T ← →) while a request waits; the card never takes
+/// the keyboard, so they reach Glimpsfy as global keys and are given back when the queue empties.
+pub fn bind_approval(app: &AppHandle) {
+    if !WANT_APPROVAL.swap(true, Ordering::SeqCst) {
+        settle(app, &APPROVAL, approval_wanted, approval_refused);
+    }
+}
+
+pub fn unbind_approval(app: &AppHandle) {
+    if WANT_APPROVAL.swap(false, Ordering::SeqCst) {
+        settle(app, &APPROVAL, approval_wanted, approval_refused);
+    }
+}
+
+/// The approval keys registered now; a key another app or one of the user's own shortcuts holds
+/// is missing, and the card shows no key cap for it.
+pub fn approval_keys() -> Vec<ApprovalKey> {
+    lock(&APPROVAL).iter().map(|(_, key)| *key).collect()
+}
+
+fn approval_wanted() -> Vec<(String, ApprovalKey)> {
+    if WANT_APPROVAL.load(Ordering::SeqCst) {
+        crate::agents::APPROVAL_KEYS.iter().map(|(accelerator, key)| (accelerator.to_string(), *key)).collect()
+    } else {
+        Vec::new()
+    }
+}
+
+/// A held approval key costs only its key cap on the card; the buttons still answer.
+fn approval_refused(_: &AppHandle, accelerator: &str, key: ApprovalKey, message: String) {
+    trace::log(format!("[glimpsfy] approval key {accelerator} ({key:?}): {message}"));
 }
 
 fn take_wanted() -> Vec<(String, Action)> {

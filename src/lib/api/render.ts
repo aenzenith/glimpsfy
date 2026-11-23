@@ -66,7 +66,12 @@ export type CombineRequest = {
 };
 export type CombineBackground = "clear" | "white" | "gray" | "dark";
 
-async function rendered<T>(command: string, image: RenderedImage, providerId: ProviderId | null = null): Promise<T> {
+async function rendered<T>(
+  command: string,
+  image: RenderedImage,
+  providerId: ProviderId | null = null,
+  extra: Record<string, unknown> = {},
+): Promise<T> {
   const header = {
     source: image.source,
     width: image.width,
@@ -76,6 +81,7 @@ async function rendered<T>(command: string, image: RenderedImage, providerId: Pr
     area: image.area ?? null,
     format: image.format ?? null,
     beautify: image.beautify ?? null,
+    ...extra,
   };
   // A body that is a view of a larger buffer would send the whole buffer.
   const view = image.data;

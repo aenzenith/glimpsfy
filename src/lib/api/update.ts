@@ -25,6 +25,9 @@ export type UpdateView = {
   offline: boolean;
   /** With `failed`. */
   error: "download" | "signature" | "install" | null;
+  /** With `available`: the latest release's page, where the user gets the version this copy
+   * cannot install by itself. */
+  releaseUrl: string | null;
 };
 
 export function update_state(): Promise<UpdateView> {

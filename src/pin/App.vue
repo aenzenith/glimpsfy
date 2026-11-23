@@ -35,6 +35,7 @@ import {
   type PinOptionKey,
 } from "../lib/api/windows";
 import { t } from "../lib/i18n";
+import { can, isMac } from "../lib/platform";
 import { codeOf, reasonText } from "../toast/reason";
 
 const MAX_ZOOM = 8;
@@ -337,14 +338,18 @@ async function contextMenu(event: MouseEvent): Promise<void> {
         enabled: !collapsedFrom.value,
         action: () => void actualSize(),
       }),
-      await separator(),
-      await CheckMenuItem.new({
-        text: t("pin.menu.lock"),
-        accelerator: "CmdOrCtrl+L",
-        checked: locked.value,
-        action: () => void toggleLock(),
-      }),
-      await CheckMenuItem.new({ text: t("pin.menu.allSpaces"), checked: allSpaces.value, action: () => void toggleAllSpaces() }),
+    );
+    // Lock and every desktop only where the platform has them (`pinLock`, `pinAllSpaces`).
+    const placing = [
+      ...(can("pinLock")
+        ? [await CheckMenuItem.new({ text: t("pin.menu.lock"), accelerator: "CmdOrCtrl+L", checked: locked.value, action: () => void toggleLock() })]
+        : []),
+      ...(can("pinAllSpaces")
+        ? [await CheckMenuItem.new({ text: t("pin.menu.allSpaces"), checked: allSpaces.value, action: () => void toggleAllSpaces() })]
+        : []),
+    ];
+    if (placing.length) items.push(await separator(), ...placing);
+    items.push(
       await separator(),
       await MenuItem.new({
         text: collapsedFrom.value ? t("pin.menu.restore") : t("pin.menu.collapse"),
@@ -369,11 +374,12 @@ function onKey(event: KeyboardEvent): void {
     if (event.key === "Escape") showOpacity.value = false;
     return;
   }
-  const mod = event.metaKey || event.ctrlKey;
+  // ⌘ on macOS, where ⌃ has always worked too; Ctrl elsewhere, where the Windows key is the system's.
+  const mod = isMac() ? event.metaKey || event.ctrlKey : event.ctrlKey;
   const key = event.key.toLowerCase();
   let handled = true;
   if (mod && event.altKey && event.code === "KeyW") void closeAll();
-  else if (mod && key === "l") void toggleLock();
+  else if (mod && key === "l" && can("pinLock")) void toggleLock();
   else if (locked.value) handled = false;
   else if (mod && key === "c") void copy();
   else if (mod && key === "s") void save();
@@ -535,6 +541,11 @@ onUnmounted(() => {
   --pin-alpha: 1;
   outline: 0;
   cursor: default;
+}
+/* Without a compositor the window is cut to the image's rectangle (`desktop/linux.rs`), so a
+   rounded corner would leave the window's black, empty pixels in each corner. */
+:root[data-opaque] .s-pin {
+  border-radius: 0;
 }
 .s-pin::before {
   content: "";

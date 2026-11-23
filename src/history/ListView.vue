@@ -7,6 +7,7 @@ import GIcon from "../components/GIcon.vue";
 import type { EntryId, HistoryItem, SortOrder } from "../lib/api/history";
 import { entryName, thumbUrl } from "../lib/api/history";
 import { t } from "../lib/i18n";
+import { commandHeld } from "../lib/keys";
 import AppIcon from "./AppIcon.vue";
 import { HISTORY, type HistoryContext } from "./context";
 import Marked from "./Marked.vue";
@@ -84,7 +85,7 @@ function kind(item: HistoryItem): string {
 
 function click(event: MouseEvent, id: EntryId): void {
   if (event.shiftKey) event.preventDefault();
-  ctx.act.pick(id, event.shiftKey ? "range" : event.metaKey ? "toggle" : "one");
+  ctx.act.pick(id, event.shiftKey ? "range" : commandHeld(event) ? "toggle" : "one");
 }
 
 let start: { x: number; y: number; id: EntryId } | null = null;

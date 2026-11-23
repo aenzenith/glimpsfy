@@ -9,7 +9,7 @@ import SectionHead from "../../components/SectionHead.vue";
 import SegmentedControl from "../../components/SegmentedControl.vue";
 import SwitchControl from "../../components/SwitchControl.vue";
 import { upload_providers, upload_validate } from "../../lib/api/upload";
-import { t } from "../../lib/i18n";
+import { t, tp } from "../../lib/i18n";
 import type { CopyAfterUpload, Settings } from "../../lib/settings";
 import { update } from "../store";
 import { describeError, uid } from "../text";
@@ -81,7 +81,7 @@ const copies = computed(() => [
       <div class="g-empty">
         <div class="g-empty-icon"><GIcon name="cloud" :size="32" /></div>
         <div class="g-empty-title">{{ t("settings.upload.noHostsTitle") }}</div>
-        <p class="g-empty-text">{{ t("settings.upload.noHostsText") }}</p>
+        <p class="g-empty-text">{{ tp("settings.upload.noHostsText") }}</p>
       </div>
     </div>
   </template>
@@ -91,7 +91,7 @@ const copies = computed(() => [
       <div class="g-empty">
         <div class="g-empty-icon"><GIcon name="cloud" :size="32" /></div>
         <div class="g-empty-title">{{ t("settings.upload.emptyTitle") }}</div>
-        <p class="g-empty-text">{{ t("settings.upload.emptyText") }}</p>
+        <p class="g-empty-text">{{ tp("settings.upload.emptyText") }}</p>
       </div>
     </div>
     <SectionHead :title="t('settings.upload.hosts')" :desc="hasDefault ? t('settings.upload.hostsDesc') : t('settings.upload.pickDesc')" />

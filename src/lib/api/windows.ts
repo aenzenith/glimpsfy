@@ -133,7 +133,85 @@ export type CalendarEvent = {
 export const app_add_to_calendar = (event: CalendarEvent) => call<void>("app_add_to_calendar", { event });
 
 export type SystemPane = "keyboardShortcuts" | "loginItems";
+/** Opens a pane of the system's settings: System Settings on macOS, the matching page of Settings
+ * on Windows. Linux has no such pages and answers `not_implemented` (`systemSettingsPanes`). */
 export const app_open_system_settings = (pane: SystemPane) => call<void>("app_open_system_settings", { pane });
+
+/** What this platform can do, so a page hides or changes what it cannot. A feature whose native
+ * part is not written yet reads `false` until it is. */
+export type PlatformCapabilities = {
+  /** A single window can be listed, snapped to, captured and recorded on its own (not on Wayland). */
+  windowCapture: boolean;
+  /** The system keeps Glimpsfy's own windows out of captures and recordings. Where it is `false`
+   * they are hidden around a still capture, and a recording shows whichever of them is on screen. */
+  captureExclusion: boolean;
+  /** The overlay takes keys without becoming the active window. Where it is `false` it takes the
+   * keyboard focus and gives it back when it closes. */
+  nonActivatingOverlay: boolean;
+  /** The click ring and the key caps of a recording. */
+  inputOverlays: boolean;
+  /** The webcam bubble of a recording. */
+  cameraBubble: boolean;
+  /** A pin can show on every Space or virtual desktop (`pin_set_all_spaces`). */
+  pinAllSpaces: boolean;
+  /** A pin can be locked and woken by holding ⌥ or Alt (`pin_set_locked`). */
+  pinLock: boolean;
+  /** The toast and the recorder's bar get a native blur; where it is `false` the pages draw their
+   * own background. */
+  nativeGlass: boolean;
+  /** A capture can be dragged out of the popover as a file (`popover_drag_out`). */
+  dragOut: boolean;
+  /** A file itself can be put on the clipboard: a recording, a GIF, an image that is neither PNG
+   * nor JPEG (`record_export` with copy, `history_copy`). */
+  copyFile: boolean;
+  /** The system has a capture sound for Settings › General › Shutter sound. */
+  shutterSound: boolean;
+  /** `app_open_system_settings` opens a page of the system's settings. */
+  systemSettingsPanes: boolean;
+  /** Screen capture needs a permission the user grants. */
+  screenRecordingPermission: boolean;
+  /** This copy can install an update by itself. Where it is `false` (a `.deb` or `.rpm` install)
+   * `update://changed` only reports `available` with `releaseUrl`. */
+  selfUpdate: boolean;
+  /** The system gives the app global shortcuts. Where it is `false` (Wayland) the user binds
+   * `glimpsfy --action <name>` in the desktop's own keyboard settings. */
+  globalShortcuts: boolean;
+  /** The tray icon reports clicks, so a left click opens the popover or captures. Where it is
+   * `false` (Linux) the icon only opens its menu. */
+  trayPopover: boolean;
+  /** The system tells where the pointer is. Where it is `false` (Wayland) "the display under the
+   * pointer" is the primary display. */
+  globalPointer: boolean;
+  /** A transparent window shows what lies behind it. A Linux desktop without a compositor draws it
+   * black instead; a core that does not send this yet has transparent windows. */
+  transparentWindows?: boolean;
+  /** A window capture can keep the window's shadow (Settings › Output › Shadow). Windows draws
+   * the shadow outside every surface a capture reads, so it is `false` there. */
+  windowShadow: boolean;
+  /** Send to app brings an app forward and presses its paste key (`send_to_app`); macOS only for
+   * now. Copy path works everywhere. */
+  sendToApp: boolean;
+  /** The editor's Remove background and the overlay's Copy subject lift subjects from their
+   * background (Vision, macOS 14); elsewhere the engine waits and both are hidden. */
+  subjectLift: boolean;
+  /** The local MCP server, its approval card and Settings › Agents; macOS only. */
+  agents: boolean;
+  /** The scrolling capture (⌘↓ in the overlay, `capture_start_scroll`); macOS only for now. */
+  scrollCapture: boolean;
+};
+
+export type Platform = {
+  os: "macos" | "windows" | "linux";
+  /** The Linux session; `null` on macOS and Windows. */
+  session: "x11" | "wayland" | null;
+  capabilities: PlatformCapabilities;
+  /** Where a `<video>` loads a history recording from when the webview's player loads no app
+   * scheme: the core's loopback address on Linux (WebKitGTK); `null` on macOS and Windows. */
+  videoBase?: string | null;
+};
+/** The system, the Linux session and what the platform can do. It does not change while the app
+ * runs, so a page reads it once. */
+export const app_platform = () => call<Platform>("app_platform");
 /** Quits and starts Glimpsfy again (after the screen recording permission changed). */
 export const app_restart = () => call<void>("app_restart");
 

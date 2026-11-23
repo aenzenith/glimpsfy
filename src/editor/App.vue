@@ -64,11 +64,12 @@ import {
   type RenderedImage,
 } from "../lib/api/render";
 import { settings_get, settings_set } from "../lib/api/settings";
-import { app_choose_file, pin_open, window_open_settings } from "../lib/api/windows";
 import { subject_cancel, subject_cut, subject_find } from "../lib/api/subject";
+import { app_choose_file, pin_open, window_open_settings } from "../lib/api/windows";
 import { SETTINGS_CHANGED } from "../lib/events";
-import { language, t, type Key } from "../lib/i18n";
-import { can } from "../lib/platform";
+import { language, t, tp, type Key } from "../lib/i18n";
+import { commandHeld, commandKeyName } from "../lib/keys";
+import { can, isMac } from "../lib/platform";
 import type { ImageFormat, Settings } from "../lib/settings";
 import { jobName } from "../ocr/text";
 import { TOOLS, toolForKey, type ToolId } from "../overlay/tools";
@@ -456,7 +457,7 @@ function errorText(error: unknown): string {
   if (code === "not_found") return t("editor.gone");
   const known: Key[] = ["error.permission_denied", "error.not_implemented", "error.io"];
   const key = `error.${code}` as Key;
-  return t(known.includes(key) ? key : "error.other");
+  return tp(known.includes(key) ? key : "error.other");
 }
 
 // ---------------------------------------------------------------------------- the image
@@ -1107,7 +1108,7 @@ function onPointerDown(e: PointerEvent): void {
   }
   if (e.button !== 0) return;
   // With ⌘ held a press only draws, even on top of another object; with ⌥ it draws freely.
-  const result = engine.pointerDown(toImage(local(e)), reach(), e.metaKey, e.altKey);
+  const result = engine.pointerDown(toImage(local(e)), reach(), commandHeld(e), e.altKey);
   if (result === "handle" || result === "object" || result === "draw") target.setPointerCapture(e.pointerId);
   // A press that starts a text leaves the focus to its field.
   if (result !== "text") e.preventDefault();
@@ -1125,11 +1126,11 @@ function onPointerMove(e: PointerEvent): void {
     return;
   }
   lastPoint = p;
-  aim(p, e.metaKey, e.altKey);
+  aim(p, commandHeld(e), e.altKey);
   updateReadout(p);
 }
 
-/** The pointer's last place in image pixels, so ⌘ going down or up can change the cursor. */
+/** The pointer's last place in image pixels, so ⌘ or ⌥ going down or up can change the cursor. */
 let lastPoint: { x: number; y: number } | null = null;
 
 /** The cursor and the hover frame at `p`; `over` is ⌘ held, when a press only draws, and `free`
@@ -1241,7 +1242,8 @@ function onKeyDown(e: KeyboardEvent): void {
   // The beautify panel's sliders keep only their own keys (`BeautifyPanel.vue`).
   const slider = target instanceof HTMLInputElement && target.type === "range";
   if (target && (target.isContentEditable || (!slider && ["INPUT", "SELECT", "TEXTAREA"].includes(target.tagName)))) return;
-  const command = e.metaKey || e.ctrlKey;
+  // ⌘ on macOS, where ⌃ has always worked too; Ctrl elsewhere, where the Windows key is the system's.
+  const command = isMac() ? e.metaKey || e.ctrlKey : e.ctrlKey;
   if (command && e.altKey && e.code === "KeyO") {
     e.preventDefault();
     objectsOpen.value = !objectsOpen.value;
@@ -1265,14 +1267,14 @@ function onKeyDown(e: KeyboardEvent): void {
     cursor.value = "grab";
     return;
   }
-  if (e.key === "Meta") {
+  if (e.key === commandKeyName()) {
     if (lastPoint && !pan && !engine.busy()) aim(lastPoint, true, e.altKey);
     return;
   }
   // ⌥ frees a snapping tool's drawing from the words, during a drag too.
   if (e.key === "Alt") {
     if (engine.busy()) engine.setFree(true);
-    else if (lastPoint && !pan) aim(lastPoint, e.metaKey, true);
+    else if (lastPoint && !pan) aim(lastPoint, commandHeld(e), true);
     return;
   }
   if (cropMode.value && (e.key === "Enter" || e.key === "Escape") && !engine.busy()) {
@@ -1307,6 +1309,8 @@ function onKeyDown(e: KeyboardEvent): void {
       "+": () => zoomTo(step(percent.value, 1)),
       "-": () => zoomTo(step(percent.value, -1)),
     };
+    // Windows and Linux apps also redo with Ctrl+Y.
+    if (!isMac() && !e.shiftKey) run.y = () => engine.redo();
     const action = run[k];
     if (action) {
       e.preventDefault();
@@ -1326,10 +1330,10 @@ function onKeyDown(e: KeyboardEvent): void {
 }
 
 function onKeyUp(e: KeyboardEvent): void {
-  if (e.key === "Meta" && lastPoint && !pan && !engine.busy()) aim(lastPoint, false, e.altKey);
+  if (e.key === commandKeyName() && lastPoint && !pan && !engine.busy()) aim(lastPoint, false, e.altKey);
   if (e.key === "Alt") {
     if (engine.busy()) engine.setFree(false);
-    else if (lastPoint && !pan) aim(lastPoint, e.metaKey, false);
+    else if (lastPoint && !pan) aim(lastPoint, commandHeld(e), false);
   }
   if (e.key === " ") {
     spaceHeld.value = false;

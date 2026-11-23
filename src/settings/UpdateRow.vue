@@ -30,8 +30,9 @@ function restart(): void {
   void update_install().catch(fail);
 }
 
+/** The release the core named, which is where this copy's update waits, or the latest one. */
 function releases(): void {
-  void app_open_url(RELEASES_URL).catch(fail);
+  void app_open_url(view.value?.releaseUrl ?? RELEASES_URL).catch(fail);
 }
 </script>
 

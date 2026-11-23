@@ -10,6 +10,7 @@ import GIcon from "../components/GIcon.vue";
 import { entryName, thumbUrl, type Entry, type EntryId } from "../lib/api/history";
 import type { CombineBackground, CombineRequest } from "../lib/api/render";
 import { t, type Key } from "../lib/i18n";
+import { chord } from "../lib/keys";
 import {
   ALIGNS,
   arrange,
@@ -387,7 +388,7 @@ function key(event: KeyboardEvent): void {
         <span class="g-spacer" />
         <button ref="cancelEl" type="button" class="g-button" :disabled="busy" @click="emit('cancel')">{{ t("history.delete.cancel") }}</button>
         <button ref="go" type="button" class="g-button" data-variant="primary" :aria-disabled="canOpen ? undefined : 'true'" @click="open">
-          {{ t("history.combine.open") }}<kbd class="g-kbd">↩</kbd>
+          {{ t("history.combine.open") }}<kbd class="g-kbd">{{ chord("↩") }}</kbd>
         </button>
       </div>
     </div>

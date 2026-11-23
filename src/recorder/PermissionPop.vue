@@ -3,7 +3,8 @@
 // System Settings (focused) and Record without it, which turns the source off.
 import { nextTick, onMounted, ref } from "vue";
 
-import { t } from "../lib/i18n";
+import { t, tp } from "../lib/i18n";
+import { can } from "../lib/platform";
 
 const props = defineProps<{ device: "microphone" | "camera" }>();
 const emit = defineEmits<{ open: []; without: [] }>();
@@ -26,10 +27,10 @@ const text = TEXT[props.device];
 <template>
   <div class="g-pop g-glass" data-material="strong" role="dialog" :aria-label="t(text.label)">
     <p class="g-pop-title">{{ t(text.title) }}</p>
-    <p class="g-pop-text">{{ t(text.text) }}</p>
+    <p class="g-pop-text">{{ tp(text.text) }}</p>
     <div class="g-pop-actions">
-      <button ref="primary" type="button" class="g-button" data-variant="primary" @click="emit('open')">
-        {{ t("record.perm.open") }}
+      <button v-if="can('systemSettingsPanes')" ref="primary" type="button" class="g-button" data-variant="primary" @click="emit('open')">
+        {{ tp("record.perm.open") }}
       </button>
       <button type="button" class="g-button" data-variant="plain" @click="emit('without')">{{ t("record.perm.without") }}</button>
     </div>

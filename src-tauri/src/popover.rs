@@ -40,7 +40,10 @@ pub fn tray_event(app: &AppHandle, event: &TrayIconEvent) {
     // anything over the screen being captured. The click event carries no modifiers, so AppKit's
     // current flags are read.
     #[cfg(target_os = "macos")]
-    if crate::macos::option_key_down() && (crate::recording::stop_from_tray(app) || session::interval::stop(app)) {
+    let option = crate::macos::option_key_down();
+    #[cfg(not(target_os = "macos"))]
+    let option = crate::desktop::option_key_down();
+    if option && (crate::recording::stop_from_tray(app) || session::interval::stop(app)) {
         return;
     }
     match app.state::<AppState>().settings.get().general.icon_click {
@@ -55,12 +58,16 @@ pub fn tray_event(app: &AppHandle, event: &TrayIconEvent) {
 
 /// Makes the hidden popover and the outside-click watch. Once, at start, on the main thread.
 pub fn setup(app: &AppHandle) {
-    if let Err(error) = build(app) {
+    let built = build(app);
+    if let Err(error) = &built {
         trace::log(format!("[glimpsfy] popover: {error}"));
-        return;
     }
+    // Elsewhere the popover holds the keyboard focus, so a click outside it takes the focus
+    // away, and losing the focus already hides it.
     #[cfg(target_os = "macos")]
-    crate::macos::on_outside_click(app, hide);
+    if built.is_ok() {
+        crate::macos::on_outside_click(app, hide);
+    }
 }
 
 fn build(app: &AppHandle) -> tauri::Result<WebviewWindow> {
@@ -88,7 +95,11 @@ fn build(app: &AppHandle) -> tauri::Result<WebviewWindow> {
         window
     };
     #[cfg(not(target_os = "macos"))]
-    let window = make()?;
+    let window = {
+        let window = make()?;
+        crate::desktop::setup_popover(&window);
+        window
+    };
 
     let handle = app.clone();
     window.on_window_event(move |event| {
@@ -131,13 +142,7 @@ pub fn show(app: &AppHandle) {
         crate::macos::on_main(app, move |mtm| crate::macos::show_popover(&window, tray.as_ref(), GAP, mtm));
     }
     #[cfg(not(target_os = "macos"))]
-    {
-        if let Some(rect) = tray::icon(app).and_then(|t| t.rect().ok().flatten()) {
-            let _ = window.set_position(rect.position);
-        }
-        let _ = window.show();
-        let _ = window.set_focus();
-    }
+    crate::desktop::show_popover(&window, tray::icon(app).as_ref(), GAP);
 }
 
 pub fn hide(app: &AppHandle) {
@@ -164,14 +169,28 @@ pub fn fit(app: &AppHandle, height: f64) {
     #[cfg(not(target_os = "macos"))]
     {
         let _ = app;
-        let _ = window.set_size(tauri::LogicalSize::new(WIDTH, height));
+        crate::desktop::fit_popover(&window, WIDTH, height);
     }
 }
 
 /// Glimpsfy was started while it runs. With the menu bar icon hidden, Settings opens, since it
-/// is the only way back to them; otherwise nothing happens.
+/// is the only way back to them; otherwise nothing happens. On Linux the same holds when no tray
+/// host shows the icon (stock GNOME), which is asked on a thread of its own.
 pub fn second_launch(app: &AppHandle) {
-    if !app.state::<AppState>().settings.get().general.show_menu_bar_icon {
+    let icon_shown = app.state::<AppState>().settings.get().general.show_menu_bar_icon;
+    if !icon_shown {
         crate::windows::open(app, crate::commands::windows::WindowKind::Settings);
+    }
+    #[cfg(target_os = "linux")]
+    if icon_shown {
+        let app = app.clone();
+        std::thread::spawn(move || {
+            if !crate::desktop::tray_host_present() {
+                let handle = app.clone();
+                let _ = app.run_on_main_thread(move || {
+                    crate::windows::open(&handle, crate::commands::windows::WindowKind::Settings)
+                });
+            }
+        });
     }
 }

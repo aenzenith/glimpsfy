@@ -7,7 +7,7 @@ import { computed, inject, ref, watch } from "vue";
 
 import GIcon from "../components/GIcon.vue";
 import { entryName, frameUrl, history_series_frames, type HistoryItem, type SeriesFrame } from "../lib/api/history";
-import { t } from "../lib/i18n";
+import { t, tp } from "../lib/i18n";
 import { HISTORY, type HistoryContext } from "./context";
 import { folderTrail, formatClock, framePath, GRID } from "./model";
 import { seriesMeta } from "./series";
@@ -62,7 +62,7 @@ function exportMenu(event: MouseEvent): void {
     <div class="hv-band-head">
       <b>{{ entryName(entry) }}</b>
       <span class="hv-bmeta">{{ seriesMeta(entry) }}</span>
-      <button v-if="folder" type="button" class="hv-path" :data-tip="t('history.series.revealFolder')" data-key="⌥⌘R" @click="ctx.act.reveal(id)">
+      <button v-if="folder" type="button" class="hv-path" :data-tip="tp('history.series.revealFolder')" data-key="⌥⌘R" @click="ctx.act.reveal(id)">
         <GIcon name="folder" :size="14" /><span>{{ trail }}</span>
       </button>
       <span class="g-spacer"></span>
@@ -85,12 +85,12 @@ function exportMenu(event: MouseEvent): void {
           <span class="hv-fr-media" role="img" :aria-label="`${clock(frame.takenAtMs)} · ${t('history.series.skippedTile')}`"><GIcon name="bang" :size="16" /></span>
           <span class="hv-fr-time">{{ t("history.series.skippedTile") }}</span>
         </div>
-        <button v-else type="button" class="hv-fr" :data-tip="t('history.series.revealFrame')" @click="reveal(frame)">
+        <button v-else type="button" class="hv-fr" :data-tip="tp('history.series.revealFrame')" @click="reveal(frame)">
           <span class="hv-fr-media"><img :src="frameUrl(id, frame.index)" alt="" loading="lazy" decoding="async" draggable="false" /></span>
           <span class="hv-fr-time">{{ clock(frame.takenAtMs) }}</span>
         </button>
       </template>
-      <button v-if="rest > 0 && last" type="button" class="hv-fr" data-more :aria-label="t('history.series.more', { n: rest })" :data-tip="t('history.series.revealFolder')" @click="ctx.act.reveal(id)">
+      <button v-if="rest > 0 && last" type="button" class="hv-fr" data-more :aria-label="t('history.series.more', { n: rest })" :data-tip="tp('history.series.revealFolder')" @click="ctx.act.reveal(id)">
         <span class="hv-fr-media">+{{ rest }}</span>
         <span class="hv-fr-time">{{ t("history.series.until", { time: clock(last.takenAtMs) }) }}</span>
       </button>

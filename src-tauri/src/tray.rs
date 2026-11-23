@@ -7,8 +7,10 @@
 //! whenever the settings are saved (`settings://changed`) and when the delay changes, so its
 //! words, its shortcuts and its check marks are never stale. During a countdown the icon shows
 //! the seconds left and the menu offers to cancel; while an interval series runs, the icon shows
-//! its count ("12/60") and the menu offers to stop it.
+//! its count ("12/60") and the menu offers to stop it. On Linux, which has no popover, the menu also
+//! holds the recording's controls, built again whenever the take's state changes.
 
+#[cfg(target_os = "macos")]
 use tauri::image::Image;
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::tray::TrayIconBuilder;
@@ -34,15 +36,33 @@ const DELAY_PREFIX: &str = "delay-";
 const HISTORY: &str = "history";
 const SETTINGS: &str = "settings";
 const QUIT: &str = "quit";
+// The recording's controls, which Linux's tray has instead of the popover.
+#[cfg(target_os = "linux")]
+const RECORD_SCREEN: &str = "record-screen";
+#[cfg(target_os = "linux")]
+const STOP_RECORDING: &str = "stop-recording";
+#[cfg(target_os = "linux")]
+const PAUSE_RECORDING: &str = "pause-recording";
+#[cfg(target_os = "linux")]
+const RESUME_RECORDING: &str = "resume-recording";
+#[cfg(target_os = "linux")]
+const DISCARD_RECORDING: &str = "discard-recording";
 
 /// The kit's menu bar glyph, black on transparent: a template image, which macOS tints for a
-/// light or dark menu bar.
+/// light or dark menu bar. The other platforms tint nothing and get a glyph that shows on their
+/// panel (`desktop::tray_image`).
+#[cfg(target_os = "macos")]
 const ICON: &[u8] = include_bytes!("../icons/tray.png");
 
 pub fn create(app: &AppHandle) -> tauri::Result<()> {
     let menu = build_menu(app)?;
+    #[cfg(target_os = "macos")]
+    let glyph = Image::from_bytes(ICON)?;
+    #[cfg(not(target_os = "macos"))]
+    let glyph = crate::desktop::tray_image(false)
+        .ok_or_else(|| tauri::Error::InvalidIcon(std::io::Error::other("the tray glyph")))?;
     TrayIconBuilder::with_id(TRAY_ID)
-        .icon(Image::from_bytes(ICON)?)
+        .icon(glyph)
         .icon_as_template(true)
         .tooltip("Glimpsfy")
         .menu(&menu)
@@ -52,6 +72,8 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
         .on_tray_icon_event(|tray, event| crate::popover::tray_event(tray.app_handle(), &event))
         .on_menu_event(|app, event| on_menu(app, event.id().as_ref()))
         .build(app)?;
+    #[cfg(not(target_os = "macos"))]
+    crate::desktop::watch_tray_theme(app);
 
     // The menu follows the settings: its language and its shortcuts.
     let handle = app.clone();
@@ -115,9 +137,12 @@ fn show_title(app: &AppHandle) {
         let language = app.state::<AppState>().settings.get().general.language;
         grant.map(|m| i18n::text(language, "tray.grantMinutes", &[("n", &m.to_string())]))
     });
+    #[cfg(target_os = "macos")]
     if let Some(tray) = app.tray_by_id(TRAY_ID) {
         let _ = tray.set_title(title);
     }
+    #[cfg(not(target_os = "macos"))]
+    crate::desktop::tray_text(app, title);
 }
 
 fn build_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
@@ -148,6 +173,31 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
     let interval = if session::interval::is_running() { word("tray.stopInterval") } else { word("tray.interval") };
     items.push(Box::new(item(app, INTERVAL, interval, keys.interval_capture.as_deref())?));
     items.push(Box::new(PredefinedMenuItem::separator(app)?));
+
+    // AppIndicator reports no clicks, so Linux has no popover: the recording starts, pauses,
+    // resumes, stops and is discarded from here, and the items follow the take's state.
+    #[cfg(target_os = "linux")]
+    {
+        use glimpsfy_record::RecordingState;
+        let now = app.try_state::<crate::recording::RecordingApp>().map(|r| r.recorder.state());
+        let stop = (STOP_RECORDING, "tray.stopRecording", &keys.record_screen);
+        let discard = (DISCARD_RECORDING, "tray.discardRecording", &keys.discard_recording);
+        let controls = match now {
+            Some(RecordingState::Idle) | None => vec![(RECORD_SCREEN, "tray.record", &keys.record_screen)],
+            Some(RecordingState::Countdown { .. }) => vec![stop],
+            Some(RecordingState::Recording { .. }) => {
+                vec![(PAUSE_RECORDING, "tray.pauseRecording", &keys.pause_recording), stop, discard]
+            }
+            Some(RecordingState::Paused { .. }) => {
+                vec![(RESUME_RECORDING, "tray.resumeRecording", &keys.pause_recording), stop, discard]
+            }
+            Some(RecordingState::Finishing { .. }) => Vec::new(),
+        };
+        for (id, key, accelerator) in controls {
+            items.push(Box::new(item(app, id, word(key), accelerator.as_deref())?));
+        }
+        items.push(Box::new(PredefinedMenuItem::separator(app)?));
+    }
 
     if session::delay::is_running() {
         items.push(Box::new(item(app, CANCEL_DELAY, word("tray.cancelDelay"), None)?));
@@ -215,6 +265,21 @@ pub(crate) fn on_menu(app: &AppHandle, id: &str) {
         }
         return;
     }
+    #[cfg(target_os = "linux")]
+    {
+        use crate::shortcuts::Action;
+        match id {
+            RECORD_SCREEN => return crate::shortcuts::run(app, Action::RecordScreen, std::time::Instant::now()),
+            STOP_RECORDING => {
+                crate::recording::stop_from_tray(app);
+                return;
+            }
+            // Pausing and resuming toggle, and Discard asks in the bar, which shows while paused.
+            PAUSE_RECORDING | RESUME_RECORDING => return crate::recording::shortcut(app, Action::PauseRecording),
+            DISCARD_RECORDING => return crate::recording::shortcut(app, Action::DiscardRecording),
+            _ => {}
+        }
+    }
     match id {
         CANCEL_DELAY => {
             session::delay::cancel(app);
@@ -246,4 +311,24 @@ pub fn set_visible(app: &AppHandle, visible: bool) {
 /// The menu bar icon, which the popover hangs from.
 pub fn icon(app: &AppHandle) -> Option<tauri::tray::TrayIcon> {
     app.tray_by_id(TRAY_ID)
+}
+
+/// Builds the menu again when a take's state changes kind, since Linux's menu holds the
+/// recording's controls. The ticks call it four times a second, so an unchanged kind costs
+/// nothing.
+#[cfg(target_os = "linux")]
+pub fn follow_recording(app: &AppHandle, now: &glimpsfy_record::RecordingState) {
+    use glimpsfy_record::RecordingState;
+    use std::sync::atomic::{AtomicU8, Ordering};
+    static SHOWN: AtomicU8 = AtomicU8::new(0);
+    let kind = match now {
+        RecordingState::Idle => 1,
+        RecordingState::Countdown { .. } => 2,
+        RecordingState::Recording { .. } => 3,
+        RecordingState::Paused { .. } => 4,
+        RecordingState::Finishing { .. } => 5,
+    };
+    if SHOWN.swap(kind, Ordering::SeqCst) != kind {
+        refresh(app);
+    }
 }

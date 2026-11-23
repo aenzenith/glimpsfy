@@ -29,7 +29,7 @@ pub fn overlay_display(label: &str) -> Option<DisplayId> {
     label.strip_prefix(OVERLAY_PREFIX)?.parse().ok().map(DisplayId)
 }
 
-fn overlays(app: &AppHandle) -> Vec<(DisplayId, WebviewWindow)> {
+pub(crate) fn overlays(app: &AppHandle) -> Vec<(DisplayId, WebviewWindow)> {
     app.webview_windows().into_iter().filter_map(|(label, w)| Some((overlay_display(&label)?, w))).collect()
 }
 
@@ -45,10 +45,18 @@ pub fn setup(app: &AppHandle) {
         }
         crate::macos::watch_displays(app);
     }
+    #[cfg(not(target_os = "macos"))]
+    {
+        crate::desktop::sync_overlays(app);
+        if let Ok(toast) = build_panel(app, TOAST, "Glimpsfy") {
+            crate::desktop::setup_toast(&toast);
+        }
+        crate::desktop::watch_displays(app);
+    }
 }
 
 /// A borderless, transparent, hidden webview window for a panel (an overlay or the toast).
-fn build_panel(app: &AppHandle, label: &str, title: &str) -> tauri::Result<WebviewWindow> {
+pub(crate) fn build_panel(app: &AppHandle, label: &str, title: &str) -> tauri::Result<WebviewWindow> {
     let build = || {
         WebviewWindowBuilder::new(app, label, WebviewUrl::App("index.html".into()))
             .title(title)
@@ -107,6 +115,8 @@ pub fn displays_changed(app: &AppHandle) {
     session::displays_changed(app);
     #[cfg(target_os = "macos")]
     sync_overlays(app);
+    #[cfg(not(target_os = "macos"))]
+    crate::desktop::sync_overlays(app);
     if let Ok(displays) = state.backend.displays() {
         let _ = app.emit(events::DISPLAYS_CHANGED, displays);
     }
@@ -126,7 +136,7 @@ pub fn prewarm_overlays(app: &AppHandle) {
         });
     }
     #[cfg(not(target_os = "macos"))]
-    let _ = app;
+    crate::desktop::prewarm_overlays(app);
 }
 
 /// Shows one display's overlay; `key` gives it the keyboard.
@@ -137,13 +147,7 @@ pub fn show_overlay(app: &AppHandle, display: DisplayId, key: bool) {
     #[cfg(target_os = "macos")]
     crate::macos::on_main(app, move |mtm| crate::macos::show_overlay(&window, key, mtm));
     #[cfg(not(target_os = "macos"))]
-    {
-        let _ = app;
-        let _ = window.show();
-        if key {
-            let _ = window.set_focus();
-        }
-    }
+    crate::desktop::show_overlay(&window, key);
 }
 
 pub fn hide_overlays(app: &AppHandle) {
@@ -158,9 +162,7 @@ pub fn hide_overlays(app: &AppHandle) {
         });
     }
     #[cfg(not(target_os = "macos"))]
-    for (_, window) in overlays(app) {
-        let _ = window.hide();
-    }
+    crate::desktop::hide_overlays(app);
 }
 
 /// While a capture is open, the overlay under the pointer takes the keyboard, so Esc and the
@@ -176,30 +178,31 @@ pub fn hide_overlays(app: &AppHandle) {
 /// recording setup's panels keep it, which ⌘R shows with the keyboard just before the capture
 /// closes; an overlay that stepped aside (a save panel) is ordered out and left alone.
 pub fn follow_pointer(app: &AppHandle, id: CaptureId) {
-    #[cfg(target_os = "macos")]
-    {
-        let app = app.clone();
-        std::thread::spawn(move || loop {
-            std::thread::sleep(Duration::from_millis(30));
-            let state = app.state::<AppState>();
-            let Some(session) = state.sessions.get(id) else {
-                return;
-            };
-            let pointer = crate::macos::pointer();
-            let under = session.displays.iter().find(|d| d.display.frame.contains(pointer)).map(|d| d.display.id);
-            let Some(display) = session.holder().or(under) else {
-                continue;
-            };
-            if let Some(window) = app.get_webview_window(&overlay_label(display)) {
-                let keep: Vec<WebviewWindow> =
-                    crate::recording::PANELS.iter().filter_map(|label| app.get_webview_window(label)).collect();
-                // Does nothing while that overlay is key already, or not shown yet.
-                crate::macos::on_main(&app, move |mtm| crate::macos::key_overlay(&window, &keep, mtm));
-            }
-        });
-    }
-    #[cfg(not(target_os = "macos"))]
-    let _ = (app, id);
+    let app = app.clone();
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_millis(30));
+        let state = app.state::<AppState>();
+        let Some(session) = state.sessions.get(id) else {
+            return;
+        };
+        #[cfg(target_os = "macos")]
+        let pointer = crate::macos::pointer();
+        #[cfg(not(target_os = "macos"))]
+        let pointer = crate::desktop::pointer();
+        let under = session.displays.iter().find(|d| d.display.frame.contains(pointer)).map(|d| d.display.id);
+        let Some(display) = session.holder().or(under) else {
+            continue;
+        };
+        if let Some(window) = app.get_webview_window(&overlay_label(display)) {
+            let keep: Vec<WebviewWindow> =
+                crate::recording::PANELS.iter().filter_map(|label| app.get_webview_window(label)).collect();
+            // Does nothing while that overlay is key already, or not shown yet.
+            #[cfg(target_os = "macos")]
+            crate::macos::on_main(&app, move |mtm| crate::macos::key_overlay(&window, &keep, mtm));
+            #[cfg(not(target_os = "macos"))]
+            crate::desktop::key_overlay(&window, &keep);
+        }
+    });
 }
 
 /// The overlay pages say which display holds the selection; [`follow_pointer`] keeps the
@@ -448,8 +451,9 @@ pub fn toast_fit(app: &AppHandle, frame: ToastFrame, glass: Vec<ToastGlass>) {
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (app, glass);
-        let _ = if frame.shown { window.show() } else { window.hide() };
+        let display = *TOAST_DISPLAY.lock().unwrap_or_else(|p| p.into_inner());
+        crate::desktop::place_toast(&window, display, frame);
+        crate::desktop::toast_glass(&window, &glass);
     }
 }
 
@@ -469,16 +473,8 @@ pub fn toast_pointer(app: &AppHandle) -> Option<glimpsfy_capture::LogicalPoint> 
     }
     #[cfg(not(target_os = "macos"))]
     {
-        if !window.is_visible().unwrap_or(false) {
-            return None;
-        }
-        let pointer = window.cursor_position().ok()?;
-        let origin = window.inner_position().ok()?;
-        let scale = window.scale_factor().ok()?;
-        Some(glimpsfy_capture::LogicalPoint {
-            x: (pointer.x - f64::from(origin.x)) / scale,
-            y: (pointer.y - f64::from(origin.y)) / scale,
-        })
+        let _ = app;
+        crate::desktop::pointer_in(&window)
     }
 }
 
@@ -506,7 +502,12 @@ pub fn open(app: &AppHandle, kind: WindowKind) {
         .visible(false)
         .build();
     match built {
-        Ok(window) => bring_forward(app, window, at, false),
+        Ok(window) => {
+            // Linux has no app menu whose Close Window answers Ctrl+W, as ⌘W does on macOS.
+            #[cfg(target_os = "linux")]
+            crate::desktop::close_on_ctrl_w(&window);
+            bring_forward(app, window, at, false)
+        }
         Err(error) => trace::log(format!("[glimpsfy] window {label}: {error}")),
     }
 }
@@ -518,7 +519,6 @@ pub fn open(app: &AppHandle, kind: WindowKind) {
 /// The pointer alone cannot say it: when the displays share one Space ("Displays have separate
 /// Spaces" is off), the menu bar lives only on the main display, so every click on the icon, its
 /// menu or the popover leaves the pointer there, whichever screen the user works on.
-#[cfg(target_os = "macos")]
 fn active_point(app: &AppHandle) -> Option<glimpsfy_capture::LogicalPoint> {
     let options =
         glimpsfy_capture::WindowListOptions { on_screen_only: true, exclude_desktop: true, exclude_own: false };
@@ -529,17 +529,15 @@ fn active_point(app: &AppHandle) -> Option<glimpsfy_capture::LogicalPoint> {
         .iter()
         .filter(|w| w.layer == 0 && w.alpha > 0.0 && w.bounds.width >= 160.0 && w.bounds.height >= 120.0)
         .collect();
+    #[cfg(target_os = "macos")]
     let front = crate::macos::frontmost_pid();
+    #[cfg(not(target_os = "macos"))]
+    let front = crate::desktop::frontmost_pid();
     let window = ordinary.iter().find(|w| Some(w.pid) == front).or_else(|| ordinary.first())?;
     Some(glimpsfy_capture::LogicalPoint {
         x: window.bounds.x + window.bounds.width / 2.0,
         y: window.bounds.y + window.bounds.height / 2.0,
     })
-}
-
-#[cfg(not(target_os = "macos"))]
-fn active_point(_app: &AppHandle) -> Option<glimpsfy_capture::LogicalPoint> {
-    None
 }
 
 /// Moves an ordinary window to the screen that holds `at` (the pointer's without it), then shows
@@ -558,38 +556,9 @@ fn bring_forward(
     });
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = at;
-        center_on_cursor_monitor(app, &window, only_if_elsewhere);
+        let _ = app;
+        crate::desktop::center_on_screen(&window, at, only_if_elsewhere);
         let _ = window.show();
         let _ = window.set_focus();
     }
-}
-
-/// Without AppKit: the middle of the work area of the monitor under the cursor, in physical
-/// pixels, which Windows and X11 use for every monitor alike. Wayland reports no cursor, so
-/// there the window stays where `center` put it.
-#[cfg(not(target_os = "macos"))]
-fn center_on_cursor_monitor(app: &AppHandle, window: &WebviewWindow, only_if_elsewhere: bool) {
-    let Ok(cursor) = app.cursor_position() else {
-        return;
-    };
-    let Ok(Some(monitor)) = app.monitor_from_point(cursor.x, cursor.y) else {
-        return;
-    };
-    if only_if_elsewhere {
-        if let Ok(Some(current)) = window.current_monitor() {
-            if current.position() == monitor.position() && current.size() == monitor.size() {
-                return;
-            }
-        }
-    }
-    let Ok(size) = window.outer_size() else {
-        return;
-    };
-    let area = monitor.work_area();
-    let (area_w, area_h) = (i64::from(area.size.width), i64::from(area.size.height));
-    let (w, h) = (i64::from(size.width).min(area_w), i64::from(size.height).min(area_h));
-    let x = i64::from(area.position.x) + (area_w - w) / 2;
-    let y = i64::from(area.position.y) + (area_h - h) / 2;
-    let _ = window.set_position(tauri::PhysicalPosition::new(x as i32, y as i32));
 }

@@ -18,6 +18,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use glimpsfy_capture::PermissionState;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
+#[cfg(target_os = "macos")]
 use tauri_plugin_opener::OpenerExt;
 
 use crate::commands::windows::WindowKind;
@@ -106,9 +107,15 @@ pub fn open_settings(app: &AppHandle, permission: Permission) {
         Permission::Camera => "Privacy_Camera",
         Permission::Accessibility => "Privacy_Accessibility",
     };
-    if cfg!(target_os = "macos") {
+    #[cfg(target_os = "macos")]
+    {
         let url = format!("x-apple.systempreferences:com.apple.preference.security?{anchor}");
         let _ = app.opener().open_url(url, None::<&str>);
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = anchor;
+        crate::desktop::open_permission_settings(app, permission);
     }
 }
 
@@ -116,7 +123,15 @@ pub fn open_settings(app: &AppHandle, permission: Permission) {
 /// recording permission is missing.
 pub fn at_launch(app: &AppHandle) {
     let done = app.state::<AppState>().settings.get().general.first_run_done;
-    let granted = app.state::<AppState>().backend.permission() == PermissionState::Granted;
+    let permission = app.state::<AppState>().backend.permission();
+    // Windows asks no permission before a capture, and its backend says so with `NotRequired`;
+    // read as missing, it would open the first-run window at every launch, the login one too.
+    // An X11 session on Linux says `NotRequired` the same way. A Wayland session answers with
+    // the Screenshot portal's state: until a portal shot has worked (`NotDetermined`) or after
+    // one was refused (`Denied`) a capture cannot start, so the first-run window opens to ask.
+    let granted = permission == PermissionState::Granted
+        || (cfg!(target_os = "windows") && permission == PermissionState::NotRequired)
+        || (cfg!(target_os = "linux") && permission == PermissionState::NotRequired);
     if !done || !granted {
         windows::open(app, WindowKind::Firstrun);
     }
@@ -259,37 +274,4 @@ mod platform {
 }
 
 #[cfg(not(target_os = "macos"))]
-mod platform {
-    use glimpsfy_capture::PermissionState;
-    use tauri::AppHandle;
-
-    #[derive(Clone, Copy)]
-    pub enum Media {
-        Audio,
-        Video,
-    }
-
-    pub fn accessibility() -> PermissionState {
-        PermissionState::NotRequired
-    }
-
-    pub fn request_accessibility() -> PermissionState {
-        PermissionState::NotRequired
-    }
-
-    pub fn screen_recording_granted() -> bool {
-        true
-    }
-
-    pub fn granted_to_a_new_process() -> bool {
-        false
-    }
-
-    pub fn media(_: Media) -> PermissionState {
-        PermissionState::NotRequired
-    }
-
-    pub fn request_media(_: &AppHandle, _: Media) -> PermissionState {
-        PermissionState::NotRequired
-    }
-}
+use crate::desktop::permissions as platform;
