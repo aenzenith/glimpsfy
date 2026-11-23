@@ -173,7 +173,12 @@ struct Rig {
     streams: Arc<Streams>,
     clock: Arc<TestClock>,
     dir: tempfile::TempDir,
+    // Last, so it goes after the recorder: one rig at a time. Encoders running side by side on a
+    // CI runner's few cores fell behind, and the writers dropped frames the checks then missed.
+    _turn: std::sync::MutexGuard<'static, ()>,
 }
+
+static TURN: Mutex<()> = Mutex::new(());
 
 fn rig() -> Rig {
     let streams = Arc::new(Streams::default());
@@ -185,7 +190,8 @@ fn rig() -> Rig {
         trash: Arc::new(NoTrash),
         on_fault: Arc::new(|_| {}),
     };
-    Rig { recorder: Recorder::new(env), streams, clock, dir: tempfile::tempdir().unwrap() }
+    let turn = TURN.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    Rig { recorder: Recorder::new(env), streams, clock, dir: tempfile::tempdir().unwrap(), _turn: turn }
 }
 
 fn config(dir: &Path, codec: VideoCodec) -> RecordingConfig {
@@ -342,9 +348,12 @@ fn pause_leaves_no_gap_and_the_file_has_every_track() {
     let times = platform::video_timestamps(&path).unwrap();
     assert!(times.len() >= 170, "only {} frames", times.len());
     assert_eq!(times[0], 0);
+    // The pause this guards against leaves a gap of 2 s. Windows's writer drops frames while its
+    // encoder is behind, which on a CI runner left 200 ms once, so there it may skip ten.
+    let most_apart = if cfg!(windows) { 10 * FRAME_NS } else { 3 * FRAME_NS };
     for pair in times.windows(2) {
         assert!(pair[1] > pair[0], "a timestamp went backwards");
-        assert!(pair[1] - pair[0] <= 3 * FRAME_NS, "a gap of {} ms", (pair[1] - pair[0]) / 1_000_000);
+        assert!(pair[1] - pair[0] <= most_apart, "a gap of {} ms", (pair[1] - pair[0]) / 1_000_000);
     }
     if let Ok(dir) = std::env::var("GLIMPSFY_PROBE_DIR") {
         std::fs::copy(&path, Path::new(&dir).join("paused.mp4")).unwrap();
