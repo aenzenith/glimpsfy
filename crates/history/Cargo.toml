@@ -27,5 +27,20 @@ jpeg-encoder = "0.6.1"
 objc2.workspace = true
 objc2-foundation = { workspace = true, features = ["std", "NSError", "NSFileManager", "NSString", "NSURL"] }
 
+# The Recycle Bin is filled through the shell's IFileOperation with a sink of our own, which
+# refuses a delete that would not recycle (`trash.rs`); `windows-core` is named because
+# `#[implement]` expands to paths in it.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_System_Com", "Win32_UI_Shell"] }
+windows-core = "0.62.2"
+
+# The freedesktop.org Trash: the home trash, or the trash folder of the file's own mount. `jiff`
+# writes the deletion date that the specification asks for into the `.trashinfo`.
+[target.'cfg(target_os = "linux")'.dependencies]
+trash = { version = "5.4.0", default-features = false, features = ["freedesktop", "jiff"] }
+
 [dev-dependencies]
 tempfile.workspace = true
+
+[lints]
+workspace = true
