@@ -23,7 +23,14 @@ export type General = Extra & {
   checkForUpdates: boolean;
   /** Whether the user finished the first-run window; until then it opens at every launch. */
   firstRunDone: boolean;
+  /** The sizes saved from the selection's size menu, oldest first, at most 12. An entry this
+   * version cannot read stays in the list as it is (`Kept` in settings.rs), so the pages read the
+   * list through `readSavedSizes` (`src/lib/sizes.ts`) and write it back whole. */
+  savedSizes: unknown[];
 };
+
+/** A size saved from the size menu, in frame pixels, as the size label counts them. */
+export type SavedSize = Extra & { name: string; width: number; height: number };
 
 /** Accelerators the global-shortcut plugin parses, such as "Shift+CommandOrControl+2"; `null` has no key. */
 export type Shortcuts = Extra & {

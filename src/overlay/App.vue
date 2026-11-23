@@ -11,6 +11,8 @@ import { computed, nextTick, onMounted, onUnmounted, provide, reactive, ref, sha
 
 import BeautifyPanel, { type PreviewSource } from "../components/BeautifyPanel.vue";
 import GIcon from "../components/GIcon.vue";
+import SizeLabel from "../components/SizeLabel.vue";
+import SizeMenu from "../components/SizeMenu.vue";
 import SendList from "../components/SendList.vue";
 import OptionsStrip from "../annotate/OptionsStrip.vue";
 import RedactionNotice from "../annotate/RedactionNotice.vue";
@@ -51,6 +53,22 @@ import { pin_open, window_open_settings } from "../lib/api/windows";
 import { can } from "../lib/platform";
 import { CAPTURE_CLOSED, CAPTURE_STARTED, OVERLAY_SELECTION_ENDED, OVERLAY_SELECTION_STARTED } from "../lib/events";
 import { t, type Key } from "../lib/i18n";
+import type { SavedSize } from "../lib/settings";
+import {
+  FREE,
+  loadSavedSizes,
+  lockOf,
+  lockedRatio,
+  nextRatio,
+  placeSize,
+  ratioBox,
+  ratioInside,
+  ratioResize,
+  ratioValue,
+  removeSavedSize,
+  saveSize,
+  type SizeChoice,
+} from "../lib/sizes";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import * as annotations from "./annotations";
 import { cssColor, drawLens, ensureContext, hex, loadFrame, pixelAt } from "./frame";
@@ -110,6 +128,18 @@ const cursor = ref("crosshair");
 const heldElsewhere = ref<number | null>(null);
 const view = reactive({ w: window.innerWidth, h: window.innerHeight });
 const loupeShown = ref(false);
+/** The size menu's choice (`lib/sizes.ts`): free, a locked ratio or a fixed size. It holds for
+ * this capture only; every capture starts free. */
+const choice = shallowRef<SizeChoice>(FREE);
+/** The fixed or typed size was larger than the screen and shrank to fit it. */
+const fitted = ref(false);
+/** The open size menu: `label` hangs it under the size label, `pointer` beside the crosshair before
+ * a drag (with the label of the choice at `label`), `window` under the window chip. `from` is the
+ * crosshair when a `pointer` menu opened, where a size picked from it goes: the pointer itself has
+ * moved onto the row by the time a click picks it. */
+const menu = shallowRef<{ at: "label" | "pointer" | "window"; x: number; y: number; above: number; label: Point | null; from: Point | null } | null>(null);
+const menuAt = ref<Point>({ x: -9999, y: -9999 });
+const savedSizes = ref<SavedSize[]>([]);
 /** The open send list (⌘↩, Send) with what it lists, and where it stands. */
 const sendList = shallowRef<SendTargets | null>(null);
 const sendAt = ref<Point>({ x: -9999, y: -9999 });
@@ -132,6 +162,8 @@ const chipEl = ref<HTMLElement | null>(null);
 const dimEl = ref<HTMLElement | null>(null);
 const edgeEl = ref<HTMLElement | null>(null);
 const sizeEl = ref<HTMLElement | null>(null);
+const sizeLabel = ref<InstanceType<typeof SizeLabel> | null>(null);
+const sizeMenu = ref<InstanceType<typeof SizeMenu> | null>(null);
 const sendListEl = ref<InstanceType<typeof SendList> | null>(null);
 const lineH = ref<HTMLElement | null>(null);
 const lineV = ref<HTMLElement | null>(null);
@@ -227,11 +259,18 @@ const showLines = computed(() => mode.value === "idle" && !windowMode.value && h
 type HandleAt = { key: string; kind: "x" | "y" | null; x: number; y: number };
 /** One empty list for every state without handles, so a drag leaves the computed unchanged. */
 const NO_HANDLES: HandleAt[] = [];
+/** A fixed size has no handles: it only moves. */
+const fixed = computed(() => choice.value.kind === "size");
 const handles = computed<HandleAt[]>(() => {
   const r = sel.value;
-  if (!r || mode.value !== "sel") return NO_HANDLES;
+  if (!r || mode.value !== "sel" || fixed.value) return NO_HANDLES;
   return HANDLES.map(([fx, fy, kind]) => ({ key: `${fx},${fy}`, kind, x: r.x + fx * r.w, y: r.y + fy * r.h }));
 });
+const labelLock = computed(() => lockOf(choice.value, fitted.value));
+/** The frame's size, the largest a preset can be. */
+const frameLimit = computed(() => ({ width: frame.value?.frameSize.width ?? 0, height: frame.value?.frameSize.height ?? 0 }));
+/** The smallest typed size the label applies: the smallest selection, in frame pixels. */
+const minPixels = computed(() => ({ width: Math.ceil(MIN_SELECTION * ratio.value.x), height: Math.ceil(MIN_SELECTION * ratio.value.y) }));
 const chip = computed(() => {
   const w = hovered.value;
   if (!w || sel.value) return null;
@@ -308,6 +347,13 @@ function setBox(el: HTMLElement, x: number, y: number, w: number, h: number): vo
   put(el, "transform", `translate(${x}px, ${y}px)`);
   put(el, "width", `${Math.max(0, w)}px`);
   put(el, "height", `${Math.max(0, h)}px`);
+}
+
+/** Where the size label sits: as the bars' placement puts it, or 6 px above the selection's
+ * top-left corner, inside it when that corner is too close to the top. */
+function labelPoint(r: Rect): Point {
+  if (placement.value && mode.value === "sel") return placement.value.size;
+  return r.y - 30 >= 8 ? { x: r.x, y: r.y - 30 } : { x: r.x + 6, y: r.y + 6 };
 }
 
 /** A coordinate in WebKit's layout units: a CSS length is cut to 1/64 point. */
@@ -416,11 +462,12 @@ watchEffect(
     const el = sizeEl.value;
     const r = sel.value;
     if (!el || !r) return;
-    const p = placement.value && mode.value === "sel" ? placement.value.size : r.y - 30 >= 8 ? { x: r.x, y: r.y - 30 } : { x: r.x + 6, y: r.y + 6 };
+    const p = labelPoint(r);
     const d = dpr();
     put(el, "transform", `translate(${snap(p.x, d)}px, ${snap(p.y, d)}px)`);
-    text(el.firstElementChild, `${Math.round(r.w * ratio.value.x)}`);
-    text(el.lastElementChild, `${Math.round(r.h * ratio.value.y)}`);
+    // The pixels the core will crop, so a fixed size reads exactly as it was chosen.
+    const area = frameRect(r);
+    sizeLabel.value?.write(area?.width ?? Math.round(r.w * ratio.value.x), area?.height ?? Math.round(r.h * ratio.value.y));
   },
   { flush: "post" },
 );
@@ -530,6 +577,9 @@ function resetAll(): void {
   hintFaded.value = false;
   notice.value = null;
   allTips.value = false;
+  choice.value = FREE;
+  fitted.value = false;
+  menu.value = null;
   clearTimeout(hintTimer);
   clearTimeout(noticeTimer);
 }
@@ -742,6 +792,7 @@ function renderedSelection(f: OverlayFrame, r: Rect): RenderedImage | null {
 function toggleTextLayer(): void {
   if (!frame.value || !sel.value || mode.value !== "sel") return;
   if (!textLayerComponent) return say(t("overlay.notReady"));
+  menu.value = null;
   textLayerVisible.value = !textLayerVisible.value;
 }
 
@@ -753,6 +804,7 @@ async function toggleSend(): Promise<void> {
   if (sendList.value) return closeSend();
   const f = frame.value;
   if (!f || !sel.value || busy || mode.value !== "sel" || !can("sendToApp")) return;
+  menu.value = null;
   beautify.open.value = false;
   try {
     const list = await send_list_targets();
@@ -837,6 +889,8 @@ const beautifyImage = useBackgroundImage(() => {
   const bg = beautify.style.value.background;
   return bg.kind === "image" ? bg.path : null;
 }, 640);
+/** The size label's glyph: iris while on, faint when F skipped the automatic preset. */
+const beautifyGlyph = computed(() => (!beautifiable.value ? null : beautify.on.value ? "on" : beautify.autoId.value ? "off" : null));
 
 /** The action bar's button opens the panel beside the bar, or closes it. */
 function toggleBeautify(): void {
@@ -846,6 +900,7 @@ function toggleBeautify(): void {
   }
   if (!frame.value || !sel.value || mode.value !== "sel" || !beautifiable.value) return;
   closeSend();
+  menu.value = null;
   beautify.open.value = true;
 }
 
@@ -931,6 +986,131 @@ function editTargets(): void {
 function openAccessibility(): void {
   close();
   void permissions_open_settings("accessibility").catch((error) => console.warn("permissions_open_settings", error));
+}
+
+// ------------------------------------------------------------------------- the size menu
+
+/** Opens the size menu under the size label, beside the crosshair before a drag, or under the
+ * window chip in window mode (where its presets are off). It is measured once it is drawn and
+ * kept on the screen: below its anchor, or above it when the bottom has no room. */
+async function openMenu(at: "label" | "pointer" | "window"): Promise<void> {
+  if (!frame.value) return;
+  const chipBox = chipEl.value;
+  if (at === "label" && sel.value) {
+    const p = labelPoint(sel.value);
+    menu.value = { at, x: p.x, y: p.y + 30, above: p.y - 6, label: null, from: null };
+  } else if (at === "window" && chip.value && chipBox) {
+    const cx = chipAt.value.x + chipBox.offsetWidth / 2;
+    menu.value = { at, x: cx - 150, y: chipAt.value.y + chipBox.offsetHeight + 8, above: chipAt.value.y - 8, label: null, from: null };
+  } else {
+    const p = pointer.value ?? { x: view.w / 2, y: view.h / 2 };
+    const label = p.y - 30 >= 8 ? { x: p.x, y: p.y - 30 } : { x: p.x + 6, y: p.y + 6 };
+    menu.value = { at: at === "label" ? "pointer" : at, x: p.x + 8, y: p.y + 8, above: p.y - 8, label: at === "window" ? null : label, from: { x: p.x, y: p.y } };
+    loupeShown.value = false;
+  }
+  void loadSavedSizes().then((list) => (savedSizes.value = list));
+  await placeMenu();
+}
+
+async function placeMenu(): Promise<void> {
+  await nextTick();
+  const m = menu.value;
+  const el = sizeMenu.value?.$el as HTMLElement | undefined;
+  if (!m || !el) return;
+  const h = el.offsetHeight;
+  const y = m.y + h <= view.h - 8 ? m.y : m.above - h >= 8 ? m.above - h : clamp(m.y, 8, view.h - 8 - h);
+  menuAt.value = { x: Math.round(clamp(m.x, 8, view.w - 8 - el.offsetWidth)), y: Math.round(y) };
+}
+
+// The ruler (M) takes the whole screen, and the size menu does not open over it.
+watch(rulerOn, (on) => {
+  if (on) menu.value = null;
+});
+
+function closeMenu(): void {
+  menu.value = null;
+  menuAt.value = { x: -9999, y: -9999 };
+  if (mode.value === "idle" && pointer.value && !windowMode.value) updateLoupe(pointer.value);
+}
+
+function toggleMenu(): void {
+  if (menu.value?.at === "label") closeMenu();
+  else void openMenu("label");
+}
+
+/** A new selection, or the drawn one changed, as one step: the drawings' crop follows it. */
+function applySelection(r: Rect): Promise<void> {
+  sel.value = r;
+  annotations.setSelection(frameRect(r));
+  return layoutBars();
+}
+
+/**
+ * Takes a choice of the menu. A fixed size goes to the selection's top-left corner, or to the
+ * crosshair before there is a selection, which it then is; a ratio reshapes the selection inside
+ * itself, around its centre. `keep` (a ratio stepped to with ← or →) leaves the menu open.
+ */
+function choose(next: SizeChoice, keep: boolean): void {
+  if (!frame.value) return;
+  const from = menu.value?.from ?? null;
+  if (!keep) closeMenu();
+  const k = ratio.value;
+  const r = mode.value === "sel" ? sel.value : null;
+  if (next.kind === "size") {
+    const at = r ?? from ?? pointer.value ?? { x: view.w / 2, y: view.h / 2 };
+    const placed = placeSize({ x: at.x, y: at.y }, next.width, next.height, view, k);
+    choice.value = next;
+    fitted.value = placed.fitted;
+    if (r) void applySelection(placed.box);
+    else {
+      heldElsewhere.value = null;
+      finishSelection(placed.box);
+    }
+    return;
+  }
+  choice.value = next;
+  fitted.value = false;
+  if (next.kind === "ratio" && r) {
+    // The menu stays under the label, which moved with the selection's corner.
+    void applySelection(ratioInside(r, ratioValue(next.ratio), k)).then(() => {
+      if (keep && menu.value?.at === "label") void openMenu("label");
+    });
+  }
+}
+
+/** A size typed into the label: the selection takes it from its top-left corner without locking
+ * it, moving in and shrinking only as a fixed size does. */
+function applyTyped(width: number, height: number): void {
+  const r = sel.value;
+  if (!r || mode.value !== "sel") return;
+  const placed = placeSize({ x: r.x, y: r.y }, width, height, view, ratio.value);
+  choice.value = FREE;
+  fitted.value = placed.fitted;
+  void applySelection(placed.box);
+}
+
+async function saveCurrent(name: string): Promise<void> {
+  const area = sel.value && mode.value === "sel" ? frameRect(sel.value) : null;
+  if (!area) return;
+  try {
+    savedSizes.value = await saveSize(name, area.width, area.height);
+  } catch (error) {
+    say(errorText(error));
+  }
+}
+
+async function removeSaved(size: SavedSize): Promise<void> {
+  try {
+    savedSizes.value = await removeSavedSize(size);
+  } catch (error) {
+    say(errorText(error));
+  }
+}
+
+/** The selection a drag from `from` to `p` makes, held to the locked ratio if there is one. */
+function dragged(from: Point, p: Point): Rect {
+  const locked = lockedRatio(choice.value);
+  return locked ? ratioBox(from, p, locked, view, ratio.value) : fromCorners(from, p);
 }
 
 /** Upload (⌘U): the selection, or its rendering with the drawings, once the provider is checked
@@ -1063,7 +1243,9 @@ function onMouseDown(e: MouseEvent): void {
   if (e.button !== 0 || !frame.value) return;
   const p = point(e);
   e.preventDefault();
-  // A press beside the send list only closes it.
+  // A press beside the open size menu only closes it.
+  if (menu.value) return closeMenu();
+  // So does a press beside the send list.
   if (sendList.value) return closeSend();
 
   if (mode.value === "sel" && sel.value) {
@@ -1079,11 +1261,12 @@ function onMouseDown(e: MouseEvent): void {
     }
     // The selected object's handles come before the selection's, wherever they are.
     if (!over && engine.handleAt(fp, reach.value) && annotations.press(fp, reach.value, true) !== "none") return;
-    const handle = handleAt(sel.value, p);
+    const handle = fixed.value ? null : handleAt(sel.value, p);
     if (handle) {
       mode.value = "resize";
       grab = { offset: { x: 0, y: 0 }, origin: { ...sel.value }, handle };
       barsShown.value = false;
+      fitted.value = false;
       return;
     }
     if (inside(sel.value, p)) {
@@ -1109,6 +1292,9 @@ function onMouseDown(e: MouseEvent): void {
   heldElsewhere.value = null;
   resetSelection();
   annotations.clear();
+  // A new drag keeps a locked ratio; a fixed size is placed, never dragged, so the drag is free.
+  if (fixed.value) choice.value = FREE;
+  fitted.value = false;
   mode.value = "drag";
   start = p;
   sel.value = { x: p.x, y: p.y, w: 0, h: 0 };
@@ -1141,24 +1327,39 @@ function handleMove(e: MouseEvent): void {
         }
       } else {
         hovered.value = null;
-        updateLoupe(p);
+        // The open size menu stands beside the crosshair, where the loupe would cover it.
+        if (menu.value) loupeShown.value = false;
+        else updateLoupe(p);
       }
       cursor.value = "crosshair";
       break;
     case "drag":
-      if (start) sel.value = fromCorners(start, p);
+      if (start) sel.value = dragged(start, p);
       updateLoupe(p);
       break;
     case "move":
       if (grab && sel.value) {
         const r = sel.value;
-        sel.value = { ...r, x: clamp(p.x - grab.offset.x, 0, view.w - r.w), y: clamp(p.y - grab.offset.y, 0, view.h - r.h) };
+        let x = clamp(p.x - grab.offset.x, 0, view.w - r.w);
+        let y = clamp(p.y - grab.offset.y, 0, view.h - r.h);
+        // A fixed size moves by whole frame pixels, so it keeps every one of them.
+        if (fixed.value) {
+          const k = ratio.value;
+          x = clamp(Math.round(x * k.x), 0, Math.round(view.w * k.x) - Math.round(r.w * k.x)) / k.x;
+          y = clamp(Math.round(y * k.y), 0, Math.round(view.h * k.y) - Math.round(r.h * k.y)) / k.y;
+        }
+        sel.value = { ...r, x, y };
       }
       break;
     case "resize":
       if (grab?.handle) {
         const o = grab.origin;
         const [fx, fy] = grab.handle;
+        const locked = lockedRatio(choice.value);
+        if (locked) {
+          sel.value = ratioResize(o, [fx, fy], p, locked, view, ratio.value);
+          break;
+        }
         const a = { x: fx === 0 ? p.x : o.x, y: fy === 0 ? p.y : o.y };
         const b = { x: fx === 1 ? p.x : o.x + o.w, y: fy === 1 ? p.y : o.y + o.h };
         sel.value = fromCorners(a, b);
@@ -1187,7 +1388,7 @@ function aim(p: Point, over: boolean, free = false): void {
     return;
   }
   const objectHandle = !over && engine.handleAt(fp, reach.value);
-  const handle = handleAt(sel.value, p);
+  const handle = fixed.value ? null : handleAt(sel.value, p);
   const drawing = within ? annotations.cursorAt(fp, reach.value, over, free) : null;
   cursor.value = objectHandle ? (drawing ?? "move") : handle ? RESIZE_CURSORS[handle.join(",")] : within ? (drawing ?? "move") : "crosshair";
   // Framed only where a press picks the object up: inside the selection, off its handles.
@@ -1270,7 +1471,8 @@ function onKeyDown(e: KeyboardEvent): void {
   flushMove();
   // A dialog that took the key (the first-upload question's Esc) has prevented its default.
   if (!frame.value || uploadAsk.value || e.defaultPrevented) return;
-  // A text being typed takes its own keys.
+  // A text being typed takes its own keys, and so do the size label's fields and the size menu's
+  // name field.
   if (e.target instanceof HTMLElement && e.target.isContentEditable) return;
   // The beautify panel's sliders and switch keep only their own keys (`BeautifyPanel.vue`).
   if (e.target instanceof HTMLInputElement && e.target.type !== "range" && e.target.type !== "checkbox") return;
@@ -1290,6 +1492,32 @@ function onKeyDown(e: KeyboardEvent): void {
       e.preventDefault();
       return;
     }
+  }
+  if (menu.value) {
+    // Esc and Tab only close the size menu; its own keys go to it while it is open.
+    if (e.key === "Escape" || e.key === "Tab") {
+      e.preventDefault();
+      return closeMenu();
+    }
+    if (sizeMenu.value?.key(e)) {
+      e.preventDefault();
+      return;
+    }
+  }
+  // Tab is the size menu's: before a drag it opens the menu beside the crosshair, during one it
+  // steps through the ratios, and after it it opens the menu under the size label. Over the text
+  // layer, Tab and ⇧Tab are the layer's.
+  if (e.key === "Tab" && !textLayerVisible.value && !e.metaKey && !e.ctrlKey && !e.altKey) {
+    e.preventDefault();
+    if (mode.value === "drag") {
+      choice.value = nextRatio(choice.value, e.shiftKey);
+      if (start && pointer.value) sel.value = dragged(start, pointer.value);
+    } else if (mode.value === "idle" && heldElsewhere.value === null) {
+      void openMenu(windowMode.value ? "window" : "pointer");
+    } else if (mode.value === "sel" && sel.value && !annotations.busy()) {
+      void openMenu("label");
+    }
+    return;
   }
   if (e.key === "Escape") {
     e.preventDefault();
@@ -1514,7 +1742,39 @@ onUnmounted(() => {
         :data-handle="h.kind ?? undefined"
         :style="at(h)"
       />
-      <div v-if="sizeShown" ref="sizeEl" class="g-size o-float o-moving"><span>0</span><span class="g-size-x">×</span><span>0</span></div>
+      <!-- The size label: the page writes its numbers and its place (`labelPoint`). It is the size
+           menu's button, and its numbers can be typed once the selection is drawn. -->
+      <div v-if="sizeShown" ref="sizeEl" class="o-float o-moving" @dblclick.stop>
+        <SizeLabel
+          ref="sizeLabel"
+          :lock="labelLock"
+          :warn="fitted"
+          :open="menu?.at === 'label'"
+          :editable="mode === 'sel'"
+          :min="minPixels"
+          :beautify="beautifyGlyph"
+          @menu="toggleMenu"
+          @apply="applyTyped"
+        />
+      </div>
+      <!-- Before a drag, the menu opens beside the crosshair with the label of the choice above it. -->
+      <div v-if="menu?.label && !hasSel" class="o-float" :style="at(menu.label)" @dblclick.stop>
+        <SizeLabel bare :lock="labelLock" :warn="false" open :editable="false" :min="minPixels" @menu="closeMenu" />
+      </div>
+      <SizeMenu
+        v-if="menu"
+        ref="sizeMenu"
+        class="o-float"
+        :style="{ ...at(menuAt), position: 'absolute' }"
+        :choice="choice"
+        :saved="savedSizes"
+        :limit="frameLimit"
+        :current="mode === 'sel' ? liveArea : null"
+        :disabled="windowMode && !hasSel"
+        @choose="choose"
+        @save="saveCurrent"
+        @remove="removeSaved"
+      />
       <SendList
         v-if="sendList"
         ref="sendListEl"

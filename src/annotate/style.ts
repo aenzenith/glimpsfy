@@ -81,8 +81,9 @@ export const BLUR_LEVELS: readonly BlurStrength[] = ["soft", "medium", "strong"]
 export const CELL_LEVELS: readonly CellSize[] = ["fine", "medium", "coarse"];
 export const DIM_LEVELS: readonly SpotlightDim[] = ["light", "medium", "dark"];
 
-/** The crop strip's aspect ratios; `original` keeps the image's own ratio (editor only). */
-export const CROP_RATIOS = ["free", "original", "16:9", "4:3", "1:1"] as const;
+/** The crop strip's aspect ratios; `original` keeps the image's own ratio (editor only). The
+ * selection's size menu offers the same ones but `original` (`src/lib/sizes.ts`). */
+export const CROP_RATIOS = ["free", "original", "16:9", "4:3", "1:1", "9:16"] as const;
 export type CropRatio = (typeof CROP_RATIOS)[number];
 
 // ------------------------------------------------------------------------- redaction

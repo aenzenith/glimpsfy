@@ -8,10 +8,14 @@
 // moves while the bar holds the keyboard. During the countdown it draws the red frame, the ring and Cancel, and it owns the keyboard
 // (Esc cancels, Return starts at once). During the take it draws only the frame, dashed and
 // neutral while paused; the core makes the window click-through then. While the webcam bubble is
-// dragged it shows the four corner slots it can snap to.
-import { computed, defineComponent, h, onMounted, onUnmounted, ref, watch, watchEffect } from "vue";
+// dragged it shows the four corner slots it can snap to. The area's size label opens the size
+// menu (`components/SizeMenu.vue`), as in the capture overlay: a locked ratio, a fixed size or a
+// saved one, and a size typed into the label.
+import { computed, defineComponent, h, nextTick, onMounted, onUnmounted, ref, shallowRef, watch, watchEffect } from "vue";
 
 import GIcon from "../components/GIcon.vue";
+import SizeLabel from "../components/SizeLabel.vue";
+import SizeMenu from "../components/SizeMenu.vue";
 import {
   onRecordBubble,
   onRecordPointer,
@@ -30,6 +34,23 @@ import {
   type SetupWindow,
 } from "../lib/api/record";
 import { t } from "../lib/i18n";
+import type { SavedSize } from "../lib/settings";
+import {
+  FREE,
+  loadSavedSizes,
+  lockOf,
+  lockedRatio,
+  nextRatio,
+  placeSize,
+  ratioBox,
+  ratioInside,
+  ratioResize,
+  ratioValue,
+  removeSavedSize,
+  saveSize,
+  type Box,
+  type SizeChoice,
+} from "../lib/sizes";
 import { box, clamp, handleAt, HANDLES, inside, RESIZE_CURSORS, toLocal, type Point, type Rect } from "./geometry";
 import { reducedMotion } from "./format";
 
@@ -64,6 +85,19 @@ let frameRequest = 0;
 let ringFrame = 0;
 let tick = { remaining: -1, at: 0 };
 const stops: (() => void)[] = [];
+
+/** The size menu's choice for this setup (`lib/sizes.ts`); every setup starts free. */
+const choice = shallowRef<SizeChoice>(FREE);
+/** The fixed or typed size was larger than the display and shrank to fit it. */
+const fitted = ref(false);
+const menuOpen = ref(false);
+const menuAt = ref<Point>({ x: -9999, y: -9999 });
+const savedSizes = ref<SavedSize[]>([]);
+const sizeLabelEl = ref<InstanceType<typeof SizeLabel> | null>(null);
+const sizeMenu = ref<InstanceType<typeof SizeMenu> | null>(null);
+/** A fixed size has no handles: it only moves. */
+const fixed = computed(() => choice.value.kind === "size");
+const labelLock = computed(() => lockOf(choice.value, fitted.value));
 
 // ------------------------------------------------------------------------------- what shows
 
@@ -136,7 +170,7 @@ const dim = computed<{ hole: Rect | null; radius: number } | null>(() => {
 
 const handles = computed(() => {
   const r = area.value;
-  if (!r || phase.value !== "setup" || mode.value !== "area") return [];
+  if (!r || phase.value !== "setup" || mode.value !== "area" || fixed.value) return [];
   return HANDLES.map(([fx, fy, kind]) => ({ key: `${fx},${fy}`, kind, x: r.x + fx * r.width, y: r.y + fy * r.height }));
 });
 
@@ -148,11 +182,24 @@ const sizeLabel = computed(() => {
   if (!s || !r || mode.value !== "area" || phase.value !== "setup") return null;
   const barAbove = r.y + r.height + BAR_ROOM > bounds.value.height;
   const above = r.y - 30 >= visible.value.y + 8 && !barAbove;
-  return {
-    width: s.outputSize.width,
-    height: s.outputSize.height,
-    style: { left: `${above ? r.x : r.x + 6}px`, top: `${above ? r.y - 30 : r.y + 6}px` },
-  };
+  const at = { x: above ? r.x : r.x + 6, y: above ? r.y - 30 : r.y + 6 };
+  return { width: s.outputSize.width, height: s.outputSize.height, at, style: { left: `${at.x}px`, top: `${at.y}px` } };
+});
+
+/** Frame pixels per point on each axis: the size menu counts the display's pixels, as the capture
+ * overlay's label does; the label shows the file's, which Settings › Recording may halve. */
+const scaleXY = computed(() => {
+  const d = setup.value?.display;
+  return d && d.frame.width > 0 && d.frame.height > 0
+    ? { x: d.pixelSize.width / d.frame.width, y: d.pixelSize.height / d.frame.height }
+    : { x: 1, y: 1 };
+});
+const viewArea = computed(() => ({ w: bounds.value.width, h: bounds.value.height }));
+const frameLimit = computed(() => ({ width: setup.value?.display.pixelSize.width ?? 0, height: setup.value?.display.pixelSize.height ?? 0 }));
+const minPixels = computed(() => ({ width: Math.ceil(MIN_AREA * scaleXY.value.x), height: Math.ceil(MIN_AREA * scaleXY.value.y) }));
+const areaPixels = computed(() => {
+  const r = area.value;
+  return r ? { width: Math.round(r.width * scaleXY.value.x), height: Math.round(r.height * scaleXY.value.y) } : null;
 });
 
 const slots = computed(() => {
@@ -273,6 +320,15 @@ watchEffect(
   { flush: "post" },
 );
 
+// The label shows the file's size; it writes its numbers itself (`SizeLabel.write`).
+watchEffect(
+  () => {
+    const s = sizeLabel.value;
+    if (s) sizeLabelEl.value?.write(s.width, s.height);
+  },
+  { flush: "post" },
+);
+
 // ------------------------------------------------------------------------------- countdown
 
 /** The ring fills smoothly between the core's whole-second ticks. With Reduce Motion it steps
@@ -358,6 +414,8 @@ const round = (r: Rect): Rect => ({ x: Math.round(r.x), y: Math.round(r.y), widt
 /** A new area from the press to the pointer, at least the minimum on each side and inside the
  * display. */
 function drawn(start: Point, p: Point): Rect {
+  const locked = lockedRatio(choice.value);
+  if (locked) return lockedDrawn(start, p, locked);
   const W = bounds.value.width;
   const H = bounds.value.height;
   const w = Math.max(MIN_AREA, Math.abs(p.x - start.x));
@@ -368,6 +426,12 @@ function drawn(start: Point, p: Point): Rect {
 }
 
 function resized(origin: Rect, [fx, fy]: [number, number], p: Point): Rect {
+  const locked = lockedRatio(choice.value);
+  if (locked) {
+    const next = fromBox(ratioResize(toBox(origin), [fx, fy], p, locked, viewArea.value, scaleXY.value));
+    // Below the smallest area the ratio would break, so the area stays as it was drawn last.
+    return next.width >= MIN_AREA && next.height >= MIN_AREA ? onPixels(next) : (draft.value ?? origin);
+  }
   let x0 = origin.x;
   let y0 = origin.y;
   let x1 = origin.x + origin.width;
@@ -380,12 +444,120 @@ function resized(origin: Rect, [fx, fy]: [number, number], p: Point): Rect {
 }
 
 function moved(origin: Rect, offset: Point, p: Point): Rect {
+  // A fixed size moves by whole display pixels and keeps its size to the pixel.
+  if (fixed.value) {
+    const k = scaleXY.value;
+    const x = clamp(p.x - offset.x, 0, bounds.value.width - origin.width);
+    const y = clamp(p.y - offset.y, 0, bounds.value.height - origin.height);
+    return { x: Math.round(x * k.x) / k.x, y: Math.round(y * k.y) / k.y, width: origin.width, height: origin.height };
+  }
   return round({
     x: clamp(p.x - offset.x, 0, bounds.value.width - origin.width),
     y: clamp(p.y - offset.y, 0, bounds.value.height - origin.height),
     width: origin.width,
     height: origin.height,
   });
+}
+
+const toBox = (r: Rect): Box => ({ x: r.x, y: r.y, w: r.width, h: r.height });
+const fromBox = (b: Box): Rect => ({ x: b.x, y: b.y, width: b.w, height: b.h });
+/** A locked area on the display's pixel grid: rounding to whole points would bend its ratio. */
+function onPixels(r: Rect): Rect {
+  const k = scaleXY.value;
+  return { x: Math.round(r.x * k.x) / k.x, y: Math.round(r.y * k.y) / k.y, width: Math.round(r.width * k.x) / k.x, height: Math.round(r.height * k.y) / k.y };
+}
+
+/** A new area at a locked ratio, at least the smallest area on each side. */
+function lockedDrawn(start: Point, p: Point, locked: number): Rect {
+  const b = ratioBox(start, p, locked, viewArea.value, scaleXY.value);
+  const grow = Math.max(1, MIN_AREA / Math.max(b.w, 1e-6), MIN_AREA / Math.max(b.h, 1e-6));
+  const w = Math.min(b.w * grow, bounds.value.width);
+  const h = Math.min(b.h * grow, bounds.value.height);
+  const x = clamp(p.x >= start.x ? start.x : start.x - w, 0, bounds.value.width - w);
+  const y = clamp(p.y >= start.y ? start.y : start.y - h, 0, bounds.value.height - h);
+  return onPixels({ x, y, width: w, height: h });
+}
+
+// ---------------------------------------------------------------------------- the size menu
+
+/** Opens the size menu under the size label, or above it where the display has no room below. */
+async function openMenu(): Promise<void> {
+  if (!sizeLabel.value) return;
+  menuOpen.value = true;
+  void loadSavedSizes().then((list) => (savedSizes.value = list));
+  await nextTick();
+  const el = sizeMenu.value?.$el as HTMLElement | undefined;
+  const at = sizeLabel.value?.at;
+  if (!el || !at) return;
+  const W = bounds.value.width;
+  const bottom = visible.value.y + visible.value.height;
+  const h = el.offsetHeight;
+  const y = at.y + 30 + h <= bottom - 8 ? at.y + 30 : at.y - 6 - h >= 8 ? at.y - 6 - h : clamp(at.y + 30, 8, bottom - 8 - h);
+  menuAt.value = { x: Math.round(clamp(at.x, 8, W - 8 - el.offsetWidth)), y: Math.round(y) };
+}
+
+function closeMenu(): void {
+  menuOpen.value = false;
+  menuAt.value = { x: -9999, y: -9999 };
+}
+
+function toggleMenu(): void {
+  if (menuOpen.value) closeMenu();
+  else void openMenu();
+}
+
+/** A fixed size goes to the area's top-left corner; a ratio reshapes the area inside itself,
+ * around its centre. `keep` (a ratio stepped to with ← or →) leaves the menu open. */
+function choose(next: SizeChoice, keep: boolean): void {
+  if (!keep) closeMenu();
+  const r = area.value;
+  choice.value = next;
+  fitted.value = false;
+  if (!r) return;
+  if (next.kind === "size") {
+    const placed = placeSize({ x: r.x, y: r.y }, next.width, next.height, viewArea.value, scaleXY.value);
+    fitted.value = placed.fitted;
+    void sendFinal(fromBox(placed.box));
+  } else if (next.kind === "ratio") {
+    void sendFinal(onPixels(fromBox(ratioInside(toBox(r), ratioValue(next.ratio), scaleXY.value)))).then(() => {
+      if (keep && menuOpen.value) void openMenu();
+    });
+  }
+}
+
+/** A size typed into the label: the area takes it from its top-left corner without a lock. */
+function applyTyped(width: number, height: number): void {
+  const r = area.value;
+  if (!r) return;
+  const placed = placeSize({ x: r.x, y: r.y }, width, height, viewArea.value, scaleXY.value);
+  choice.value = FREE;
+  fitted.value = placed.fitted;
+  void sendFinal(fromBox(placed.box));
+}
+
+async function saveCurrent(name: string): Promise<void> {
+  const size = areaPixels.value;
+  if (!size) return;
+  try {
+    savedSizes.value = await saveSize(name, size.width, size.height);
+  } catch (error) {
+    report(error);
+  }
+}
+
+async function removeSaved(size: SavedSize): Promise<void> {
+  try {
+    savedSizes.value = await removeSavedSize(size);
+  } catch (error) {
+    report(error);
+  }
+}
+
+/** Every setup starts free, with the menu closed. */
+function resetSize(): void {
+  choice.value = FREE;
+  fitted.value = false;
+  closeMenu();
 }
 
 function seeChip(): void {
@@ -397,6 +569,8 @@ function seeChip(): void {
 function onMouseDown(e: MouseEvent): void {
   if (e.button !== 0 || phase.value !== "setup" || !setup.value) return;
   e.preventDefault();
+  // A press beside the open size menu only closes it.
+  if (menuOpen.value) return closeMenu();
   const p = point(e);
   if (mode.value === "display") return seeChip();
   if (mode.value === "window") {
@@ -405,9 +579,11 @@ function onMouseDown(e: MouseEvent): void {
     return;
   }
   const r = area.value;
-  const handle = r ? handleAt(r, p, HANDLE_HIT) : null;
-  if (r && handle) grab = { kind: "resize", handle, origin: { ...r } };
-  else if (r && inside(r, p)) grab = { kind: "move", offset: { x: p.x - r.x, y: p.y - r.y }, origin: { ...r } };
+  const handle = r && !fixed.value ? handleAt(r, p, HANDLE_HIT) : null;
+  if (r && handle) {
+    grab = { kind: "resize", handle, origin: { ...r } };
+    fitted.value = false;
+  } else if (r && inside(r, p)) grab = { kind: "move", offset: { x: p.x - r.x, y: p.y - r.y }, origin: { ...r } };
   else grab = { kind: "new", start: p, moved: false };
 }
 
@@ -417,7 +593,7 @@ function hoverCursor(p: Point): string {
   if (mode.value !== "area") return "default";
   const r = area.value;
   if (!r) return "crosshair";
-  const handle = handleAt(r, p, HANDLE_HIT);
+  const handle = fixed.value ? null : handleAt(r, p, HANDLE_HIT);
   if (handle) return RESIZE_CURSORS[handle.join(",")] ?? "default";
   return inside(r, p) ? "move" : "crosshair";
 }
@@ -436,6 +612,11 @@ function onMouseMove(e: MouseEvent): void {
   else if (grab.kind === "resize") next = resized(grab.origin, grab.handle, p);
   else {
     if (!grab.moved && Math.hypot(p.x - grab.start.x, p.y - grab.start.y) < CLICK_SLOP) return;
+    if (!grab.moved) {
+      // A new area keeps a locked ratio; a fixed size is placed, never drawn, so it is free.
+      if (fixed.value) choice.value = FREE;
+      fitted.value = false;
+    }
     grab.moved = true;
     next = drawn(grab.start, p);
   }
@@ -468,8 +649,33 @@ function onKeyDown(e: KeyboardEvent): void {
     }
     return;
   }
+  if (phase.value !== "setup") return;
+  // The size label's fields and the menu's name field take their own keys.
+  if (e.target instanceof HTMLInputElement || e.defaultPrevented) return;
+  if (menuOpen.value) {
+    if (e.key === "Escape" || e.key === "Tab") {
+      e.preventDefault();
+      return closeMenu();
+    }
+    if (sizeMenu.value?.key(e)) {
+      e.preventDefault();
+      return;
+    }
+  }
+  // Tab is the size menu's, as in the capture overlay: while a new area is drawn it steps through
+  // the ratios, otherwise it opens the menu under the size label.
+  if (e.key === "Tab" && mode.value === "area" && !e.metaKey && !e.ctrlKey && !e.altKey) {
+    e.preventDefault();
+    if (grab?.kind === "new" && grab.moved && pointer.value) {
+      choice.value = nextRatio(choice.value, e.shiftKey);
+      const next = drawn(grab.start, pointer.value);
+      draft.value = next;
+      sendSoon(next);
+    } else if (!grab) void openMenu();
+    return;
+  }
   // The bar holds the keyboard during the setup; this panel only answers Esc if it got the focus.
-  if (phase.value === "setup" && e.key === "Escape") {
+  if (e.key === "Escape") {
     e.preventDefault();
     record_setup_close().catch(report);
   }
@@ -499,6 +705,8 @@ onMounted(async () => {
     stops.push(
       await onRecordSetup((next) => {
         heardSetup = true;
+        if (!next || !setup.value) resetSize();
+        else if (next.mode !== "area") closeMenu();
         setup.value = next;
         if (!next) draft.value = null;
       }),
@@ -571,9 +779,31 @@ onUnmounted(() => {
             :style="{ left: `${h.x}px`, top: `${h.y}px` }"
           />
         </template>
-        <div v-if="sizeLabel" class="g-size r-abs" :style="sizeLabel.style">
-          {{ sizeLabel.width }}<span class="g-size-x">×</span>{{ sizeLabel.height }}
+        <div v-if="sizeLabel" class="r-abs" :style="sizeLabel.style">
+          <SizeLabel
+            ref="sizeLabelEl"
+            :lock="labelLock"
+            :warn="fitted"
+            :open="menuOpen"
+            editable
+            :min="minPixels"
+            @menu="toggleMenu"
+            @apply="applyTyped"
+          />
         </div>
+        <SizeMenu
+          v-if="menuOpen && sizeLabel"
+          ref="sizeMenu"
+          class="r-abs r-sizemenu"
+          :style="{ left: `${menuAt.x}px`, top: `${menuAt.y}px` }"
+          :choice="choice"
+          :saved="savedSizes"
+          :limit="frameLimit"
+          :current="areaPixels"
+          @choose="choose"
+          @save="saveCurrent"
+          @remove="removeSaved"
+        />
       </template>
     </template>
 
@@ -616,6 +846,7 @@ onUnmounted(() => {
 <style>
 .r-target-page { position: fixed; inset: 0; overflow: hidden; }
 .r-abs { position: absolute; }
+.r-sizemenu { z-index: 2; }
 
 /* The dim as the capture overlay draws it (overlay.css): bands of one solid colour and, for a
    window's rounded hole, corner pieces that each clip the kit's own drawing, a spread shadow

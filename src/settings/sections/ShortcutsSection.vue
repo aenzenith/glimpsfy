@@ -174,6 +174,8 @@ const SELECTION: RefRow[] = [
   { name: "settings.shortcuts.overlay.move1", caps: ARROWS },
   { name: "settings.shortcuts.overlay.move10", caps: ["⇧", ...ARROWS] },
   { name: "settings.shortcuts.overlay.resize1", caps: ["⌥", ...ARROWS] },
+  { name: "settings.shortcuts.overlay.sizeMenu", caps: ["⇥"] },
+  { name: "settings.shortcuts.overlay.removeSize", caps: ["⌫"] },
 ];
 const DRAWINGS: RefRow[] = [
   { name: "settings.shortcuts.overlay.selectAll", caps: ["⌘", "A"] },

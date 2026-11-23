@@ -121,6 +121,21 @@ pub struct General {
     /// Whether the user finished the first-run window. Until then it opens at every launch, and
     /// it opens anyway whenever the screen recording permission is missing.
     pub first_run_done: bool,
+    /// The sizes saved from the selection's size menu (the overlay and the recording setup),
+    /// oldest first. The pages keep at most 12.
+    pub saved_sizes: Vec<Kept<SavedSize>>,
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// A size saved from the size menu, in frame pixels, as the size label counts them.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedSize {
+    pub name: String,
+    pub width: u32,
+    pub height: u32,
+    /// Fields a newer Glimpsfy gave the entry, kept as they are.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
@@ -149,6 +164,7 @@ impl Default for General {
             shutter_sound: true,
             check_for_updates: true,
             first_run_done: false,
+            saved_sizes: Vec::new(),
             extra: Map::new(),
         }
     }
@@ -1088,6 +1104,46 @@ mod tests {
         check(&store.get());
         store.set(store.get()).unwrap();
         check(&SettingsStore::open_with(path, SecretFields::new()).get());
+    }
+
+    /// The saved sizes are a list the user built by hand. One entry that this version cannot read
+    /// (edited by hand, or written by a newer Glimpsfy) costs neither the list nor itself: every
+    /// entry, the unreadable ones and the unknown fields of the readable ones, survives a load and
+    /// the next save in its place.
+    #[test]
+    fn an_unreadable_saved_size_costs_neither_the_list_nor_itself() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let sizes = json!([
+            { "name": "Blog cover", "width": 1200, "height": 630 },
+            { "name": "Banner", "width": "wide", "height": 90 },
+            { "name": "Story", "width": 1080, "height": 1920, "anchor": "center" },
+            42,
+            { "name": "Poster", "width": 1000, "height": 500 }
+        ]);
+        fs::write(
+            &path,
+            serde_json::to_vec(&json!({ "general": { "savedSizes": sizes, "shutterSound": false } })).unwrap(),
+        )
+        .unwrap();
+
+        let store = SettingsStore::open_with(path.clone(), SecretFields::new());
+        let loaded = store.get();
+        assert!(!loaded.general.shutter_sound);
+        let known: Vec<(&str, u32, u32)> = loaded
+            .general
+            .saved_sizes
+            .iter()
+            .filter_map(|entry| match entry {
+                Kept::Known(size) => Some((size.name.as_str(), size.width, size.height)),
+                Kept::Other(_) => None,
+            })
+            .collect();
+        assert_eq!(known, vec![("Blog cover", 1200, 630), ("Story", 1080, 1920), ("Poster", 1000, 500)]);
+
+        store.set(loaded).unwrap();
+        let written: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(written["general"]["savedSizes"], sizes);
     }
 
     /// A beautify preset whose background a newer Glimpsfy added (a kind this version does not
