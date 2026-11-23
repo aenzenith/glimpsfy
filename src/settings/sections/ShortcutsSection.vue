@@ -12,6 +12,7 @@ import { settings_default_shortcuts } from "../../lib/api/settings";
 import { app_open_system_settings } from "../../lib/api/windows";
 import { t, type Key } from "../../lib/i18n";
 import { capsOf, capsText, holderOf, SHORTCUT_GROUPS, systemShortcut, type ShortcutAction } from "../../lib/keys";
+import { can } from "../../lib/platform";
 import type { Settings } from "../../lib/settings";
 import { banner, clearedShortcuts, forgetCleared, shortcutProblems, update } from "../store";
 import { describeError, tr, uid } from "../text";
@@ -157,6 +158,8 @@ const TOOLS: RefRow[] = [
 ];
 const ACTIONS: RefRow[] = [
   { name: "settings.shortcuts.overlay.copy", caps: ["⌘", "C"] },
+  { name: "settings.shortcuts.overlay.copyPath", caps: ["⌥", "⌘", "C"] },
+  ...(can("sendToApp") ? [{ name: "settings.shortcuts.overlay.send", caps: ["⌘", "↩"] } as RefRow] : []),
   { name: "settings.shortcuts.overlay.save", caps: ["⌘", "S"] },
   { name: "settings.shortcuts.overlay.saveAs", caps: ["⇧", "⌘", "S"] },
   { name: "settings.shortcuts.overlay.upload", caps: ["⌘", "U"] },

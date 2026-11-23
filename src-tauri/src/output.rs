@@ -22,9 +22,11 @@
 mod naming;
 mod platform;
 
+use std::collections::VecDeque;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use glimpsfy_capture::{selection_to_frame, ColorInfo, Display, Frame, ImageEncoding, PixelFormat, PngEffort};
@@ -46,7 +48,7 @@ pub(crate) use platform::bring_forward;
 const THUMBNAIL: (u32, u32) = (128, 88);
 /// The folder in the app data directory where clipboard-only captures wait for the history.
 const INBOX: &str = "history-inbox";
-/// A file in the inbox older than this is deleted by the next copy.
+/// A file in the inbox older than this is deleted by the next sweep.
 const INBOX_KEEP: Duration = Duration::from_secs(24 * 60 * 60);
 
 // ------------------------------------------------------------------------------- the contract
@@ -102,10 +104,35 @@ impl Origin {
     }
 }
 
+/// What a delivery tells besides `output://copied` and `output://saved`. Send to app copies
+/// without the Copied toast, because its own toast follows the paste (`send.rs`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Report {
+    /// A Copied, Saved or failure toast.
+    pub toast: bool,
+    /// `output://handoff`, from which the history records the image.
+    pub handoff: bool,
+}
+
+impl Report {
+    pub const ALL: Report = Report { toast: true, handoff: true };
+}
+
 /// Delivers one image: the single entry point for pixels leaving the app (see the module
 /// documentation). The capture of `origin` is closed first when it is still open.
 pub fn deliver(app: &AppHandle, frame: Frame, origin: Origin, action: OutputAction) -> CommandResult<OutputDone> {
-    deliver_many(app, vec![(frame, origin)], action)?
+    deliver_reported(app, frame, origin, action, Report::ALL)
+}
+
+/// [`deliver`] with a choice of what is reported.
+pub fn deliver_reported(
+    app: &AppHandle,
+    frame: Frame,
+    origin: Origin,
+    action: OutputAction,
+    report: Report,
+) -> CommandResult<OutputDone> {
+    deliver_many(app, vec![(frame, origin)], action, report)?
         .into_iter()
         .next()
         .ok_or_else(|| CommandError::internal("no image was delivered"))
@@ -119,28 +146,14 @@ pub fn deliver_many(
     app: &AppHandle,
     images: Vec<(Frame, Origin)>,
     action: OutputAction,
+    report_to: Report,
 ) -> CommandResult<Vec<OutputDone>> {
     let Some(first) = images.first().map(|(_, origin)| origin.clone()) else {
         return Ok(Vec::new());
     };
     let settings = app.state::<AppState>().settings.get();
-
-    // The overlay goes before anything slow, and before a save panel that it would cover.
     let reason = if action == OutputAction::Copy { CloseReason::Copied } else { CloseReason::Saved };
-    for id in images.iter().map(|(_, o)| o.capture_id).filter(|id| id.0 != 0) {
-        session::close(app, id, reason);
-    }
-    if settings.general.shutter_sound {
-        shutter_once(first.capture_id);
-    }
-
-    let images: Vec<(Frame, Origin)> = images
-        .into_iter()
-        .map(|(frame, origin)| match settings.output.retina {
-            RetinaScale::ScaleTo1x => (frame.at_1x().unwrap_or(frame), origin),
-            RetinaScale::Keep2x => (frame, origin),
-        })
-        .collect();
+    let images = finish(app, images, reason);
 
     let result = match &action {
         OutputAction::Copy => copy_images(app, &settings.output, &images).map(|all| all.into_iter().map(Ok).collect()),
@@ -152,7 +165,28 @@ pub fn deliver_many(
                 .map(|path| save_images(app, &settings.output, &images, Some(&path)))
         }
     };
-    report(app, &images, &first, result)
+    report(app, &images, &first, result, report_to)
+}
+
+/// What every image goes through before it leaves, whichever way it leaves (a delivery, or a
+/// path or a file for Send to app): its capture closes before anything slow, and before a save
+/// panel the overlay would cover; the shutter plays; and a Retina image is scaled to 1× when the
+/// settings say so. A path therefore shows the same pixels a copy of the image would.
+pub(crate) fn finish(app: &AppHandle, images: Vec<(Frame, Origin)>, reason: CloseReason) -> Vec<(Frame, Origin)> {
+    let settings = app.state::<AppState>().settings.get();
+    for id in images.iter().map(|(_, o)| o.capture_id).filter(|id| id.0 != 0) {
+        session::close(app, id, reason);
+    }
+    if let (true, Some((_, first))) = (settings.general.shutter_sound, images.first()) {
+        shutter_once(first.capture_id);
+    }
+    images
+        .into_iter()
+        .map(|(frame, origin)| match settings.output.retina {
+            RetinaScale::ScaleTo1x => (frame.at_1x().unwrap_or(frame), origin),
+            RetinaScale::Keep2x => (frame, origin),
+        })
+        .collect()
 }
 
 // ------------------------------------------------------------------------- selection flows
@@ -224,6 +258,9 @@ struct Delivered {
     done: OutputDone,
     copied: bool,
     image_path: Option<PathBuf>,
+    /// The PNG of a copy that left no file behind (the history is off), kept a while in case the
+    /// toast's Send asks for a file (`recent`).
+    png: Option<Arc<Vec<u8>>>,
 }
 
 fn copy_images(app: &AppHandle, output: &Output, images: &[(Frame, Origin)]) -> CommandResult<Vec<Delivered>> {
@@ -234,15 +271,19 @@ fn copy_images(app: &AppHandle, output: &Output, images: &[(Frame, Origin)]) -> 
     let frames: Vec<&Frame> = images.iter().map(|(frame, _)| frame).collect();
     platform::copy_pngs(app, &pngs, &frames)?;
 
-    let inbox = (output.history_retention != HistoryRetention::Off).then(|| inbox(app)).flatten();
+    let inbox = (output.history_retention != HistoryRetention::Off).then(|| inbox_dir(app)).flatten();
     Ok(images
         .iter()
-        .zip(&pngs)
+        .zip(pngs)
         .enumerate()
-        .map(|(i, ((frame, origin), png))| Delivered {
-            done: done(origin, frame, png.len(), None, "png", None),
-            copied: true,
-            image_path: inbox.as_deref().and_then(|dir| write_inbox(dir, origin, i, png)),
+        .map(|(i, ((frame, origin), png))| {
+            let image_path = inbox.as_deref().and_then(|dir| write_inbox(dir, origin, i, &png));
+            Delivered {
+                done: done(origin, frame, png.len(), None, "png", None),
+                copied: true,
+                png: image_path.is_none().then(|| Arc::new(png)),
+                image_path,
+            }
         })
         .collect())
 }
@@ -286,6 +327,7 @@ fn save_images(
             done: done(origin, frame, bytes.len(), Some(path), format_name(format), fallback_from),
             copied: false,
             image_path: None,
+            png: None,
         }));
     }
     if !pngs.is_empty() {
@@ -516,11 +558,12 @@ fn report(
     images: &[(Frame, Origin)],
     first: &Origin,
     result: CommandResult<Vec<CommandResult<Delivered>>>,
+    report_to: Report,
 ) -> CommandResult<Vec<OutputDone>> {
     let results = match result {
         Ok(results) => results,
         Err(error) => {
-            report_failure(app, first, None, &error);
+            report_failure(app, first, None, &error, report_to.toast);
             return Err(error);
         }
     };
@@ -532,7 +575,7 @@ fn report(
             Ok(delivered) => delivered,
             Err(error) => {
                 // Among several images, the toast shows the one that failed.
-                report_failure(app, origin, (images.len() > 1).then_some(frame), &error);
+                report_failure(app, origin, (images.len() > 1).then_some(frame), &error, report_to.toast);
                 failure.get_or_insert(error);
                 continue;
             }
@@ -540,20 +583,37 @@ fn report(
         let done = delivered.done;
         let saved = done.path.is_some();
         let _ = app.emit(if saved { events::OUTPUT_SAVED } else { events::OUTPUT_COPIED }, done.clone());
+        let small = thumbnail(frame);
+        remember(Recent {
+            capture_id: origin.capture_id,
+            origin: origin.clone(),
+            size: (done.width, done.height),
+            saved_path: done.path.as_ref().map(PathBuf::from),
+            png: delivered.png.clone(),
+            file: None,
+            thumbnail: small.clone(),
+        });
 
-        let mut toast = Toast::new(if saved { ToastKind::Saved } else { ToastKind::Copied });
-        toast.thumbnail = thumbnail(frame);
-        toast.width = Some(done.width);
-        toast.height = Some(done.height);
-        toast.bytes = Some(done.bytes);
-        toast.path = done.path.clone();
-        toast.folder = done
-            .path
-            .as_ref()
-            .and_then(|p| Path::new(p).parent()?.file_name().map(|n| n.to_string_lossy().into_owned()));
-        toast.format = Some(done.format);
-        toast.fallback_from = done.fallback_from.clone();
-        windows::toast(app, origin.display.as_ref().map(|d| d.id), toast);
+        if report_to.toast {
+            let mut toast = Toast::new(if saved { ToastKind::Saved } else { ToastKind::Copied });
+            toast.capture_id = (origin.capture_id.0 != 0).then_some(origin.capture_id);
+            toast.thumbnail = small;
+            toast.width = Some(done.width);
+            toast.height = Some(done.height);
+            toast.bytes = Some(done.bytes);
+            toast.path = done.path.clone();
+            toast.folder = done
+                .path
+                .as_ref()
+                .and_then(|p| Path::new(p).parent()?.file_name().map(|n| n.to_string_lossy().into_owned()));
+            toast.format = Some(done.format);
+            toast.fallback_from = done.fallback_from.clone();
+            windows::toast(app, origin.display.as_ref().map(|d| d.id), toast);
+        }
+        if !report_to.handoff {
+            dones.push(done);
+            continue;
+        }
 
         let handoff = CaptureHandoff {
             kind: EntryKind::Screenshot,
@@ -584,13 +644,13 @@ fn report(
     }
 }
 
-/// `output://failed`, and a failure toast unless the user cancelled.
-fn report_failure(app: &AppHandle, origin: &Origin, frame: Option<&Frame>, error: &CommandError) {
+/// `output://failed`, and with `toast` a failure toast unless the user cancelled.
+fn report_failure(app: &AppHandle, origin: &Origin, frame: Option<&Frame>, error: &CommandError, toast: bool) {
     let _ = app.emit(
         events::OUTPUT_FAILED,
         OutputFailed { capture_id: origin.capture_id, code: error.code, message: error.message.clone() },
     );
-    if error.code == ErrorCode::Cancelled {
+    if error.code == ErrorCode::Cancelled || !toast {
         return;
     }
     trace::log(format!("[glimpsfy] output failed: {}", error.message));
@@ -612,24 +672,56 @@ fn shutter_once(id: CaptureId) {
 
 // -------------------------------------------------------------------------------- the inbox
 
-/// The inbox folder, made when missing, with files older than a day deleted.
-fn inbox(app: &AppHandle) -> Option<PathBuf> {
+/// The inbox folder, made when missing. It holds clipboard-only captures until the history takes
+/// them, and the files Send to app makes while the history is off; [`sweep_inbox`] empties it of
+/// day-old files.
+pub(crate) fn inbox_dir(app: &AppHandle) -> Option<PathBuf> {
     let dir = crate::paths::data_dir(app).ok()?.join(INBOX);
     fs::create_dir_all(&dir).ok()?;
-    if let Ok(entries) = fs::read_dir(&dir) {
-        for entry in entries.flatten() {
-            let old = entry
-                .metadata()
-                .and_then(|m| m.modified())
-                .ok()
-                .and_then(|t| t.elapsed().ok())
-                .is_some_and(|age| age > INBOX_KEEP);
-            if old {
-                let _ = fs::remove_file(entry.path());
-            }
+    Some(dir)
+}
+
+/// Deletes the plain files in `dir` that were last written more than a day before `now`, and
+/// answers what it deleted. A link is never followed nor deleted, and a folder is left alone, so
+/// nothing outside the inbox can be reached through it. Runs at start and every hour
+/// (`send.rs`, the `glimpsfy-send` thread), whether the history is on or not.
+pub fn sweep_inbox(dir: &Path, now: SystemTime) -> Vec<PathBuf> {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut removed = Vec::new();
+    for entry in entries.flatten() {
+        // `DirEntry::metadata` does not traverse a link, so a link reads as a link here.
+        let Ok(meta) = entry.metadata() else { continue };
+        if !meta.file_type().is_file() {
+            continue;
+        }
+        let old = meta
+            .modified()
+            .ok()
+            .and_then(|written| now.duration_since(written).ok())
+            .is_some_and(|age| age > INBOX_KEEP);
+        if old && fs::remove_file(entry.path()).is_ok() {
+            removed.push(entry.path());
         }
     }
-    Some(dir)
+    removed
+}
+
+/// Writes `png` into the inbox under the name the file name template gives the capture, for
+/// Send to app while the history is off. A taken name gets " (2)".
+pub(crate) fn write_inbox_named(
+    app: &AppHandle,
+    origin: &Origin,
+    size: (u32, u32),
+    png: &[u8],
+) -> CommandResult<PathBuf> {
+    let dir =
+        inbox_dir(app).ok_or_else(|| CommandError::new(ErrorCode::Io, "the history inbox folder could not be made"))?;
+    let template = app.state::<AppState>().settings.get().output.file_name_template;
+    let (date, time) = Naming::clock(chrono::DateTime::<chrono::Local>::from(origin.taken_at));
+    let naming = Naming { date, time, app: origin.app_name.as_deref(), width: size.0, height: size.1 };
+    Ok(save_unique_titled(&dir, &template, &naming, origin.window_title.as_deref(), "png", png)?)
 }
 
 fn write_inbox(dir: &Path, origin: &Origin, index: usize, png: &[u8]) -> Option<PathBuf> {
@@ -644,10 +736,63 @@ fn write_inbox(dir: &Path, origin: &Origin, index: usize, png: &[u8]) -> Option<
     }
 }
 
+// ------------------------------------------------------------------------ recent deliveries
+
+/// A delivered image, remembered for a while so the Send button of its toast, which knows only
+/// the capture, can find a file for it (`send::resolve_file`).
+#[derive(Clone)]
+pub(crate) struct Recent {
+    pub capture_id: CaptureId,
+    pub origin: Origin,
+    /// The delivered image's size in pixels, after any scaling to 1×.
+    pub size: (u32, u32),
+    pub saved_path: Option<PathBuf>,
+    /// The PNG of a copy that left no file behind (the history is off).
+    pub png: Option<Arc<Vec<u8>>>,
+    /// The file Send to app found or wrote for it, so a second send names the same file.
+    pub file: Option<PathBuf>,
+    /// The toast's picture of it, for the toast of a send.
+    pub thumbnail: Option<String>,
+}
+
+/// How many deliveries are remembered, and how many of them keep their PNG in memory.
+const RECENT: usize = 8;
+const RECENT_PNGS: usize = 3;
+static RECENTS: Mutex<VecDeque<Recent>> = Mutex::new(VecDeque::new());
+
+/// Remembers a delivery. The first image of a capture stands for it: a capture of all displays
+/// has one toast per image but one capture id.
+pub(crate) fn remember(recent: Recent) {
+    if recent.capture_id.0 == 0 {
+        return;
+    }
+    let mut list = RECENTS.lock().unwrap_or_else(|p| p.into_inner());
+    if list.iter().any(|r| r.capture_id == recent.capture_id) {
+        return;
+    }
+    list.push_front(recent);
+    list.truncate(RECENT);
+    for older in list.iter_mut().skip(RECENT_PNGS) {
+        older.png = None;
+    }
+}
+
+pub(crate) fn recent(capture_id: CaptureId) -> Option<Recent> {
+    RECENTS.lock().unwrap_or_else(|p| p.into_inner()).iter().find(|r| r.capture_id == capture_id).cloned()
+}
+
+/// Notes the file a send used for a remembered delivery.
+pub(crate) fn remember_file(capture_id: CaptureId, file: &Path) {
+    let mut list = RECENTS.lock().unwrap_or_else(|p| p.into_inner());
+    if let Some(recent) = list.iter_mut().find(|r| r.capture_id == capture_id) {
+        recent.file = Some(file.to_path_buf());
+    }
+}
+
 // -------------------------------------------------------------------------------- thumbnail
 
 /// A small PNG of the capture as a data URL, for the toast.
-fn thumbnail(frame: &Frame) -> Option<String> {
+pub(crate) fn thumbnail(frame: &Frame) -> Option<String> {
     let (w, h) = (frame.size.width.max(1) as f64, frame.size.height.max(1) as f64);
     let scale = (THUMBNAIL.0 as f64 / w).min(THUMBNAIL.1 as f64 / h).min(1.0);
     let (tw, th) = (((w * scale).round() as u32).max(1), ((h * scale).round() as u32).max(1));
@@ -737,6 +882,49 @@ pub fn save_frame(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The inbox sweep deletes the inbox's own files once they are a day old and nothing else: a
+    /// file written an hour ago stays, a link in the inbox stays and so does the history's file it
+    /// points to, and a folder in the inbox is not entered. A sweep that followed a link or went
+    /// past the inbox would delete the user's history.
+    #[cfg(unix)]
+    #[test]
+    fn the_inbox_sweep_deletes_only_its_own_old_files() {
+        let root = tempfile::tempdir().unwrap();
+        let inbox = root.path().join("history-inbox");
+        let captures = root.path().join("history").join("captures");
+        fs::create_dir_all(inbox.join("folder")).unwrap();
+        fs::create_dir_all(&captures).unwrap();
+        let now = SystemTime::now();
+        let aged = |path: &Path, hours: u64| {
+            fs::write(path, b"png").unwrap();
+            let file = fs::File::options().write(true).open(path).unwrap();
+            file.set_modified(now - Duration::from_secs(hours * 60 * 60)).unwrap();
+        };
+        let old = inbox.join("old.png");
+        let fresh = inbox.join("fresh.png");
+        let kept = captures.join("entry.png");
+        let nested = inbox.join("folder").join("old.png");
+        aged(&old, 25);
+        aged(&fresh, 1);
+        aged(&kept, 25);
+        aged(&nested, 25);
+        let link = inbox.join("link.png");
+        std::os::unix::fs::symlink(&kept, &link).unwrap();
+        let away = inbox.join("away");
+        std::os::unix::fs::symlink(&captures, &away).unwrap();
+
+        let removed = sweep_inbox(&inbox, now);
+
+        assert_eq!(removed, vec![old.clone()]);
+        assert!(!old.exists());
+        for stays in [&fresh, &kept, &nested] {
+            assert!(stays.exists(), "{} was deleted", stays.display());
+        }
+        for link in [&link, &away] {
+            assert!(fs::symlink_metadata(link).is_ok(), "{} was deleted", link.display());
+        }
+    }
 
     /// Save as of a history entry never loses a file. The panel opens on a recording's own name,
     /// so picking the capture itself (and confirming Replace) is refused and leaves it whole,

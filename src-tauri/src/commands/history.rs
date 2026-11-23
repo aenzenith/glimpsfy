@@ -400,6 +400,9 @@ pub fn record_capture(app: &AppHandle, handoff: CaptureHandoff) -> CommandResult
         _ => OwnFile::None,
     };
     let entry = store.add(new, own)?;
+    if let Some(capture) = handoff.capture_id.filter(|id| *id != 0) {
+        remember_capture(capture, &entry.id);
+    }
     changed(app, HistoryChanged::Added { entry: light(entry.clone()) });
     if kind != EntryKind::TextCopy {
         if let Some(poster) = handoff.poster_path.filter(|_| kind == EntryKind::Recording) {
@@ -419,6 +422,36 @@ pub fn record_capture(app: &AppHandle, handoff: CaptureHandoff) -> CommandResult
         wake_text(app);
     }
     Ok(Some(entry))
+}
+
+/// The entries of the last captures, by capture id, so a toast's Send finds the history's copy of
+/// the capture it reports (`send::resolve_file`). The hand-off arrives a moment after the toast,
+/// so [`entry_of_capture`] waits for it.
+static CAPTURE_ENTRIES: Mutex<VecDeque<(u64, EntryId)>> = Mutex::new(VecDeque::new());
+static CAPTURE_RECORDED: Condvar = Condvar::new();
+const CAPTURE_ENTRIES_KEPT: usize = 32;
+
+fn remember_capture(capture: u64, entry: &EntryId) {
+    let mut list = CAPTURE_ENTRIES.lock().unwrap_or_else(|p| p.into_inner());
+    list.retain(|(id, _)| *id != capture);
+    list.push_front((capture, entry.clone()));
+    list.truncate(CAPTURE_ENTRIES_KEPT);
+    CAPTURE_RECORDED.notify_all();
+}
+
+/// The entry the history recorded for `capture`, waiting up to `wait` for a hand-off on its way.
+/// Call it from a blocking thread only.
+pub fn entry_of_capture(capture: u64, wait: Duration) -> Option<EntryId> {
+    let find = |list: &VecDeque<(u64, EntryId)>| list.iter().find(|(id, _)| *id == capture).map(|(_, e)| e.clone());
+    let list = CAPTURE_ENTRIES.lock().unwrap_or_else(|p| p.into_inner());
+    let (list, _) =
+        CAPTURE_RECORDED.wait_timeout_while(list, wait, |list| find(list).is_none()).unwrap_or_else(|p| p.into_inner());
+    find(&list)
+}
+
+/// Whether the history records new captures now (it is not off).
+pub fn records(app: &AppHandle) -> bool {
+    retention(app).records()
 }
 
 /// Cards are titled after the window that was captured, because people remember what they
@@ -1082,8 +1115,8 @@ pub async fn history_copy(app: AppHandle, entry_id: EntryId) -> CommandResult<()
     .map_err(|error| CommandError::internal(error.to_string()))?
 }
 
-/// What [`history_copy`] puts on the clipboard.
-enum Clipboard<'a> {
+/// What [`history_copy`] puts on the clipboard; Send to app puts an entry's file there the same way.
+pub(crate) enum Clipboard<'a> {
     Text(&'a str),
     Png(&'a [u8]),
     Jpeg(&'a [u8]),
@@ -1091,7 +1124,7 @@ enum Clipboard<'a> {
 }
 
 #[cfg(target_os = "macos")]
-fn copy_to_clipboard(what: Clipboard<'_>) -> CommandResult<()> {
+pub(crate) fn copy_to_clipboard(what: Clipboard<'_>) -> CommandResult<()> {
     let done = match what {
         Clipboard::Text(text) => crate::macos::copy_text(text),
         Clipboard::Png(png) => crate::macos::copy_png(png),
@@ -1102,7 +1135,7 @@ fn copy_to_clipboard(what: Clipboard<'_>) -> CommandResult<()> {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn copy_to_clipboard(_what: Clipboard<'_>) -> CommandResult<()> {
+pub(crate) fn copy_to_clipboard(_what: Clipboard<'_>) -> CommandResult<()> {
     Err(CommandError::not_implemented("copying from the history on this platform"))
 }
 

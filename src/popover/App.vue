@@ -20,7 +20,9 @@ import GIcon from "../components/GIcon.vue";
 import KeyCaps from "../components/KeyCaps.vue";
 import ProgressRing from "../components/ProgressRing.vue";
 import TipWrap from "../components/TipWrap.vue";
+import Menu, { type MenuItem } from "../history/Menu.vue";
 import { mediaPath } from "../history/model";
+import { sendMenuItems } from "../history/send";
 import {
   CAPTURE_COUNTDOWN,
   capture_cancel_delay,
@@ -57,6 +59,7 @@ import {
   record_stop,
   type RecordingState,
 } from "../lib/api/record";
+import { send_copy_path, send_list_targets, send_to_app } from "../lib/api/send";
 import { settings_get } from "../lib/api/settings";
 import { RELEASES_URL, update_install } from "../lib/api/update";
 import {
@@ -85,6 +88,7 @@ import {
 import { PERMISSIONS_CHANGED, SETTINGS_CHANGED } from "../lib/events";
 import { language, t, type Key } from "../lib/i18n";
 import { capsOf, type ShortcutAction } from "../lib/keys";
+import { can } from "../lib/platform";
 import type { Settings, Shortcuts } from "../lib/settings";
 import { useUpdate } from "../lib/update";
 import { codeOf, reasonText } from "../toast/reason";
@@ -434,12 +438,14 @@ function sub(entry: Entry): string {
  * shows (`mediaPath`), never an older saved file. Show in Finder goes to `savedPath` itself. */
 const pathOf = (entry: Entry) => mediaPath(entry);
 
-type ActId = "copy" | "upload" | "link" | "cancel" | "pin" | "editor" | "trim" | "folder";
+type ActId = "copy" | "path" | "send" | "upload" | "link" | "cancel" | "pin" | "editor" | "trim" | "folder";
 /** `short` is the name a labelled button shows; the tip keeps the full name and the keys. */
 type Act = { id: ActId; icon: string; label: Key; caps: string[]; short?: Key };
 
 const ACT: Record<ActId, Omit<Act, "id">> = {
   copy: { icon: "copy", label: "popover.act.copy", caps: ["⌘", "C"], short: "popover.act.copy" },
+  path: { icon: "path", label: "send.copyPath", caps: ["⌥", "⌘", "C"] },
+  send: { icon: "send", label: "send.send", caps: ["⌘", "↩"] },
   upload: { icon: "upload", label: "popover.act.upload", caps: ["⌘", "U"] },
   link: { icon: "link", label: "popover.act.link", caps: ["⇧", "⌘", "L"] },
   cancel: { icon: "close", label: "popover.act.cancel", caps: ["⌘", "."] },
@@ -452,6 +458,10 @@ const ACT: Record<ActId, Omit<Act, "id">> = {
 /** The actions that work for this entry now; a control that could not work is left out. */
 function actionsFor(entry: Entry): Act[] {
   const ids: ActId[] = ["copy"];
+  // Send holds Copy path in its menu; where there is no Send (Windows, Linux), Copy path stands
+  // on its own. A text copy has no file, and its text goes to an app with Send only.
+  if (can("sendToApp")) ids.push("send");
+  else if (entry.kind !== "textCopy" && pathOf(entry)) ids.push("path");
   if (uploads.has(entry.id)) ids.push("cancel");
   else if (entry.hosted) ids.push("link");
   else if (entry.kind !== "textCopy" && defaultProvider.value && pathOf(entry)) ids.push("upload");
@@ -478,10 +488,50 @@ async function learnProviders(): Promise<void> {
   }
 }
 
+/** The Send menu under its button (A2), and the entry it sends. */
+const sendMenu = ref<{ items: MenuItem[]; at: { x: number; y: number } } | null>(null);
+
+async function openSend(entry: Entry): Promise<void> {
+  if (sendMenu.value) {
+    sendMenu.value = null;
+    return;
+  }
+  const button = root.value?.querySelector<HTMLElement>('.s-acts [data-act="send"]');
+  const list = await send_list_targets();
+  const box = button?.getBoundingClientRect();
+  const items = sendMenuItems(list, {
+    noPath: entry.kind === "textCopy",
+    copyPath: () => void run("path", entry),
+    send: (bundleId) => void sendTo(entry, bundleId),
+    edit: () => {
+      hide();
+      window_open_settings("output").catch((error) => console.warn("window_open_settings", error));
+    },
+  });
+  sendMenu.value = { items, at: box ? { x: box.right - 236, y: box.bottom + 4 } : { x: 8, y: 8 } };
+}
+
+async function sendTo(entry: Entry, bundleId: string): Promise<void> {
+  try {
+    await send_to_app({ kind: "entry", entryId: entry.id }, bundleId);
+    // The app comes forward, and the toast follows the send.
+    hide();
+  } catch (error) {
+    fail(error);
+  }
+}
+
 async function run(id: ActId, entry: Entry): Promise<void> {
   notice.value = null;
   try {
     switch (id) {
+      case "path": {
+        const sent = await send_copy_path({ kind: "entry", entryId: entry.id });
+        notice.value = { tone: "ok", text: t(sent.temporary ? "send.copiedTemporary" : "send.copied") };
+        return;
+      }
+      case "send":
+        return openSend(entry);
       case "copy":
         if (entry.kind === "textCopy") {
           const full = await history_get(entry.id);
@@ -765,19 +815,22 @@ function onKey(event: KeyboardEvent): void {
   if (mod) {
     const k = event.key.toLowerCase();
     const entry = selected.value;
-    const can = (id: ActId) => (entry && actionsFor(entry).some((a) => a.id === id) ? entry : null);
+    const offered = (id: ActId) => (entry && actionsFor(entry).some((a) => a.id === id) ? entry : null);
     let handled = true;
     if (k === "y" && !event.shiftKey) void openWindow("history");
     else if (k === ",") void openWindow("settings");
     else if (k === "q") void app_quit();
-    else if (k === "c" && !event.shiftKey && can("copy")) void run("copy", entry!);
-    else if (k === "u" && can("upload")) void run("upload", entry!);
-    else if (k === "l" && event.shiftKey && can("link")) void run("link", entry!);
-    else if (k === "." && can("cancel")) void run("cancel", entry!);
-    else if (k === "p" && can("pin")) void run("pin", entry!);
-    else if (k === "o" && can("editor")) void run("editor", entry!);
-    else if (k === "t" && can("trim")) void run("trim", entry!);
-    else if ((k === "r" || event.code === "KeyR") && event.altKey && can("folder")) void run("folder", entry!);
+    // ⌥ turns the key's character into another one ("ç"), so Copy path is read by the key's code.
+    else if (event.code === "KeyC" && event.altKey && !event.shiftKey && entry && entry.kind !== "textCopy" && pathOf(entry)) void run("path", entry);
+    else if (event.key === "Enter" && !event.shiftKey && !event.altKey && offered("send")) void run("send", entry!);
+    else if (k === "c" && !event.shiftKey && offered("copy")) void run("copy", entry!);
+    else if (k === "u" && offered("upload")) void run("upload", entry!);
+    else if (k === "l" && event.shiftKey && offered("link")) void run("link", entry!);
+    else if (k === "." && offered("cancel")) void run("cancel", entry!);
+    else if (k === "p" && offered("pin")) void run("pin", entry!);
+    else if (k === "o" && offered("editor")) void run("editor", entry!);
+    else if (k === "t" && offered("trim")) void run("trim", entry!);
+    else if ((k === "r" || event.code === "KeyR") && event.altKey && offered("folder")) void run("folder", entry!);
     else handled = false;
     if (handled) event.preventDefault();
     return;
@@ -1152,7 +1205,16 @@ const emptyParts = computed(() => {
                 :caps="act.caps"
                 :align="j >= shelf.icons.length - 2 ? 'end' : undefined"
               >
-                <button type="button" class="g-btn" data-size="small" :aria-label="t(act.label)" @click="run(act.id, selected)">
+                <button
+                  type="button"
+                  class="g-btn"
+                  data-size="small"
+                  :data-act="act.id"
+                  :aria-label="t(act.label)"
+                  :aria-expanded="act.id === 'send' ? !!sendMenu : undefined"
+                  :data-state="act.id === 'send' && sendMenu ? 'pressed' : undefined"
+                  @click="run(act.id, selected)"
+                >
                   <GIcon :name="act.icon" :size="16" />
                 </button>
               </TipWrap>
@@ -1196,6 +1258,7 @@ const emptyParts = computed(() => {
         </div>
       </div>
     </div>
+    <Menu v-if="sendMenu" :items="sendMenu.items" :at="sendMenu.at" :label="t('send.send')" @close="sendMenu = null" />
   </div>
 </template>
 

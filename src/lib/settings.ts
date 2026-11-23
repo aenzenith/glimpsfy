@@ -62,7 +62,16 @@ export type Output = Extra & {
   historyRetention: HistoryRetention;
   /** The retention sweep also moves an expired entry's saved file to the Trash. */
   trashSavedFiles: boolean;
+  /** The apps of Send to app, in the order of the send list, whose digits 1–9 follow it. */
+  sendTargets: SendTarget[];
 };
+
+/** What a send target gets on the clipboard before Glimpsfy presses ⌘V in it: the image, the
+ * file's path as text, or the file itself. A recording goes as its file to an image target. */
+export type SendPaste = "image" | "path" | "file";
+
+/** One app of Send to app; its bundle identifier is also its id. */
+export type SendTarget = { bundleId: string; name: string; paste: SendPaste };
 
 export type VideoCodec = "h264" | "hevc";
 export type RecordingResolution = "native" | "half";

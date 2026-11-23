@@ -38,12 +38,14 @@ import {
 } from "../lib/api/history";
 import { output_reveal } from "../lib/api/output";
 import { record_open_trim } from "../lib/api/record";
+import { send_copy_path, send_list_targets, send_to_app, type SendTargets } from "../lib/api/send";
 import { settings_get, settings_set } from "../lib/api/settings";
 import { onUploadDone, onUploadFailed, onUploadProgress, upload_cancel, upload_file, upload_providers } from "../lib/api/upload";
-import { app_copy_text, app_open_url, pin_open, popover_drag_out, window_open } from "../lib/api/windows";
+import { app_copy_text, app_open_url, pin_open, popover_drag_out, window_open, window_open_settings } from "../lib/api/windows";
 import { SETTINGS_CHANGED } from "../lib/events";
 import { language, t } from "../lib/i18n";
 import { capsText } from "../lib/keys";
+import { can } from "../lib/platform";
 import type { Settings } from "../lib/settings";
 import AppIcon from "./AppIcon.vue";
 import { HISTORY, type Actions, type UploadState } from "./context";
@@ -54,6 +56,7 @@ import "./history.css";
 import Inspector from "./Inspector.vue";
 import ListView from "./ListView.vue";
 import Menu, { type MenuItem } from "./Menu.vue";
+import { sendMenuItems } from "./send";
 import {
   formatBytes,
   keepOnly,
@@ -441,6 +444,34 @@ async function uploadOne(id: EntryId, provider: string | null): Promise<void> {
   }
 }
 
+/** The targets of Settings › Output for the Send menus, read again when the settings change. */
+const sendTargets = shallowRef<SendTargets | null>(null);
+
+function loadTargets(): void {
+  if (!can("sendToApp")) return;
+  send_list_targets()
+    .then((list) => (sendTargets.value = list))
+    .catch(() => {});
+}
+
+function sendItems(id: EntryId): MenuItem[] {
+  const list = sendTargets.value ?? { targets: [], last: null, canPaste: true };
+  return sendMenuItems(list, {
+    noPath: entryOf(id)?.kind === "textCopy",
+    copyPath: () => act.copyPath(id),
+    send: (bundleId) => send_to_app({ kind: "entry", entryId: id }, bundleId).catch((e) => failed(e, t("send.send"))),
+    edit: () => void window_open_settings("output").catch((e) => failed(e, t("send.editTargets"))),
+  });
+}
+
+/** Where the keyboard's Send menu opens: under the inspector's Send, or under the card. */
+function sendPoint(id: EntryId): { x: number; y: number } {
+  const button = document.querySelector<HTMLElement>(".hv-panel [data-send]");
+  const card = document.querySelector<HTMLElement>(`[data-id="${CSS.escape(id)}"]`);
+  const box = (button?.offsetParent ? button : card)?.getBoundingClientRect();
+  return box ? { x: box.left, y: box.bottom + 4 } : { x: 80, y: 80 };
+}
+
 const act: Actions = {
   pick,
   open(id) {
@@ -471,6 +502,17 @@ const act: Actions = {
       })
       .catch((e) => failed(e, t("history.action.copyText")));
   },
+  copyPath(id) {
+    if (entryOf(id)?.kind === "textCopy") return;
+    send_copy_path({ kind: "entry", entryId: id })
+      .then((sent) => toast(t("toast.short.pathCopied"), sent.temporary ? t("toast.pathTemporary") : (sent.path ?? undefined)))
+      .catch((e) => failed(e, t("send.copyPath")));
+  },
+  sendMenu(id, at) {
+    if (!selection.value.ids.includes(id)) pick(id, "one");
+    loadTargets();
+    menu.value = { items: sendItems(id), at };
+  },
   copyLink(id) {
     const url = entryOf(id)?.hosted?.url;
     if (!url) return;
@@ -492,6 +534,7 @@ const act: Actions = {
   },
   menu(id, at) {
     if (!selection.value.ids.includes(id)) pick(id, "one");
+    loadTargets();
     menu.value = { items: menuItems(), at };
   },
   dragOut(id) {
@@ -594,6 +637,8 @@ function menuItems(): MenuItem[] {
   }
   if (entry.kind === "textCopy") own.push({ label: t("history.action.copyText"), icon: "copy", keys: "⇧⌘C", run: () => act.copyText(id) });
   else own.push({ label: t("history.action.copy"), icon: "copy", keys: "⌘C", run: () => act.copy(id) });
+  if (entry.kind !== "textCopy") own.push({ label: t("send.copyPath"), icon: "path", keys: "⌥⌘C", run: () => act.copyPath(id) });
+  if (can("sendToApp")) own.push({ label: t("send.send"), icon: "send", children: sendItems(id) });
   if (entry.hosted) own.push({ label: t("history.action.copyLink"), icon: "link", keys: "⇧⌘L", run: () => act.copyLink(id) });
   else if (entry.kind !== "textCopy") own.push({ label: t("history.action.upload"), icon: "upload", keys: "⌘U", run: () => act.upload([id]) });
   own.push("separator");
@@ -763,6 +808,10 @@ function key(event: KeyboardEvent): void {
   if (typing) return;
   if (cmd && k === "a") return run(() => (selection.value = selectAll(order())));
   if (event.key.startsWith("Arrow") && !cmd && !event.altKey) return run(() => move(event.key as "ArrowLeft", event.shiftKey));
+  // ⌘↩ opens the Send menu (macOS only); ⌥⌘C copies the path. ⌥ turns the key's character into
+  // another one ("ç"), so the key is read by its code.
+  if (cmd && event.key === "Enter" && !event.shiftKey && !event.altKey && one && can("sendToApp")) return run(() => act.sendMenu(one, sendPoint(one)));
+  if (cmd && event.altKey && !event.shiftKey && event.code === "KeyC" && one && entryOf(one)?.kind !== "textCopy") return run(() => act.copyPath(one));
   if ((event.key === " " || event.key === "Enter") && target.dataset.id) return run(() => pick(target.dataset.id as EntryId, event.shiftKey ? "range" : cmd ? "toggle" : "one"));
   if (!ids.length) return;
   if (cmd && !event.shiftKey && k === "o" && one) return run(() => act.open(one));
@@ -838,6 +887,7 @@ function resized(): void {
   width.value = window.innerWidth;
 }
 onMounted(async () => {
+  loadTargets();
   window.addEventListener("resize", resized);
   document.addEventListener("keydown", key);
   document.addEventListener("mouseover", over);
@@ -856,7 +906,12 @@ onMounted(async () => {
   };
   await Promise.all([
     listen(onHistoryChanged(applyChange)),
-    listen(on<Settings>(SETTINGS_CHANGED, (s) => (settings.value = s))),
+    listen(
+      on<Settings>(SETTINGS_CHANGED, (s) => {
+        settings.value = s;
+        loadTargets();
+      }),
+    ),
     listen(
       onUploadProgress((p) => {
         const id = uploadEntry(p.uploadId);

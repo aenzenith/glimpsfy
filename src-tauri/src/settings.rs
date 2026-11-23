@@ -411,8 +411,34 @@ pub struct Output {
     /// Whether the history's retention sweep also moves an expired entry's saved file (the copy
     /// in the save folder) to the Trash. Off, the saved files are the user's and stay.
     pub trash_saved_files: bool,
+    /// The apps of Send to app, in the order of the send list, whose digits 1–9 follow it.
+    pub send_targets: Vec<SendTarget>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
+}
+
+/// What a send target gets on the clipboard before Glimpsfy presses ⌘V in it. A recording goes as
+/// its file to an `image` target, since no app pastes a video as pixels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SendPaste {
+    /// The PNG, drawings included.
+    Image,
+    /// The file's absolute path as text, quoted for a shell (`send::quote_path`).
+    Path,
+    /// The file itself, as Finder copies it.
+    File,
+}
+
+/// One app of Send to app, picked in Settings › Output.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SendTarget {
+    /// The app's bundle identifier, which finds it wherever it is installed; also the target's id.
+    pub bundle_id: String,
+    /// The app's name when it was added, shown while the app is not installed.
+    pub name: String,
+    pub paste: SendPaste,
 }
 
 impl Default for Output {
@@ -429,6 +455,7 @@ impl Default for Output {
             window_background: WindowBackground::Transparent,
             history_retention: HistoryRetention::Days30,
             trash_saved_files: false,
+            send_targets: Vec::new(),
             extra: Map::new(),
         }
     }

@@ -2,15 +2,16 @@
 // quitting. Mirrors src-tauri/src/commands/windows.rs, the toast payload of
 // src-tauri/src/windows.rs and the pin types of src-tauri/src/pins.rs.
 
-import type { LogicalPoint, LogicalRect, Selection } from "./capture";
+import type { CaptureId, LogicalPoint, LogicalRect, Selection } from "./capture";
 import type { ErrorCode } from "./core";
 import { call } from "./core";
 import type { EntryId } from "./history";
+import type { SentToast } from "./send";
 
 export type WindowKind = "editor" | "recorder" | "popover" | "history" | "settings" | "firstrun";
 
 /** `diskFull`: a recording stopped because the disk was almost full, and it is saved at `path`. */
-export type ToastKind = "copied" | "saved" | "failed" | "textCopied" | "diskFull";
+export type ToastKind = "copied" | "saved" | "failed" | "textCopied" | "diskFull" | "pathCopied" | "sent";
 
 /** The payload of `toast://show`. The toast page words it in the user's language. */
 export type Toast = {
@@ -33,6 +34,13 @@ export type Toast = {
   format: "png" | "jpeg" | "webp" | "mp4" | "gif" | null;
   /** The save folder that could not take the file, so it went to Pictures › Glimpsfy instead. */
   fallbackFrom: string | null;
+  /** The capture a `copied` or `saved` toast reports, which its Send button sends; `null` for the
+   * editor's images. */
+  captureId?: CaptureId | null;
+  /** The send a `sent` toast follows; `send://state` moves it on. */
+  send?: SentToast | null;
+  /** A `pathCopied` toast's path points into the inbox, deleted after a day (history off). */
+  temporary?: boolean;
 };
 
 export const window_open = (kind: WindowKind) => call<void>("window_open", { kind });

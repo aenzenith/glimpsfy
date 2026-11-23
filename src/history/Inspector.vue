@@ -8,6 +8,7 @@ import GIcon from "../components/GIcon.vue";
 import { entryName, fileUrl, thumbUrl, type Entry, type HistoryItem } from "../lib/api/history";
 import type { HistoryRetention } from "../lib/settings";
 import { t } from "../lib/i18n";
+import { can } from "../lib/platform";
 import AppIcon from "./AppIcon.vue";
 import { HISTORY, type HistoryContext } from "./context";
 import { matchRanges } from "./fold";
@@ -26,6 +27,12 @@ const props = defineProps<{
 }>();
 const emit = defineEmits<{ close: []; step: [by: number] }>();
 const ctx = inject(HISTORY) as HistoryContext;
+
+/** Send opens its menu under the button. */
+function sendHere(event: MouseEvent): void {
+  const box = (event.currentTarget as HTMLElement).getBoundingClientRect();
+  ctx.act.sendMenu(id.value, { x: box.left, y: box.bottom + 4 });
+}
 
 const entry = computed(() => props.full ?? props.item.entry);
 const id = computed(() => entry.value.id);
@@ -187,6 +194,30 @@ const preview = computed(() => (linkOnly.value ? null : (thumbUrl(entry.value) ?
       </div>
       <div class="hv-iconrow" role="toolbar" :aria-label="t('history.inspector.more')">
         <template v-if="!linkOnly">
+        <!-- Send opens the targets' menu under it (macOS); elsewhere Copy path stands alone. -->
+        <button
+          v-if="can('sendToApp')"
+          type="button"
+          class="g-btn"
+          data-send
+          :aria-label="t('send.send')"
+          :data-tip="t('send.send')"
+          data-key="⌘↩"
+          @click="sendHere"
+        >
+          <GIcon name="send" />
+        </button>
+        <button
+          v-else-if="kind !== 'textCopy'"
+          type="button"
+          class="g-btn"
+          :aria-label="t('send.copyPath')"
+          :data-tip="t('send.copyPath')"
+          data-key="⌥⌘C"
+          @click="ctx.act.copyPath(id)"
+        >
+          <GIcon name="path" />
+        </button>
         <button v-if="kind !== 'textCopy'" type="button" class="g-btn" :aria-label="t('history.action.saveAs')" :data-tip="t('history.action.saveAs')" data-key="⇧⌘S" @click="ctx.act.saveAs(id)">
           <GIcon name="save-as" />
         </button>

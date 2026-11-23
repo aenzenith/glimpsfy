@@ -1120,6 +1120,8 @@ pub fn drag_out(
 // panel with the camera's live preview), the click and key monitors of a take, the window numbers
 // the capture filter needs, and an exported file on the pasteboard.
 
+pub mod send;
+
 pub mod recording {
     use std::cell::RefCell;
     use std::path::Path;

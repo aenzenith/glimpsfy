@@ -33,6 +33,9 @@ const ICONS: Record<string, IconDef> = {
 
     /* -------------------------------------------------------------- actions */
     copy: '<rect x="7" y="7" width="9.5" height="9.5" rx="2.25"/><path d="M13 7V5.75a2.25 2.25 0 0 0-2.25-2.25h-5A2.25 2.25 0 0 0 3.5 5.75v5A2.25 2.25 0 0 0 5.75 13H7"/>',
+    /* Send to app: an arrow going into an app's window; Copy path: "~/" in a field, the path as text */
+    send: '<rect x="9" y="3.75" width="7.5" height="12.5" rx="2"/><path d="M3.25 10h8.25"/><path d="M8.75 7.25 11.5 10l-2.75 2.75"/>',
+    path: '<rect x="2.75" y="5" width="14.5" height="10" rx="2.75"/><path d="M5.6 10.6c.55-.85 1.2-.85 1.75 0s1.2.85 1.75 0"/><path d="m11.4 12.6 2.2-5.2"/>',
     save: '<path d="M10 3.5V12"/><path d="M6.5 8.75 10 12.25l3.5-3.5"/><path d="M3.75 12.5v2a2 2 0 0 0 2 2h8.5a2 2 0 0 0 2-2v-2"/>',
     /* save with a pencil: the same tray and arrow, moved left, and a name to write */
     'save-as': '<path d="M7.5 3.5v8"/><path d="m4.25 8.25 3.25 3.25 3.25-3.25"/><path d="M3.75 12.5v2a2 2 0 0 0 2 2h8.5a2 2 0 0 0 2-2v-2"/><path d="m12.5 11 .63-1.63 2.62-2.62 1 1-2.62 2.62Z"/>',

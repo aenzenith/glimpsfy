@@ -17,10 +17,11 @@
 // and opacity, so the blur moves with it; the page draws only the tint, the edges and the
 // shadow. The panel never becomes key, so WebKit reports a click in it but no pointer move: the
 // page asks the core where the pointer is (`toast_pointer`).
-import { nextTick, onMounted, onUnmounted, reactive, ref } from "vue";
+import { nextTick, onMounted, onUnmounted, reactive, ref, shallowRef } from "vue";
 
 import GIcon from "../components/GIcon.vue";
 import ProgressRing from "../components/ProgressRing.vue";
+import SendList from "../components/SendList.vue";
 import TipWrap from "../components/TipWrap.vue";
 import { Window } from "@tauri-apps/api/window";
 
@@ -29,6 +30,16 @@ import { history_get, thumbUrl } from "../lib/api/history";
 import { output_reveal } from "../lib/api/output";
 import { permissions_open_settings } from "../lib/api/permissions";
 import { onRecordExportProgress, record_export_cancel, type ExportProgress } from "../lib/api/record";
+import {
+  onSendState,
+  send_cancel,
+  send_copy_path,
+  send_list_targets,
+  send_to_app,
+  type SendSource,
+  type SendState,
+  type SendTargets,
+} from "../lib/api/send";
 import {
   onUploadDone,
   onUploadFailed,
@@ -52,6 +63,7 @@ import {
 } from "../lib/api/windows";
 import { TOAST_SHOW } from "../lib/events";
 import { language, t } from "../lib/i18n";
+import { can } from "../lib/platform";
 import { doneText, failureText as uploadFailure } from "../upload/text";
 import { fixText, reasonText } from "./reason";
 
@@ -92,6 +104,9 @@ const SHADOW_SIDE = 32;
 const SHADOW_BELOW = 44;
 /** How many characters of a file name or a link a one-row toast shows before it cuts the middle. */
 const NAME_CHARS = 25;
+/** How many characters of a copied path fit the toast's row in its mono face (the path toast has
+ * only the close button beside it). */
+const PATH_CHARS = 27;
 /** How many words of copied text the toast quotes. */
 const QUOTE_WORDS = 10;
 /** An export that stops reporting for this long ended without a last report (a failure or a
@@ -131,6 +146,11 @@ if (NATIVE_GLASS) document.documentElement.dataset.glass = "native";
 
 const items = ref<Item[]>([]);
 const stack = ref<HTMLElement | null>(null);
+/** The send list a toast's Send opened (A2): the toast it belongs to, what it sends, the list, and
+ * how far its right and bottom edges stand from the window's. Only the pointer drives it, since the panel
+ * never has the keyboard. */
+const sendFor = shallowRef<{ key: string; source: SendSource; list: SendTargets; right: number; bottom: number } | null>(null);
+const sendBox = ref<HTMLElement | null>(null);
 const providerNames = reactive(new Map<string, string>());
 
 // -------------------------------------------------------------------------------- motion
@@ -345,6 +365,19 @@ function glass(now: number): ToastGlass[] {
       alpha: valueAt(motion.alpha, now),
     });
   }
+  const open = sendFor.value;
+  const box = sendBox.value?.firstElementChild as HTMLElement | null | undefined;
+  if (open && box) {
+    list.push({
+      key: "send-list",
+      right: open.right,
+      bottom: open.bottom,
+      width: box.offsetWidth,
+      height: box.offsetHeight,
+      radius: parseFloat(getComputedStyle(box).borderTopLeftRadius) || 0,
+      alpha: 1,
+    });
+  }
   return list;
 }
 
@@ -357,7 +390,11 @@ let toastWidth = 0;
  * at full speed and the first toast rises as smoothly as the others. */
 function windowFrame(shown: boolean): ToastFrame {
   toastWidth ||= parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--toast-w")) || 300;
-  return { width: toastWidth + 2 * SHADOW_SIDE, pastRight: SHADOW_SIDE - GAP_RIGHT, pastBelow: SHADOW_BELOW - GAP_BELOW, shown };
+  let width = toastWidth + 2 * SHADOW_SIDE;
+  const open = sendFor.value;
+  const list = sendBox.value?.firstElementChild as HTMLElement | null | undefined;
+  if (shown && open && list) width = Math.max(width, open.right + list.offsetWidth + SHADOW_SIDE);
+  return { width, pastRight: SHADOW_SIDE - GAP_RIGHT, pastBelow: SHADOW_BELOW - GAP_BELOW, shown };
 }
 
 let lastSent = "";
@@ -438,11 +475,12 @@ async function askPointer(): Promise<void> {
 function pointerAt(point: LogicalPoint | null): void {
   const box = stack.value;
   const target = point && box ? document.elementFromPoint(point.x, point.y) : null;
-  const over = target && box?.contains(target) ? target : null;
+  const over = target && (box?.contains(target) || sendBox.value?.contains(target)) ? target : null;
   if (over && !hovering) pause();
   else if (!over && hovering) resume();
+  awayFromSend(!!over);
 
-  const control = over?.closest<HTMLElement>(".g-btn, .g-button") ?? null;
+  const control = over?.closest<HTMLElement>(".g-btn, .g-button, .g-pop-item") ?? null;
   if (control !== lit) {
     lit?.removeAttribute("data-state");
     control?.setAttribute("data-state", "hover");
@@ -457,6 +495,22 @@ function pointerAt(point: LogicalPoint | null): void {
   } else if (wrap && performance.now() - tipSince >= TIP_DELAY_MS) {
     wrap.querySelector(":scope > .g-tip")?.setAttribute("data-state", "show");
   }
+}
+
+/** The send list closes once the pointer has been away from the toasts and the list a moment: the
+ * panel learns of no click outside it. */
+const SEND_AWAY_MS = 1500;
+/** The room between a toast and the send list beside it. */
+const SEND_GAP = 8;
+let awaySince = 0;
+
+function awayFromSend(over: boolean): void {
+  if (!sendFor.value || over) {
+    awaySince = 0;
+    return;
+  }
+  awaySince ||= performance.now();
+  if (performance.now() - awaySince >= SEND_AWAY_MS) closeSend();
 }
 
 // ---------------------------------------------------------------------------------- timers
@@ -513,6 +567,9 @@ function dismiss(key: string): void {
   clearTimer(key);
   const item = find(key);
   if (!item) return;
+  if (sendFor.value?.key === key) closeSend();
+  const sent = item.capture?.send;
+  if (sent?.phase === "opening") send_cancel(sent.sendId).catch((error) => console.warn("send_cancel", error));
   item.leaving = true;
   const el = elementOf(key);
   const motion = motions.get(key);
@@ -562,7 +619,146 @@ function showCapture(toast: Toast): void {
   }
   const key = `t:${toast.id}`;
   add({ key, leaving: false, capture: toast, upload: null });
-  if (!STAYS.has(toast.kind)) arm(key, toast.fallbackFrom ? STAY_WARN_MS : STAY_MS);
+  if (toast.kind === "sent") {
+    armSent(key);
+    void sentThumb(key);
+  } else if (!STAYS.has(toast.kind)) arm(key, toast.fallbackFrom ? STAY_WARN_MS : STAY_MS);
+}
+
+// ------------------------------------------------------------------------------- send to app
+
+/** A pasted send leaves like a success; one that opens, or that needs the user, stays. */
+function armSent(key: string): void {
+  const phase = find(key)?.capture?.send?.phase;
+  if (phase === "pasted") arm(key, STAY_MS);
+  else clearTimer(key);
+}
+
+/** A send from the history carries no thumbnail; the entry's stands in. */
+async function sentThumb(key: string): Promise<void> {
+  const toast = find(key)?.capture;
+  const entryId = toast?.send?.entryId;
+  if (!toast || toast.thumbnail || !entryId) return;
+  try {
+    toast.thumbnail = thumbUrl(await history_get(entryId));
+  } catch {
+    // The toast shows the send icon instead.
+  }
+}
+
+/** The send moved on (`send://state`): its toast takes the new phase. The first phase came with
+ * the toast itself. */
+function onSent(state: SendState): void {
+  const item = items.value.find((x) => !x.leaving && x.capture?.send?.sendId === state.sendId);
+  const sent = item?.capture?.send;
+  if (!item || !sent || sent.phase === state.phase) return;
+  if (state.phase === "cancelled") return dismiss(item.key);
+  sent.phase = state.phase;
+  sent.targetName = state.targetName;
+  armSent(item.key);
+  void fit();
+}
+
+const sentTall = (toast: Toast) => ["noPermission", "timedOut", "failed"].includes(toast.send?.phase ?? "");
+
+function sentTitle(toast: Toast): string {
+  const app = toast.send?.targetName ?? "";
+  switch (toast.send?.phase) {
+    case "opening":
+      return t("toast.send.opening", { app });
+    case "noPermission":
+      return t("toast.send.noPermission", { app });
+    case "timedOut":
+      return t("toast.send.timedOut", { app });
+    case "failed":
+      return t("toast.send.failed", { app });
+    default:
+      return t("toast.send.pasted", { app });
+  }
+}
+
+function sentBody(toast: Toast): string {
+  switch (toast.send?.phase) {
+    case "opening":
+      return t("toast.send.openingBody");
+    case "noPermission":
+      return t("toast.send.noPermissionBody");
+    case "timedOut":
+      return t("toast.send.timedOutBody");
+    case "failed":
+      return t("toast.send.failedBody");
+    default:
+      return t("toast.send.pastedBody");
+  }
+}
+
+/** Try again sends the same capture or entry to the same app; its own toast follows. */
+function retrySend(item: Item): void {
+  const sent = item.capture?.send;
+  if (!sent?.retry) return;
+  const { retry: source, targetId } = sent;
+  dismiss(item.key);
+  send_to_app(source, targetId).catch((error) => console.warn("send_to_app", error));
+}
+
+/** A Copied or Saved toast's Send opens the list beside the toast, level with its bottom edge. */
+async function openSend(item: Item): Promise<void> {
+  const captureId = item.capture?.captureId;
+  if (captureId == null) return;
+  if (sendFor.value?.key === item.key) return closeSend();
+  try {
+    const list = await send_list_targets();
+    const layout = layouts.get(item.key);
+    if (!find(item.key) || !layout) return;
+    // Beside the toast rather than above it, where it would lie over the older toasts; the window
+    // widens to the left for it (windowFrame).
+    const right = layout.right + layout.width + SEND_GAP;
+    sendFor.value = { key: item.key, source: { kind: "capture", captureId }, list, right, bottom: SHADOW_BELOW + layout.place };
+    clearTimer(item.key);
+    awaySince = 0;
+    void fit();
+  } catch (error) {
+    console.warn("send_list_targets", error);
+  }
+}
+
+function closeSend(): void {
+  const open = sendFor.value;
+  if (!open) return;
+  sendFor.value = null;
+  if (find(open.key)) arm(open.key, STAY_MS);
+  void fit();
+}
+
+/** Where the list leads: the list closes first, and the toast that opened it leaves, since what
+ * follows brings its own toast. */
+function fromList(run: (source: SendSource) => Promise<unknown>, what: string): void {
+  const open = sendFor.value;
+  if (!open) return;
+  closeSend();
+  dismiss(open.key);
+  run(open.source).catch((error) => console.warn(what, error));
+}
+
+const sendCopyPath = () => fromList((source) => send_copy_path(source), "send_copy_path");
+const sendTo = (bundleId: string) => fromList((source) => send_to_app(source, bundleId), "send_to_app");
+
+function editTargets(): void {
+  closeSend();
+  window_open_settings("output").catch((error) => console.warn("window_open_settings", error));
+}
+
+function openAccessibility(): void {
+  closeSend();
+  permissions_open_settings("accessibility").catch((error) => console.warn("permissions_open_settings", error));
+}
+
+/** Copy path on a toast where Send is not offered (Windows, Linux). */
+function copyPathOf(item: Item): void {
+  const captureId = item.capture?.captureId;
+  if (captureId == null) return;
+  dismiss(item.key);
+  send_copy_path({ kind: "capture", captureId }).catch((error) => console.warn("send_copy_path", error));
 }
 
 // ----------------------------------------------------------------------------------- exports
@@ -763,7 +959,7 @@ async function copyLink(upload: Upload): Promise<void> {
  * main action under them. */
 function tall(item: Item): boolean {
   const toast = item.capture;
-  if (toast) return STAYS.has(toast.kind) || !!toast.fallbackFrom;
+  if (toast) return STAYS.has(toast.kind) || !!toast.fallbackFrom || (toast.kind === "sent" && sentTall(toast));
   return item.upload?.phase === "failed";
 }
 
@@ -780,6 +976,8 @@ function shortTitle(item: Item): string {
       const n = lineCount(toast.text);
       return n === 1 ? t("toast.short.lines.one") : t("toast.short.lines.many", { n });
     }
+    if (toast.kind === "pathCopied") return t("toast.short.pathCopied");
+    if (toast.kind === "sent") return sentTitle(toast);
     return sentence(item);
   }
   if (item.export) return exportTitle(item.export);
@@ -803,6 +1001,8 @@ function sentence(item: Item): string {
       const n = lineCount(toast.text);
       return n === 1 ? t("toast.lines.one") : t("toast.lines.many", { n });
     }
+    if (toast.kind === "pathCopied") return t("toast.pathCopied");
+    if (toast.kind === "sent") return sentTitle(toast);
     if (toast.kind === "diskFull") return t("toast.diskFull");
     return t("toast.failed");
   }
@@ -885,6 +1085,15 @@ function middle(text: string, max = NAME_CHARS): string {
   return `${text.slice(0, head)}…${text.slice(text.length - (max - 1 - head))}`;
 }
 
+/** A path cut before its file name, so the name stays whole while a few leading folders still
+ * show; a name too long for that is cut in the middle like any other. */
+function middlePath(path: string, max = PATH_CHARS): string {
+  if (path.length <= max) return path;
+  const name = path.slice(Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\")));
+  if (name.length + 4 <= max) return `${path.slice(0, max - 1 - name.length)}…${name}`;
+  return middle(path, max);
+}
+
 // ----------------------------------------------------------------------------------- actions
 
 type Action = { key: string; label: string; icon?: string; primary?: boolean; run: () => void };
@@ -898,9 +1107,22 @@ function icons(item: Item): Action[] {
   const list: Action[] = [];
   const toast = item.capture;
   if (toast) {
+    if ((toast.kind === "copied" || toast.kind === "saved") && toast.captureId != null) {
+      if (can("sendToApp")) list.push({ key: "send", icon: "send", label: t("send.send"), run: () => void openSend(item) });
+      else list.push({ key: "path", icon: "path", label: t("send.copyPath"), run: () => copyPathOf(item) });
+    }
     if (toast.kind === "saved" && toast.path) {
       const path = toast.path;
       list.push({ key: "reveal", icon: "folder", label: t("toast.showInFinder"), run: () => reveal(path) });
+    }
+    // An app that is still opening has one button, which stops the wait.
+    if (toast.kind === "sent" && toast.send?.phase === "opening") {
+      const { sendId } = toast.send;
+      const stop = () => {
+        dismiss(item.key);
+        send_cancel(sendId).catch((error) => console.warn("send_cancel", error));
+      };
+      return [{ key: "cancel", icon: "close", label: t("toast.send.cancel"), run: stop }];
     }
   } else if (item.export) {
     list.push({ key: "cancel", icon: "stop", label: t("toast.upload.cancel"), run: () => cancelExport(item) });
@@ -925,6 +1147,13 @@ function foot(item: Item): Action[] {
       const path = toast.path;
       return [{ key: "reveal", label: t("toast.showInFinder"), run: () => reveal(path) }];
     }
+    if (toast.kind === "sent" && toast.send?.phase === "noPermission") {
+      const run = () => void permissions_open_settings("accessibility").catch((error) => console.warn("permissions_open_settings", error));
+      return [{ key: "settings", label: t("toast.openSettings"), primary: true, run }];
+    }
+    if (toast.kind === "sent" && (toast.send?.phase === "timedOut" || toast.send?.phase === "failed") && toast.send.retry) {
+      return [{ key: "retry", label: t("toast.send.retry"), primary: true, run: () => retrySend(item) }];
+    }
     if (toast.kind === "failed" && toast.errorCode === "permission_denied") {
       const run = () => void permissions_open_settings("screenRecording").catch((error) => console.warn("permissions_open_settings", error));
       return [{ key: "settings", label: t("toast.openSettings"), primary: true, run }];
@@ -940,7 +1169,8 @@ function foot(item: Item): Action[] {
 
 function status(item: Item): "ok" | "warn" | "progress" {
   if (item.export) return "progress";
-  if (item.capture) return STAYS.has(item.capture.kind) || item.capture.fallbackFrom ? "warn" : "ok";
+  if (item.capture?.kind === "sent" && item.capture.send?.phase === "opening") return "progress";
+  if (item.capture) return STAYS.has(item.capture.kind) || item.capture.fallbackFrom || tall(item) ? "warn" : "ok";
   if (item.upload!.phase === "uploading") return "progress";
   return item.upload!.phase === "failed" ? "warn" : "ok";
 }
@@ -952,11 +1182,14 @@ function thumbOf(item: Item): string | null {
 
 function placeholderIcon(item: Item): string {
   if (item.capture?.kind === "textCopied") return "ocr";
+  if (item.capture?.kind === "pathCopied") return "path";
+  if (item.capture?.kind === "sent") return "send";
   if (item.export) return "record";
   return item.upload ? "upload" : "image";
 }
 
 function ringProgress(item: Item): number | null {
+  if (item.capture) return null;
   if (item.export) return Math.min(100, Math.max(0, item.export.fraction * 100));
   return percent(item.upload!);
 }
@@ -975,6 +1208,7 @@ onMounted(async () => {
     await onUploadDone((done) => void onDone(done)),
     await onUploadFailed(onFailed),
     await onRecordExportProgress((p) => void onExportProgress(p)),
+    await onSendState(onSent),
   );
   // Puts the empty window on screen, invisible, so the first toast finds its page awake.
   report(performance.now());
@@ -991,6 +1225,19 @@ onUnmounted(() => {
 </script>
 
 <template>
+  <div v-if="sendFor" ref="sendBox" class="send-box" :style="{ right: `${sendFor.right}px`, bottom: `${sendFor.bottom}px` }">
+    <SendList
+      :targets="sendFor.list.targets"
+      :last="sendFor.list.last"
+      :can-paste="sendFor.list.canPaste"
+      edit
+      pointer
+      @copy-path="sendCopyPath"
+      @send="sendTo"
+      @edit="editTargets"
+      @permission="openAccessibility"
+    />
+  </div>
   <div ref="stack" class="g-toasts stack" :style="{ right: `${SHADOW_SIDE}px`, bottom: `${SHADOW_BELOW}px` }">
     <div
       v-for="item in items"
@@ -1004,7 +1251,7 @@ onUnmounted(() => {
         <img v-if="thumbOf(item)" :src="thumbOf(item)!" alt="" draggable="false" />
         <span v-else class="thumb-icon"><GIcon :name="placeholderIcon(item)" :size="18" /></span>
         <span v-if="status(item) === 'progress'" class="g-status" data-status="progress">
-          <ProgressRing :progress="ringProgress(item)" :label="t(item.export ? 'toast.export.ring' : 'toast.upload.ring')" :size="22" />
+          <ProgressRing :progress="ringProgress(item)" :label="t(item.capture ? 'toast.send.ring' : item.export ? 'toast.export.ring' : 'toast.upload.ring')" :size="22" />
         </span>
         <span v-else class="g-status" :data-status="status(item)">
           <GIcon :name="status(item) === 'warn' ? 'bang' : item.upload ? 'link' : 'check'" :size="12" />
@@ -1012,7 +1259,7 @@ onUnmounted(() => {
       </div>
 
       <div class="g-toast-text">
-        <div class="g-toast-title" :title="sentence(item)">{{ title(item) }}</div>
+        <div class="g-toast-title" :data-kind="item.capture?.kind === 'sent' ? 'wrap' : undefined" :title="sentence(item)">{{ title(item) }}</div>
 
         <!-- capture toasts -->
         <template v-if="item.capture">
@@ -1028,6 +1275,13 @@ onUnmounted(() => {
             </div>
           </template>
           <div v-else-if="item.capture.kind === 'copied'" class="g-toast-body">{{ meta(item.capture) }}</div>
+          <template v-else-if="item.capture.kind === 'pathCopied'">
+            <div class="g-toast-body" data-kind="mono" :title="item.capture.path ?? undefined">{{ middlePath(item.capture.path ?? "") }}</div>
+            <div v-if="item.capture.temporary" class="g-toast-body" data-kind="wrap">{{ t("toast.pathTemporary") }}</div>
+          </template>
+          <div v-else-if="item.capture.kind === 'sent'" class="g-toast-body" :data-kind="tall(item) ? 'wrap' : undefined">
+            {{ sentBody(item.capture) }}
+          </div>
           <div v-else-if="item.capture.kind === 'textCopied'" class="g-toast-body" :title="item.capture.text ?? undefined">
             {{ quote(item.capture.text) }}
           </div>
@@ -1087,6 +1341,11 @@ onUnmounted(() => {
   position: absolute;
   width: var(--toast-w);
 }
+/* A send's title names the app, which can be long; it takes a second row rather than lose the
+   app's name to the ellipsis. */
+.g-toast-title[data-kind="wrap"] {
+  white-space: normal;
+}
 .thumb-icon {
   display: grid;
   place-items: center;
@@ -1103,6 +1362,22 @@ onUnmounted(() => {
   background: var(--surface-button);
 }
 .stack :deep(.g-button[data-variant="primary"]:hover:not([data-state="hover"], :active)) {
+  background: var(--iris);
+}
+/* The send list stands above the toast that opened it; on macOS AppKit blurs under it as under a
+   toast (it is one of the rectangles `glass` reports). */
+.send-box {
+  position: absolute;
+}
+html[data-glass="native"] .send-box :deep(.g-pop) {
+  background: var(--glass-caustic), var(--glass-sheen), var(--glass-tint-native);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+.send-box :deep(.g-pop-item:hover:not([data-state="hover"])) {
+  background: none;
+}
+.send-box :deep(.g-button[data-variant="primary"]:hover:not([data-state="hover"], :active)) {
   background: var(--iris);
 }
 .stack :deep(.g-tipwrap:hover > .g-tip:not([data-state="show"])) {

@@ -28,6 +28,7 @@ mod permissions;
 mod pins;
 mod popover;
 mod recording;
+mod send;
 mod session;
 mod settings;
 mod shortcuts;
@@ -85,6 +86,7 @@ pub fn run() {
             windows::setup(&handle);
             // The history opens its database on its own thread.
             commands::history::setup(&handle);
+            send::setup(&handle);
             // Uploads keep the handle for deletions the history asks for.
             commands::upload::setup(&handle);
             // Screen recording: the recorder, its windows and the trim window's library.

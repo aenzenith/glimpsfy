@@ -18,6 +18,10 @@ export type Actions = {
   open(id: EntryId): void;
   copy(id: EntryId): void;
   copyLink(id: EntryId): void;
+  /** Copies the path of the entry's file, quoted for a shell (⌥⌘C). */
+  copyPath(id: EntryId): void;
+  /** Opens the Send menu at a point: Copy path, the targets of Settings › Output, Edit targets…. */
+  sendMenu(id: EntryId, at: { x: number; y: number }): void;
   upload(ids: EntryId[]): void;
   cancelUpload(id: EntryId): void;
   menu(id: EntryId, at: { x: number; y: number }): void;

@@ -237,6 +237,11 @@ pub enum ToastKind {
     /// A recording stopped because the disk was almost full, and what was recorded is saved at
     /// `path`. One toast says both, so the user never sees "Saved" and then a failure.
     DiskFull,
+    /// A capture's file path reached the clipboard as text (Copy path); `path` holds it.
+    PathCopied,
+    /// Send to app: `send` says which app and how far the paste got, and `send://state` moves the
+    /// same toast on to the next phase.
+    Sent,
 }
 
 /// One toast; the toast page words it in the user's language from `kind` and the details.
@@ -265,6 +270,13 @@ pub struct Toast {
     /// The save folder that could not take the file, so it went to Pictures › Glimpsfy instead;
     /// the toast names it (capture area).
     pub fallback_from: Option<String>,
+    /// The capture a Copied or Saved toast reports, which its Send button sends; `None` for the
+    /// editor's images.
+    pub capture_id: Option<CaptureId>,
+    /// The send a `Sent` toast follows.
+    pub send: Option<crate::commands::send::SentToast>,
+    /// A copied path points into the inbox, whose files are deleted after a day (history off).
+    pub temporary: bool,
 }
 
 impl Toast {
@@ -284,6 +296,9 @@ impl Toast {
             text: None,
             format: None,
             fallback_from: None,
+            capture_id: None,
+            send: None,
+            temporary: false,
         }
     }
 }

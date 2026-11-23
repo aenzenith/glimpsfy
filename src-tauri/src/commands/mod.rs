@@ -16,6 +16,7 @@ pub mod output;
 pub mod permissions;
 pub mod record;
 pub mod render;
+pub mod send;
 pub mod settings;
 pub mod update;
 pub mod upload;
@@ -42,6 +43,13 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Syn
         output::output_save,
         output::output_save_as,
         output::output_reveal,
+        // copy path and send to app
+        send::send_list_targets,
+        send::send_pick_app,
+        send::send_copy_path,
+        send::send_to_app,
+        send::send_cancel,
+        render::send_rendered,
         // rendered output and the editor (annotation)
         render::output_copy_rendered,
         render::output_save_rendered,

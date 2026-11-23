@@ -10,6 +10,7 @@
 import { computed, nextTick, onMounted, onUnmounted, provide, reactive, ref, shallowRef, watch, watchEffect } from "vue";
 
 import GIcon from "../components/GIcon.vue";
+import SendList from "../components/SendList.vue";
 import OptionsStrip from "../annotate/OptionsStrip.vue";
 import RedactionNotice from "../annotate/RedactionNotice.vue";
 import Surface from "../annotate/Surface.vue";
@@ -21,6 +22,7 @@ import {
   output_copy_rendered,
   output_save_rendered,
   output_stage_rendered,
+  send_rendered,
   upload_capture_rendered,
   type RenderedImage,
 } from "../lib/api/render";
@@ -35,10 +37,13 @@ import {
 } from "../lib/api/capture";
 import { ApiError, on, onWindow, send } from "../lib/api/core";
 import { output_copy, output_save, output_save_as } from "../lib/api/output";
+import { permissions_open_settings } from "../lib/api/permissions";
 import { record_setup } from "../lib/api/record";
+import { send_copy_path, send_list_targets, send_to_app, type SendTargets } from "../lib/api/send";
 import { output_save_as_rendered } from "../lib/api/render";
 import { upload_capture } from "../lib/api/upload";
-import { pin_open } from "../lib/api/windows";
+import { pin_open, window_open_settings } from "../lib/api/windows";
+import { can } from "../lib/platform";
 import { CAPTURE_CLOSED, CAPTURE_STARTED, OVERLAY_SELECTION_ENDED, OVERLAY_SELECTION_STARTED } from "../lib/events";
 import { t, type Key } from "../lib/i18n";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
@@ -99,6 +104,11 @@ const cursor = ref("crosshair");
 const heldElsewhere = ref<number | null>(null);
 const view = reactive({ w: window.innerWidth, h: window.innerHeight });
 const loupeShown = ref(false);
+/** The open send list (⌘↩, Send) with what it lists, and where it stands. */
+const sendList = shallowRef<SendTargets | null>(null);
+const sendAt = ref<Point>({ x: -9999, y: -9999 });
+/** The action bar's buttons; Send only where the core can press keys in another app. */
+const actions = computed(() => ACTIONS.filter((a) => a?.id !== "send" || can("sendToApp")));
 
 const frameHost = ref<HTMLElement | null>(null);
 const lensHost = ref<HTMLElement | null>(null);
@@ -110,6 +120,7 @@ const chipEl = ref<HTMLElement | null>(null);
 const dimEl = ref<HTMLElement | null>(null);
 const edgeEl = ref<HTMLElement | null>(null);
 const sizeEl = ref<HTMLElement | null>(null);
+const sendListEl = ref<InstanceType<typeof SendList> | null>(null);
 const lineH = ref<HTMLElement | null>(null);
 const lineV = ref<HTMLElement | null>(null);
 const loupeEl = ref<HTMLElement | null>(null);
@@ -479,6 +490,7 @@ function resetSelection(): void {
   start = null;
   grab = null;
   pickedWindow = null;
+  closeSend();
   annotations.clear();
 }
 
@@ -614,6 +626,7 @@ function errorText(error: unknown): string {
 
 async function act(id: ActionId): Promise<void> {
   if (id === "close") return close();
+  if (id === "send") return toggleSend();
   if (id === "copy-text") return toggleTextLayer();
   if (id === "record") return record();
   if (id === "upload") {
@@ -700,6 +713,92 @@ function toggleTextLayer(): void {
   if (!frame.value || !sel.value || mode.value !== "sel") return;
   if (!textLayerComponent) return say(t("overlay.notReady"));
   textLayerVisible.value = !textLayerVisible.value;
+}
+
+// ------------------------------------------------------------------------- the send list
+
+/** Send (⌘↩) opens the list of targets beside the action bar, on the side away from the
+ * selection, with the target sent to last chosen; a second press closes it. */
+async function toggleSend(): Promise<void> {
+  if (sendList.value) return closeSend();
+  const f = frame.value;
+  if (!f || !sel.value || busy || mode.value !== "sel" || !can("sendToApp")) return;
+  try {
+    const list = await send_list_targets();
+    if (frame.value?.captureId !== f.captureId || mode.value !== "sel") return;
+    sendList.value = list;
+    await placeSend();
+  } catch (error) {
+    say(errorText(error));
+  }
+}
+
+async function placeSend(): Promise<void> {
+  await nextTick();
+  const el = sendListEl.value?.$el as HTMLElement | undefined;
+  const bar = actionsEl.value;
+  const p = placement.value;
+  if (!el || !bar || !p) return;
+  const w = el.offsetWidth;
+  const h = el.offsetHeight;
+  const right = p.actions.x + bar.offsetWidth + 8;
+  const left = p.actions.x - 8 - w;
+  // The far side is the bar's outer one; a bar inside the selection prefers the right as well.
+  const fitsRight = right + w <= view.w - 8;
+  const fitsLeft = left >= 8;
+  const x = p.aSide === "left" ? (fitsLeft ? left : right) : fitsRight ? right : fitsLeft ? left : clamp(right, 8, view.w - 8 - w);
+  const button = bar.querySelector<HTMLElement>('.g-btn[data-id="send"]');
+  const y = p.actions.y + (button ? button.parentElement!.offsetTop + button.offsetTop : 0) - 6;
+  sendAt.value = { x: Math.round(x), y: Math.round(clamp(y, 8, view.h - 8 - h)) };
+}
+
+function closeSend(): void {
+  sendList.value = null;
+  sendAt.value = { x: -9999, y: -9999 };
+}
+
+// The list belongs to the selection it opened for: a moved or redrawn selection closes it.
+watch(sel, () => {
+  if (sendList.value) closeSend();
+});
+
+/** Sends the selection to the target, or copies its path (`target` null). With drawings the page
+ * renders the selection, as Copy does. The capture closes once the target is known to be
+ * sendable; a missing target leaves it open and says so. */
+async function sendSelection(target: string | null): Promise<void> {
+  const f = frame.value;
+  const r = sel.value;
+  if (!f || !r || busy || mode.value !== "sel") return;
+  closeSend();
+  busy = true;
+  const selection = { captureId: f.captureId, displayId, rect: { x: r.x, y: r.y, width: r.w, height: r.h } };
+  try {
+    engine.finishText();
+    const rendered = renderedSelection(f, r);
+    if (rendered) await send_rendered(rendered, target);
+    else if (target) await send_to_app({ kind: "selection", selection }, target);
+    else await send_copy_path({ kind: "selection", selection });
+  } catch (error) {
+    say(errorText(error));
+  } finally {
+    busy = false;
+  }
+}
+
+/** Copy path (⌥⌘C) works without the list, and everywhere. */
+const copyPath = () => sendSelection(null);
+const sendTo = (bundleId: string) => sendSelection(bundleId);
+
+/** Edit targets… and the Accessibility note leave the capture for Settings › Output or for
+ * System Settings, which would open under the overlay. */
+function editTargets(): void {
+  close();
+  void window_open_settings("output").catch((error) => console.warn("window_open_settings", error));
+}
+
+function openAccessibility(): void {
+  close();
+  void permissions_open_settings("accessibility").catch((error) => console.warn("permissions_open_settings", error));
 }
 
 /** Upload (⌘U): the selection, or its rendering with the drawings, once the provider is checked
@@ -802,6 +901,8 @@ function onMouseDown(e: MouseEvent): void {
   if (e.button !== 0 || !frame.value) return;
   const p = point(e);
   e.preventDefault();
+  // A press beside the send list only closes it.
+  if (sendList.value) return closeSend();
 
   if (mode.value === "sel" && sel.value) {
     const fp = toFrame(p);
@@ -1003,6 +1104,17 @@ function onKeyDown(e: KeyboardEvent): void {
   if (!frame.value || uploadAsk.value || e.defaultPrevented) return;
   // A text being typed takes its own keys.
   if (e.target instanceof HTMLElement && e.target.isContentEditable) return;
+  if (sendList.value) {
+    // Esc and Tab only close the send list; ↑↓, Return and 1–9 are its own.
+    if (e.key === "Escape" || e.key === "Tab") {
+      e.preventDefault();
+      return closeSend();
+    }
+    if (sendListEl.value?.key(e)) {
+      e.preventDefault();
+      return;
+    }
+  }
   if (e.key === "Escape") {
     e.preventDefault();
     // Esc first ends a drawing gesture or drops the selected object, then hides the text layer,
@@ -1042,6 +1154,18 @@ function onKeyDown(e: KeyboardEvent): void {
   if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key.toLowerCase() === "o") {
     e.preventDefault();
     void handOff();
+    return;
+  }
+  // ⌘↩ opens the send list (macOS only), before Return copies. ⌥⌘C copies the path; ⌥ turns
+  // the key's character into another one ("ç"), so the key is read by its code.
+  if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+    e.preventDefault();
+    if (!e.shiftKey && !e.altKey && can("sendToApp")) void act("send");
+    return;
+  }
+  if ((e.metaKey || e.ctrlKey) && e.altKey && !e.shiftKey && e.code === "KeyC") {
+    e.preventDefault();
+    void copyPath();
     return;
   }
   if (e.key === "Enter") {
@@ -1202,6 +1326,20 @@ onUnmounted(() => {
         :style="at(h)"
       />
       <div v-if="sizeShown" ref="sizeEl" class="g-size o-float o-moving"><span>0</span><span class="g-size-x">×</span><span>0</span></div>
+      <SendList
+        v-if="sendList"
+        ref="sendListEl"
+        class="o-float o-sendlist"
+        :style="{ ...at(sendAt), position: 'absolute' }"
+        :targets="sendList.targets"
+        :last="sendList.last"
+        :can-paste="sendList.canPaste"
+        edit
+        @copy-path="copyPath"
+        @send="sendTo"
+        @edit="editTargets"
+        @permission="openAccessibility"
+      />
       <!-- Mount point of the text recognition layer (src/ocr/TextLayer.vue); its context comes
            from `provide(TEXT_LAYER)` above. -->
       <div v-if="textLayerComponent && hasSel && mode === 'sel'" class="o-textlayer">
@@ -1290,10 +1428,18 @@ onUnmounted(() => {
       :style="at(placement?.actions ?? { x: -9999, y: -9999 })"
       @mousedown.stop
     >
-      <template v-for="(item, i) in ACTIONS" :key="item ? item.id : `d${i}`">
+      <template v-for="(item, i) in actions" :key="item ? item.id : `d${i}`">
         <span v-if="!item" class="g-divider" role="separator" />
         <span v-else class="g-tipwrap">
-          <button type="button" class="g-btn" :data-id="item.id" :aria-label="t(item.label)" @click="act(item.id)">
+          <button
+            type="button"
+            class="g-btn"
+            :data-id="item.id"
+            :aria-label="t(item.label)"
+            :aria-expanded="item.id === 'send' ? !!sendList : undefined"
+            :data-state="item.id === 'send' && sendList ? 'pressed' : undefined"
+            @click="act(item.id)"
+          >
             <GIcon :name="item.icon" />
           </button>
           <span class="g-tip" role="tooltip" :data-state="allTips ? 'show' : undefined">{{ t(item.label) }}<kbd class="g-kbd">{{ item.key }}</kbd></span>
@@ -1349,6 +1495,9 @@ onUnmounted(() => {
 }
 .notice {
   bottom: 168px;
+}
+.o-sendlist {
+  z-index: 13;
 }
 .o-textlayer {
   position: absolute;

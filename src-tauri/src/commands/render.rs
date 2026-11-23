@@ -68,6 +68,9 @@ pub struct RenderHeader {
     /// still renders; its outputs only leave the last area as it was.
     #[serde(default)]
     pub area: Option<RenderedArea>,
+    /// For `send_rendered`: the bundle identifier of the target to send to; none copies the path.
+    #[serde(default)]
+    pub send_target: Option<String>,
 }
 
 /// A rectangle in the source's pixels. The numbers are `f64` so that a fractional value from the
@@ -404,6 +407,25 @@ pub async fn output_save_as_rendered(app: AppHandle, request: Request<'_>) -> Co
         deliver(ready, |origin, frame, front_app| {
             crate::output::save_frame(&app, origin, frame, front_app, Some(&target))
         })
+    })
+    .await
+}
+
+/// Sends the overlay's rendering with drawings to an app of Settings › Output (Send to app, ⌘↩
+/// with drawings), or copies its file's path when the header names no target (⌥⌘C). The capture
+/// closes; a target that cannot be sent to (`not_found`, `not_implemented`) leaves it open, as a
+/// send without drawings does. Body: RGBA bytes; header: `x-glimpsfy-render` with `sendTarget`.
+#[tauri::command]
+pub async fn send_rendered(app: AppHandle, request: Request<'_>) -> CommandResult<super::send::Sent> {
+    let (header, pixels) = read_rendered(&request)?;
+    if !matches!(header.source, RenderSource::Capture { .. }) {
+        return Err(CommandError::invalid("only the overlay sends a rendered image"));
+    }
+    off_main(move || {
+        let target = header.send_target.as_deref().map(|id| crate::send::target(&app, id)).transpose()?;
+        let ready = prepare(&app, header, pixels, Some(CloseReason::Copied), true)?;
+        let origin = ready.output_origin(&app);
+        crate::send::send_pixels(&app, ready.frame, origin, target)
     })
     .await
 }

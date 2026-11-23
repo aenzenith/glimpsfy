@@ -8,6 +8,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { ApiError, call, type ErrorCode } from "./core";
 import type { CaptureId, ColorSpace, DisplayId } from "./capture";
 import type { OutputDone } from "./output";
+import type { Sent } from "./send";
 import type { ProviderId, UploadStarted } from "./upload";
 
 /** To the editor window: a new image is open. Payload: `EditorImage`. */
@@ -78,6 +79,10 @@ export const output_stage_rendered = (image: RenderedImage) => rendered<string>(
  * admits it; from the overlay it then closes the capture. Check first with `prepareUpload`. */
 export const upload_capture_rendered = (image: RenderedImage, providerId: ProviderId | null) =>
   rendered<UploadStarted>("upload_capture_rendered", image, providerId);
+/** Sends the overlay's rendering to the target whose bundle identifier is `sendTarget`, or copies
+ * its file's path when it is `null`; the capture closes. */
+export const send_rendered = (image: RenderedImage, sendTarget: string | null) =>
+  rendered<Sent>("send_rendered", image, null, { sendTarget });
 
 /** Opens an image file in the editor window (a history entry gives its id). */
 export const editor_open = (path: string, entryId: string | null = null) => call<EditorImage>("editor_open", { path, entryId });

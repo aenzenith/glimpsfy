@@ -1,6 +1,6 @@
 <script setup lang="ts">
-// Settings › Output: where captures go and how they are named and encoded, window captures, and
-// the history's retention, size and clearing.
+// Settings › Output: where captures go and how they are named and encoded, the apps Send goes to
+// (macOS), window captures, and the history's retention, size and clearing.
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 
 import ConfirmDialog from "../../components/ConfirmDialog.vue";
@@ -13,10 +13,12 @@ import SwitchControl from "../../components/SwitchControl.vue";
 import { history_clear, history_usage, onHistoryChanged, type HistoryUsage } from "../../lib/api/history";
 import { settings_preview_name, type NamePreview, type TemplateProblem } from "../../lib/api/settings";
 import { t } from "../../lib/i18n";
+import { can } from "../../lib/platform";
 import type { HistoryRetention, ImageFormat, RetinaScale, Settings, WindowBackground } from "../../lib/settings";
 import { update } from "../store";
 import { describeError, formatBytes, formatCount, isNotImplemented, uid } from "../text";
 import FolderRow from "./FolderRow.vue";
+import SendTargets from "./SendTargets.vue";
 
 const props = defineProps<{ settings: Settings }>();
 const o = computed(() => props.settings.output);
@@ -296,6 +298,8 @@ function cancelClear(): void {
       <SwitchControl :id="ids.copy" :model-value="o.copyAfterSave" @update:model-value="(v) => update((s) => (s.output.copyAfterSave = v))" />
     </FormRow>
   </div>
+
+  <SendTargets v-if="can('sendToApp')" :settings="settings" />
 
   <SectionHead :title="t('settings.output.headWindows')" />
   <div class="g-group">

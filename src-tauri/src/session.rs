@@ -670,7 +670,7 @@ fn start_direct(app: &AppHandle, kind: Direct, at: Instant) -> CommandResult<()>
                 ));
                 let action = direct_action(app.state::<AppState>().settings.get().general.after_selection);
                 // A failure is reported by `deliver_many` itself (event and toast).
-                let _ = output::deliver_many(&app, images, action);
+                let _ = output::deliver_many(&app, images, action, output::Report::ALL);
             }
             Ok(None) => {
                 trace::log("[glimpsfy] the last area's display is gone or resized; an area capture starts instead");
