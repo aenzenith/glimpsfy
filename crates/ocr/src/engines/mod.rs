@@ -3,16 +3,13 @@
 
 use std::sync::Arc;
 
-#[cfg(target_os = "windows")]
-use glimpsfy_capture::Frame;
-
-#[cfg(target_os = "windows")]
-use crate::{CancelToken, CodeResult, LanguageInfo, OcrError, RawText, ReadOptions, Result as OcrResultAlias};
 use crate::{EngineId, OcrEngine, OcrError as Error, Result};
 
 pub mod ppocr;
 #[cfg(target_os = "macos")]
 pub mod vision;
+#[cfg(target_os = "windows")]
+pub mod windows;
 
 /// The engine Settings starts with on this platform: Vision on macOS, Windows.Media.Ocr on
 /// Windows and PP-OCR elsewhere.
@@ -20,7 +17,7 @@ pub fn default_engine() -> Arc<dyn OcrEngine> {
     #[cfg(target_os = "macos")]
     let engine: Arc<dyn OcrEngine> = Arc::new(vision::VisionEngine);
     #[cfg(target_os = "windows")]
-    let engine: Arc<dyn OcrEngine> = Arc::new(WindowsOcrEngine);
+    let engine: Arc<dyn OcrEngine> = Arc::new(windows::WindowsOcrEngine);
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     let engine: Arc<dyn OcrEngine> = Arc::new(ppocr::PpOcrEngine::default());
     engine
@@ -40,9 +37,8 @@ pub fn available_engines() -> Vec<EngineId> {
     .to_vec()
 }
 
-/// The engines that read text in this build, the default first. PP-OCR stays out until its
-/// inference is written ([`ppocr::INFERENCE`]), whatever the `ppocr` feature says, because its
-/// engine stops after the model check.
+/// The engines that read text in this build, the default first. PP-OCR is among them when the
+/// build has its inference ([`ppocr::INFERENCE`]), which comes with the `ppocr` feature.
 pub fn ready_engines() -> Vec<EngineId> {
     available_engines().into_iter().filter(|id| *id != EngineId::PpOcr || ppocr::INFERENCE).collect()
 }
@@ -53,7 +49,7 @@ pub fn engine(id: EngineId) -> Result<Arc<dyn OcrEngine>> {
         #[cfg(target_os = "macos")]
         EngineId::Vision => Ok(Arc::new(vision::VisionEngine)),
         #[cfg(target_os = "windows")]
-        EngineId::WindowsMediaOcr => Ok(Arc::new(WindowsOcrEngine)),
+        EngineId::WindowsMediaOcr => Ok(Arc::new(windows::WindowsOcrEngine)),
         #[cfg(feature = "ppocr")]
         EngineId::PpOcr => Ok(Arc::new(match crate::models::shared_store() {
             Some(store) => ppocr::PpOcrEngine::new(store),
@@ -61,29 +57,5 @@ pub fn engine(id: EngineId) -> Result<Arc<dyn OcrEngine>> {
         })),
         #[allow(unreachable_patterns)]
         other => Err(Error::EngineUnavailable(other)),
-    }
-}
-
-/// Reads text with the engine built into Windows (milestone 7).
-#[cfg(target_os = "windows")]
-#[derive(Clone, Copy, Debug, Default)]
-pub struct WindowsOcrEngine;
-
-#[cfg(target_os = "windows")]
-impl OcrEngine for WindowsOcrEngine {
-    fn id(&self) -> EngineId {
-        EngineId::WindowsMediaOcr
-    }
-
-    fn read(&self, _image: &Frame, _options: &ReadOptions, _cancel: &CancelToken) -> OcrResultAlias<RawText> {
-        Err(OcrError::NotImplemented("text recognition with Windows.Media.Ocr"))
-    }
-
-    fn supported_languages(&self) -> OcrResultAlias<Vec<LanguageInfo>> {
-        Err(OcrError::NotImplemented("the language list of Windows.Media.Ocr"))
-    }
-
-    fn detect_codes(&self, _image: &Frame, _cancel: &CancelToken) -> OcrResultAlias<Vec<CodeResult>> {
-        Err(OcrError::NotImplemented("code detection on Windows"))
     }
 }

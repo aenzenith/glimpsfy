@@ -479,10 +479,35 @@ fn classify_flanks(segments: &[Segment], left: &[usize], right: &[usize]) -> Gut
             .count();
         hits as f64 / from.len() as f64
     };
-    if partnered(&left, &right) >= 0.6 && partnered(&right, &left) >= 0.6 {
+    if partnered(&left, &right) >= 0.6 && partnered(&right, &left) >= 0.6 && same_pitch(segments, &left, &right) {
         Gutter::Table
     } else {
         Gutter::Column
+    }
+}
+
+/// The steps between rows a side needs before its row spacing is compared.
+const MIN_PITCH_STEPS: usize = 4;
+/// How far the row spacings of a table's two sides may differ, as a share of the larger.
+const PITCH_TOLERANCE: f64 = 0.08;
+
+/// Whether the rows on both sides of a gap follow each other at the same distance, as the rows of
+/// a table do. A sidebar's rows have a spacing of their own and drift in and out of line with the
+/// content beside them, so that most of them still overlap a row there (an editor's file tree at
+/// 22 px beside its code at 19 px). Sides with too few rows to measure count as alike.
+fn same_pitch(segments: &[Segment], left: &[usize], right: &[usize]) -> bool {
+    let pitch = |ids: &[usize]| {
+        let mut centers: Vec<f64> = ids.iter().map(|&i| segments[i].bounds.center_y()).collect();
+        centers.sort_by(f64::total_cmp);
+        let mut steps: Vec<f64> = centers.windows(2).map(|pair| pair[1] - pair[0]).collect();
+        if steps.len() < MIN_PITCH_STEPS {
+            return None;
+        }
+        median(&mut steps)
+    };
+    match (pitch(left), pitch(right)) {
+        (Some(a), Some(b)) => (a - b).abs() <= PITCH_TOLERANCE * a.max(b),
+        _ => true,
     }
 }
 

@@ -1,9 +1,19 @@
-//! Measures the character error rate of the default engine over the sample set in
-//! `tests/samples`, with and without each preparation step and with several language choices.
+//! Measures the character error rate of an engine over the sample set in `tests/samples`, with
+//! and without each preparation step and with several language choices.
 //!
 //! ```sh
-//! cargo run -p glimpsfy-ocr --example accuracy --release           # every table
-//! cargo run -p glimpsfy-ocr --example accuracy --release -- code   # one sample, with its text
+//! cargo run -p glimpsfy-ocr --example accuracy --release             # every table, default engine
+//! cargo run -p glimpsfy-ocr --example accuracy --release -- code     # one sample, with its text
+//! cargo run -p glimpsfy-ocr --example accuracy --release -- --summary  # error and time per sample
+//! ```
+//!
+//! PP-OCR needs the `ppocr` feature and a folder with its model. `--download` fetches a model of
+//! the reviewed table into that folder through the crate's own download, which is the one thing
+//! here that touches the network, and only when it is asked for:
+//!
+//! ```sh
+//! cargo run -p glimpsfy-ocr --features ppocr --example accuracy --release -- \
+//!     --engine ppocr --models /tmp/models --download ppocr-latin --summary
 //! ```
 //!
 //! The error rate is the edit distance between the recognised text and the expected text,
@@ -16,7 +26,66 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use glimpsfy_capture::{Frame, PhysicalSize, PixelFormat};
-use glimpsfy_ocr::{default_engine, recognize, CancelToken, LanguageTag, OcrRequest, Preparation};
+use glimpsfy_ocr::models::ModelStore;
+use glimpsfy_ocr::{
+    default_engine, recognize, CancelToken, EngineId, LanguageTag, OcrEngine, OcrRequest, PpOcrEngine, Preparation,
+};
+
+/// What the command line asked for.
+struct Arguments {
+    engine: Arc<dyn OcrEngine>,
+    summary: bool,
+    sample: Option<String>,
+}
+
+fn arguments() -> Arguments {
+    let mut args = std::env::args().skip(1);
+    let (mut engine, mut models, mut download, mut summary, mut sample) = (None, None, None, false, None);
+    let value = |args: &mut dyn Iterator<Item = String>, flag: &str| {
+        args.next().unwrap_or_else(|| {
+            eprintln!("{flag} needs a value");
+            std::process::exit(2)
+        })
+    };
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--engine" => engine = Some(value(&mut args, "--engine")),
+            "--models" => models = Some(PathBuf::from(value(&mut args, "--models"))),
+            "--download" => download = Some(value(&mut args, "--download")),
+            "--summary" => summary = true,
+            _ => sample = Some(arg),
+        }
+    }
+    let store = models.map(ModelStore::new);
+    if let Some(id) = download {
+        let store = store.as_ref().unwrap_or_else(|| {
+            eprintln!("--download needs --models <folder>");
+            std::process::exit(2)
+        });
+        let started = Instant::now();
+        store.download(&id, &mut |_| {}, &CancelToken::new(), &|| true).expect("the model downloads");
+        eprintln!("{id} is in {} after {:?}", store.root().display(), started.elapsed());
+    }
+    let engine: Arc<dyn OcrEngine> = match engine.as_deref() {
+        None | Some("default") => default_engine(),
+        Some("ppocr") => match store {
+            Some(store) => Arc::new(PpOcrEngine::new(store)),
+            None => {
+                eprintln!("--engine ppocr needs --models <folder>");
+                std::process::exit(2)
+            }
+        },
+        Some("vision") => glimpsfy_ocr::engine(EngineId::Vision).expect("Vision exists on this platform"),
+        Some("windows") => {
+            glimpsfy_ocr::engine(EngineId::WindowsMediaOcr).expect("Windows.Media.Ocr exists on this platform")
+        }
+        Some(other) => {
+            eprintln!("unknown engine {other}: default, ppocr, vision or windows");
+            std::process::exit(2)
+        }
+    };
+    Arguments { engine, summary, sample }
+}
 
 struct Variant {
     name: &'static str,
@@ -100,7 +169,7 @@ fn language_variants() -> Vec<Variant> {
 }
 
 fn main() {
-    let only = std::env::args().nth(1);
+    let Arguments { engine, summary, sample: only } = arguments();
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/samples");
     let mut samples: Vec<PathBuf> = std::fs::read_dir(&dir)
         .expect("the sample folder exists")
@@ -108,14 +177,36 @@ fn main() {
         .filter(|p| p.extension().is_some_and(|e| e == "png") && p.with_extension("txt").exists())
         .collect();
     samples.sort();
-    let engine = default_engine();
 
     if let Some(name) = only {
         let path = dir.join(format!("{name}.png"));
-        for variant in variants().iter().chain(language_variants().iter()) {
+        let (all, languages) = (variants(), language_variants());
+        let list: Vec<&Variant> =
+            if summary { all.iter().take(1).collect() } else { all.iter().chain(languages.iter()).collect() };
+        for variant in list {
             let (text, cer, ms) = run(&*engine, &path, variant);
             println!("--- {} · CER {:.2} % · {} ms\n{}\n", variant.name, cer * 100.0, ms, text);
         }
+        return;
+    }
+
+    if summary {
+        // The first reading loads the engine (PP-OCR builds its sessions), so it is timed apart.
+        let default = &variants()[0];
+        let started = Instant::now();
+        run(&*engine, &samples[0], default);
+        println!("\n## {:?}, default preparation (first reading {} ms)\n", engine.id(), started.elapsed().as_millis());
+        println!("| Sample | Pixels | Accuracy % | Time ms |\n|---|---:|---:|---:|");
+        let (mut sum, mut time) = (0.0, 0);
+        for path in &samples {
+            let name = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+            let size = glimpsfy_ocr::load_image(path).expect("the sample loads").size;
+            let (_, cer, ms) = run(&*engine, path, default);
+            sum += cer;
+            time += ms;
+            println!("| {name} | {} × {} | {:.1} | {ms} |", size.width, size.height, (1.0 - cer) * 100.0);
+        }
+        println!("| **mean / total** | | **{:.2}** | **{time}** |", (1.0 - sum / samples.len() as f64) * 100.0);
         return;
     }
 

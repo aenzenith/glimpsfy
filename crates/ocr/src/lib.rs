@@ -2,8 +2,8 @@
 //!
 //! "Copy text", the selectable text layer over a capture, the history's search and smart
 //! redaction all read [`OcrResult`], so they work the same with every engine. The engines are
-//! Vision on macOS (milestone 3), Windows.Media.Ocr on Windows (milestone 7) and PP-OCR on ONNX
-//! Runtime everywhere (the default on Linux, milestone 8).
+//! Vision on macOS (milestone 3), Windows.Media.Ocr on Windows (milestone 7) and PP-OCR on RTen
+//! everywhere (the default on Linux, milestone 8).
 //!
 //! # How a recognition runs
 //!
@@ -55,6 +55,8 @@ use std::sync::Arc;
 use glimpsfy_capture::{CaptureError, Frame, PhysicalSize};
 use serde::{Deserialize, Serialize};
 
+#[cfg(not(target_os = "macos"))]
+pub mod barcodes;
 mod codes;
 mod engines;
 pub mod entities;
@@ -69,7 +71,7 @@ pub use codes::link_for;
 #[cfg(target_os = "macos")]
 pub use engines::vision::VisionEngine;
 #[cfg(target_os = "windows")]
-pub use engines::WindowsOcrEngine;
+pub use engines::windows::WindowsOcrEngine;
 pub use engines::{available_engines, default_engine, engine, ppocr::PpOcrEngine, ready_engines};
 pub use entities::{find_entities, Entity, EntityBox, EntityDate, EntityKind};
 pub use image::{decode_image_as, load_image, load_image_as};
@@ -146,7 +148,7 @@ pub enum EngineId {
     Vision,
     /// The engine built into Windows, which reads the languages whose language pack is installed.
     WindowsMediaOcr,
-    /// PP-OCR models run on ONNX Runtime on every platform, with one model download per script.
+    /// PP-OCR models run on RTen on every platform, with one model download per script.
     PpOcr,
 }
 
@@ -411,5 +413,20 @@ pub trait OcrEngine: Send + Sync {
     /// asks after the layout step, because the engines do not all report a language.
     fn dominant_language(&self, _text: &str, _candidates: &[LanguageTag]) -> Option<LanguageTag> {
         None
+    }
+
+    /// Whether [`ReadOptions::language_correction`] changes what the engine reads. An engine
+    /// without a language model says no, and the pipeline then skips the second reading of code
+    /// without correction, which would only repeat the first.
+    fn corrects_language(&self) -> bool {
+        true
+    }
+
+    /// How much to enlarge `image` before reading it a second time, after the first reading
+    /// gave `raw`, or `None` when one reading is enough. The default is the request's own rule
+    /// ([`prepare::upscale_factor`]); an engine that scales every line to a fixed height before
+    /// reading it gains from the copy only with far smaller text.
+    fn upscale_factor(&self, raw: &RawText, image: &Frame, preparation: &Preparation) -> Option<u32> {
+        prepare::upscale_factor(raw, image, preparation)
     }
 }

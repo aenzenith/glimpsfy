@@ -31,10 +31,11 @@ pub fn recognize(engine: &dyn OcrEngine, request: &OcrRequest) -> Result<OcrResu
     cancel.check()?;
     let mut raw = engine.read(&base, &options, cancel)?;
 
-    // Small text is read again from an enlarged copy, and the better reading wins.
+    // Small text is read again from an enlarged copy, and the better reading wins. What counts as
+    // small is the engine's to say.
     let mut enlarged: Option<(Frame, u32)> = None;
     if preparation.upscale_small_text {
-        if let Some(factor) = prepare::upscale_factor(&raw, &base, preparation) {
+        if let Some(factor) = engine.upscale_factor(&raw, &base, preparation) {
             cancel.check()?;
             let large = prepare::upscaled(&base, factor);
             let again = read_scaled(engine, &large, factor, &options, cancel)?;
@@ -47,8 +48,13 @@ pub fn recognize(engine: &dyn OcrEngine, request: &OcrRequest) -> Result<OcrResu
     cancel.check()?;
     let mut layout = layout::arrange(&raw, &layout_options);
 
-    // Code reads better without the language model, so mostly-code images are read once more.
-    if options.language_correction && preparation.code_without_correction && code_share(&layout) >= CODE_SHARE {
+    // Code reads better without the language model, so mostly-code images are read once more by
+    // an engine that has one.
+    if options.language_correction
+        && preparation.code_without_correction
+        && engine.corrects_language()
+        && code_share(&layout) >= CODE_SHARE
+    {
         options.language_correction = false;
         let again = match &enlarged {
             Some((large, factor)) => read_scaled(engine, large, *factor, &options, cancel)?,

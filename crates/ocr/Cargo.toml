@@ -10,11 +10,10 @@ rust-version.workspace = true
 
 [features]
 default = []
-# Lists the PP-OCR engine. Its ONNX Runtime inference is not written yet (see
-# `src/engines/ppocr.rs`), so the feature adds no dependency today and stays off on every
-# platform; the model management in `src/models` works without it. The runtime (`ort`) joins
-# this feature when the inference lands.
-ppocr = []
+# Lists the PP-OCR engine and builds its inference (`src/engines/ppocr`). The app turns it on for
+# Linux and Windows; macOS ships with Vision and stays without it. The model management in
+# `src/models` works without the feature.
+ppocr = ["dep:rten", "dep:rten-tensor"]
 
 [dependencies]
 glimpsfy-capture.workspace = true
@@ -28,6 +27,11 @@ glimpsfy-models.workspace = true
 regex-lite = "0.1.9"
 # A found date's start and end, in the system's local time without a zone (`src/entities`).
 chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
+# RTen runs the PP-OCR models (`src/engines/ppocr/runtime.rs`): an ONNX runtime in Rust, MIT or
+# Apache-2.0, built from source with no native library and no build-time download. Its default
+# features add ONNX Runtime's contrib operators, which the models do not use.
+rten = { version = "0.28", optional = true, default-features = false, features = ["onnx_format"] }
+rten-tensor = { version = "0.28", optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2.workspace = true
@@ -42,6 +46,23 @@ objc2-vision = { version = "0.3.2", default-features = false, features = ["std",
 objc2-core-video = { version = "0.3.2", default-features = false, features = ["std", "CVBase", "CVBuffer", "CVImageBuffer", "CVPixelBuffer", "CVReturn"] }
 objc2-natural-language = { version = "0.3.2", default-features = false, features = ["std", "NLLanguage", "NLLanguageRecognizer"] }
 
+[target.'cfg(target_os = "windows")'.dependencies]
+# Windows.Media.Ocr (`src/engines/windows.rs`). The versions are the ones Tauri already links.
+windows = { version = "0.62.2", features = ["Foundation", "Globalization", "Graphics_Imaging", "Media_Ocr", "System_UserProfile", "Win32_System_Com", "Win32_System_WinRT"] }
+windows-future = "0.3.2"
+
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+# QR codes and barcodes where Vision does not exist (`src/barcodes.rs`): a ZXing port in Rust,
+# Apache-2.0. Only the decoders are built; image loading, SVG, the encoders and rayon stay out.
+rxing = { version = "0.9.4", default-features = false, features = ["decoders", "multi_barcode_readers", "encoding_rs", "qrcode", "aztec", "datamatrix", "pdf417", "oned"] }
+# `load_image` outside macOS (`src/image.rs`), beside `png`. zune-jpeg is MIT, Apache-2.0 or
+# Zlib and already in the tree through Tauri's `image`; image-webp is the capture crate's.
+zune-jpeg = "0.5.15"
+image-webp = "0.2.4"
+
 [dev-dependencies]
 tempfile.workspace = true
 serde_json.workspace = true
+
+[lints]
+workspace = true
