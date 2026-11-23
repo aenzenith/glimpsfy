@@ -79,7 +79,8 @@ fn only_the_model_download_reaches_the_network() {
             problems.push(format!("{}:{n} uses the HTTP client outside {download}", rel(path)));
         }
     }
-    let source = fs::read_to_string(root.join(download)).expect("the download module exists");
+    // A Windows checkout ends its lines with CRLF; the search below looks for bare newlines.
+    let source = fs::read_to_string(root.join(download)).expect("the download module exists").replace("\r\n", "\n");
     let body_start = source.find("pub(crate) fn fetch(").expect("the download module has `fetch`");
     let body_end = source[body_start..].find("\n}\n").map(|i| body_start + i).expect("`fetch` ends");
     for (offset, _) in source.match_indices("ureq") {

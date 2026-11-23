@@ -543,7 +543,13 @@ fn a_cut_export_keeps_each_kept_frame_once() {
 
     // What the kept parts show: in each, the frame on screen at its start (which may come from
     // before it), then every frame after its start, placed where the part lies in the file.
-    let source_frames = shown_frames(&source);
+    let mut source_frames = shown_frames(&source);
+    // The writer shows the take's last picture once more just before its end too (GStreamer does).
+    let last_shown_twice =
+        source_frames.len() > 1 && source_frames[source_frames.len() - 1].0 == source_frames[source_frames.len() - 2].0;
+    if last_shown_twice {
+        source_frames.pop();
+    }
     assert!(
         source_frames.len() > 100 && source_frames.windows(2).all(|w| w[1].0 > w[0].0 && w[1].1 > w[0].1),
         "the take's frames do not say their numbers: {:?}",
