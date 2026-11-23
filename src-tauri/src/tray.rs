@@ -25,6 +25,7 @@ const CAPTURE_ALL: &str = "capture-all-displays";
 const REPEAT_AREA: &str = "repeat-last-area";
 const CAPTURE_DELAYED: &str = "capture-area-delayed";
 const COPY_TEXT: &str = "copy-text";
+const PICK_COLOR: &str = "pick-color";
 const SCROLL_CAPTURE: &str = "scroll-capture";
 const CANCEL_DELAY: &str = "cancel-delay";
 const DELAY_PREFIX: &str = "delay-";
@@ -93,6 +94,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
         (REPEAT_AREA, word("tray.repeat"), &keys.repeat_last_area),
         (CAPTURE_DELAYED, word("tray.delayed"), &keys.capture_area_delayed),
         (COPY_TEXT, word("tray.copyText"), &keys.copy_text),
+        (PICK_COLOR, word("tray.pickColor"), &keys.pick_color),
     ];
     for (id, text, key) in modes {
         items.push(Box::new(item(app, id, text, key.as_deref())?));
@@ -155,6 +157,7 @@ pub(crate) fn on_menu(app: &AppHandle, id: &str) {
         REPEAT_AREA => Some(CaptureMode::RepeatLastArea),
         CAPTURE_DELAYED => Some(CaptureMode::AreaDelayed),
         COPY_TEXT => Some(CaptureMode::CopyText),
+        PICK_COLOR => Some(CaptureMode::PickColor),
         SCROLL_CAPTURE => Some(CaptureMode::ScrollCapture),
         _ => None,
     };

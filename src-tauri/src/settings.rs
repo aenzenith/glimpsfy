@@ -195,9 +195,13 @@ pub struct Shortcuts {
     /// The ruler over the frozen screen. It comes after the shortcut table's rows in `known_mut`,
     /// so a file from before it that gave its default keys to another action keeps them there.
     pub measure_screen: Option<String>,
+    /// The colour picker: the magnifier alone. It comes after the ruler in `known_mut`, so a
+    /// file from before it that gave ⌥⇧⌘I to another action keeps it there.
+    pub pick_color: Option<String>,
     /// Drawing mode and the spotlight on a take. Their keys are registered only while a take
-    /// records or pauses (`shortcuts::bind_take`). They come last in `known_mut`, so a file from
-    /// before them that gave ⌥⇧⌘D or ⌥⇧⌘L to another action keeps it there.
+    /// records or pauses (`shortcuts::bind_take`). They come after the colour picker in
+    /// `known_mut`, so a file from before them that gave ⌥⇧⌘D or ⌥⇧⌘L to another action keeps
+    /// it there.
     pub draw_on_screen: Option<String>,
     pub spotlight: Option<String>,
     /// Selects an area and goes straight into the scrolling capture; macOS only. It comes last
@@ -229,6 +233,7 @@ impl Default for Shortcuts {
             discard_recording: None,
             open_history: key("Alt+Shift+CommandOrControl+H"),
             measure_screen: key("Alt+Shift+CommandOrControl+G"),
+            pick_color: key("Alt+Shift+CommandOrControl+I"),
             draw_on_screen: key("Alt+Shift+CommandOrControl+D"),
             spotlight: key("Alt+Shift+CommandOrControl+L"),
             scroll_capture: if mac { key("Alt+Shift+Command+S") } else { None },
@@ -259,10 +264,10 @@ impl Shortcuts {
     }
 
     /// The known actions by their names in the file, in the order of the shortcut table and then
-    /// the actions added since (the ruler, drawing, the spotlight and the scrolling capture), so a
-    /// newer action's default never takes the keys an older file gave another row. On a clash that
-    /// no earlier holder decides, the earlier row keeps the key.
-    fn known_mut(&mut self) -> [(&'static str, &mut Option<String>); 17] {
+    /// the actions added since (the ruler, the colour picker, drawing, the spotlight and the
+    /// scrolling capture), so a newer action's default never takes the keys an older file gave
+    /// another row. On a clash that no earlier holder decides, the earlier row keeps the key.
+    fn known_mut(&mut self) -> [(&'static str, &mut Option<String>); 18] {
         [
             ("captureArea", &mut self.capture_area),
             ("captureWindow", &mut self.capture_window),
@@ -278,6 +283,7 @@ impl Shortcuts {
             ("discardRecording", &mut self.discard_recording),
             ("openHistory", &mut self.open_history),
             ("measureScreen", &mut self.measure_screen),
+            ("pickColor", &mut self.pick_color),
             ("drawOnScreen", &mut self.draw_on_screen),
             ("spotlight", &mut self.spotlight),
             ("scrollCapture", &mut self.scroll_capture),
@@ -1336,6 +1342,13 @@ mod tests {
         assert!(clashes_on_disk(&path).is_empty(), "the ruler's default clashed with a key on disk");
         assert_eq!(older.shortcuts.open_history.as_deref(), Some("Alt+Shift+CommandOrControl+G"));
         assert_eq!(older.shortcuts.measure_screen, None);
+
+        // The same for the colour picker's ⌥⇧⌘I, held by the ruler in a file from before it.
+        fs::write(&path, br#"{ "shortcuts": { "measureScreen": "Alt+Shift+CommandOrControl+I" } }"#).unwrap();
+        let older = SettingsStore::open_with(path.clone(), SecretFields::new()).get();
+        assert!(clashes_on_disk(&path).is_empty(), "the colour picker's default clashed with a key on disk");
+        assert_eq!(older.shortcuts.measure_screen.as_deref(), Some("Alt+Shift+CommandOrControl+I"));
+        assert_eq!(older.shortcuts.pick_color, None);
 
         // And for Draw on screen's ⌥⇧⌘D, held by the history row in a file from before it: the
         // new default never silently takes the user's key.

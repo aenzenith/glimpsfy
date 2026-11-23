@@ -156,6 +156,7 @@ const TOOLS: RefRow[] = [
   { name: "settings.shortcuts.overlay.spotlight", caps: ["S"] },
   { name: "settings.shortcuts.overlay.crop", caps: ["C"] },
   { name: "settings.shortcuts.overlay.ruler", caps: ["M"] },
+  { name: "settings.shortcuts.overlay.pickColor", caps: ["I"] },
 ];
 const ACTIONS: RefRow[] = [
   { name: "settings.shortcuts.overlay.copy", caps: ["⌘", "C"] },

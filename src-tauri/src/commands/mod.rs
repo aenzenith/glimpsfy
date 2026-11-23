@@ -9,6 +9,7 @@
 //! the area's `.ts` file, and add a row to the command table in `docs/ARCHITECTURE.md`.
 
 pub mod capture;
+pub mod color;
 pub mod error;
 pub mod history;
 pub mod ocr;
@@ -47,6 +48,10 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Syn
         capture::capture_finish_scroll,
         capture::capture_cancel_scroll,
         capture::capture_cover_scroll,
+        // colour picker
+        color::color_state,
+        color::color_copy,
+        color::color_set_format,
         // output
         output::output_copy,
         output::output_save,

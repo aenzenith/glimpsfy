@@ -130,13 +130,16 @@ export function placeScroll(sel: Rect, view: Size, strip: Size, barMin: number):
   };
 }
 
-/** The loupe sits 20 px off the pointer and flips to the other side near an edge. */
-export function placeLoupe(x: number, y: number, view: Size): { x: number; y: number } {
-  const w = 148;
-  const h = 176;
+/** The loupe (148 × 176, or the colour picker's card at its own `size`) sits 20 px right of and
+ * below the pointer and flips to the other side near an edge. A card too wide or too tall for
+ * either side (the picker's 306 px comparison on a narrow display) stays 8 px inside the screen. */
+export function placeLoupe(x: number, y: number, view: Size, size: Size = { w: 148, h: 176 }): { x: number; y: number } {
+  const { w, h } = size;
   let lx = x + 20;
   let ly = y + 20;
   if (lx + w > view.w - 8) lx = x - 20 - w;
+  if (lx < 8) lx = Math.max(8, Math.min(view.w - 8 - w, x + 20));
   if (ly + h > view.h - 8) ly = y - 20 - h;
+  if (ly < 8) ly = Math.max(8, Math.min(view.h - 8 - h, y - h / 2));
   return { x: Math.round(lx), y: Math.round(ly) };
 }

@@ -58,9 +58,9 @@ export type WindowInfo = {
 export type Selection = { captureId: CaptureId; displayId: DisplayId; rect: LogicalRect };
 
 /** `area`, `window` and `copyText` open the overlay, `ruler` opens it to measure without a
- * selection, and `scrollCapture` opens it for a scrolling capture (macOS); `display`,
- * `allDisplays` and `repeatLastArea` capture and deliver at once; `areaDelayed` counts down,
- * then opens it. */
+ * selection, `pickColor` opens the magnifier alone, and `scrollCapture` opens it for a scrolling
+ * capture (macOS); `display`, `allDisplays` and `repeatLastArea` capture and deliver at once;
+ * `areaDelayed` counts down, then opens it. */
 export type CaptureMode =
   | "area"
   | "window"
@@ -70,6 +70,7 @@ export type CaptureMode =
   | "areaDelayed"
   | "copyText"
   | "ruler"
+  | "pickColor"
   | "scrollCapture";
 
 /** What the overlay does when a selection is finished or a window clicked: stay for annotation,
@@ -84,7 +85,8 @@ export type OverlayWindow = {
   title: string | null;
   rect: LogicalRect;
   cornerRadius: number | null;
-  /** The window keeps itself out of captures; the ruler hatches it and measures nothing there. */
+  /** The window keeps itself out of captures; the ruler hatches it and measures nothing there,
+   * and the colour picker reads nothing there. */
   captureBlocked: boolean;
 };
 

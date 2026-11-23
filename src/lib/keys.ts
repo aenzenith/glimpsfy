@@ -23,6 +23,7 @@ export const SHORTCUT_GROUPS = [
       "repeatLastArea",
       "copyText",
       "measureScreen",
+      "pickColor",
       "scrollCapture",
     ],
   },

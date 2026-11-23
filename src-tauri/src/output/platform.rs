@@ -4,6 +4,15 @@ use tauri::AppHandle;
 
 use crate::commands::error::{CommandError, CommandResult};
 
+/// Puts text on the clipboard: recognised text, a colour from the picker.
+pub fn copy_text(text: &str) -> CommandResult<()> {
+    #[cfg(target_os = "macos")]
+    let copied = crate::macos::copy_text(text);
+    #[cfg(not(target_os = "macos"))]
+    let copied = crate::desktop::copy_text(text);
+    copied.map_err(CommandError::internal)
+}
+
 /// Puts PNG images on the clipboard: one image as `public.png`, several (one per display) as
 /// one pasteboard item each, in order, so an app that takes many pastes them all and an app
 /// that takes one gets the first.

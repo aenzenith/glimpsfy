@@ -70,6 +70,16 @@
     linear-gradient(to right, var(--crosshair-halo) 1px, transparent 1px), linear-gradient(to bottom, var(--crosshair-halo) 1px, transparent 1px);
   background-size: 8px 8px; background-position: -0.5px -0.5px;
 }
+/* at 2x a point is 2 × 2 pixels: every second line is a little stronger and falls on a point's
+   edge, which the colour picker sets with --o-grid-x and --o-grid-y */
+.o-lens[data-scale="2"]::before {
+  opacity: 0.6;
+  background-image:
+    linear-gradient(to right, var(--crosshair-halo) 1px, transparent 1px), linear-gradient(to bottom, var(--crosshair-halo) 1px, transparent 1px),
+    linear-gradient(to right, var(--divider) 1px, transparent 1px), linear-gradient(to bottom, var(--divider) 1px, transparent 1px);
+  background-size: 16px 16px, 16px 16px, 8px 8px, 8px 8px;
+  background-position: var(--o-grid-x, -0.5px) var(--o-grid-y, -0.5px), var(--o-grid-x, -0.5px) var(--o-grid-y, -0.5px), -0.5px -0.5px, -0.5px -0.5px;
+}
 .o-lens::after { content: ""; position: absolute; inset: 0; border-radius: inherit; box-shadow: inset 0 0 0 1px var(--edge-inner); }
 .o-lens-mid { position: absolute; left: 63px; top: 63px; z-index: 2; width: 10px; height: 10px; border: 1px solid var(--handle); box-shadow: 0 0 0 1px var(--edge-outer); }
 .o-loupe-meta { display: flex; align-items: center; gap: var(--space-6); height: 28px; padding: 0 var(--space-4) 0 5px; font: var(--type-num-small); font-variant-numeric: tabular-nums; white-space: nowrap; }

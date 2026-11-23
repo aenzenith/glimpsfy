@@ -9,12 +9,14 @@
 //! - `frames`: the URI scheme that serves frozen frames to the overlays.
 //! - `windows`: the overlay pool, the toast and the ordinary windows.
 //! - `output`: crop, PNG, clipboard and files.
+//! - `colors`: the colour picker's recent colours and format (`colors.json`).
 //! - `settings`, `shortcuts`, `tray`, `permissions`: what their names say.
 //! - `macos`: AppKit glue (panels, levels, pasteboard, display changes).
 //! - `trace`, `dev`: latency marks and the dev-only measurement switches.
 
 mod calendar;
 mod capture_log;
+mod colors;
 pub mod commands;
 mod dev;
 #[cfg(debug_assertions)]

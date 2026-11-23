@@ -976,6 +976,7 @@ function shortTitle(item: Item): string {
       const n = lineCount(toast.text);
       return n === 1 ? t("toast.short.lines.one") : t("toast.short.lines.many", { n });
     }
+    if (toast.kind === "colorCopied") return t("toast.colorCopied");
     if (toast.kind === "subjectCopied") return t("toast.subjectCopied");
     if (toast.kind === "pathCopied") return t("toast.short.pathCopied");
     if (toast.kind === "sent") return sentTitle(toast);
@@ -1002,6 +1003,7 @@ function sentence(item: Item): string {
       const n = lineCount(toast.text);
       return n === 1 ? t("toast.lines.one") : t("toast.lines.many", { n });
     }
+    if (toast.kind === "colorCopied") return t("toast.colorCopied");
     if (toast.kind === "subjectCopied") return t("toast.subjectCopied");
     if (toast.kind === "pathCopied") return t("toast.pathCopied");
     if (toast.kind === "sent") return sentTitle(toast);
@@ -1026,6 +1028,12 @@ function lineCount(text: string | null): number {
   return text.split(/\r?\n/).filter((line) => line.trim()).length || 1;
 }
 
+/** What the colour picker copied and, for a colour, its format: "#6C5CF6 · HEX". */
+function colorLine(toast: Toast): string {
+  const text = toast.text ?? "";
+  return toast.format ? `${text} · ${toast.format}` : text;
+}
+
 /** "3 subjects · transparent PNG" for Copy subject. */
 function subjectsLine(toast: Toast): string {
   const n = toast.subjects ?? 1;
@@ -1048,7 +1056,7 @@ function bytes(n: number): string {
   return `${number(n / 1_000_000, 1)} MB`;
 }
 
-const FORMAT_NAMES = { png: "PNG", jpeg: "JPEG", webp: "WebP", mp4: "MP4", gif: "GIF" } as const;
+const FORMAT_NAMES: Partial<Record<NonNullable<Toast["format"]>, string>> = { png: "PNG", jpeg: "JPEG", webp: "WebP", mp4: "MP4", gif: "GIF" };
 
 function meta(toast: Toast): string {
   const parts = [];
@@ -1257,6 +1265,7 @@ onUnmounted(() => {
     >
       <div class="g-toast-thumb" :data-alpha="item.capture?.kind === 'subjectCopied' || undefined">
         <img v-if="thumbOf(item)" :src="thumbOf(item)!" alt="" draggable="false" />
+        <span v-else-if="item.capture?.swatch" class="swatch" :style="{ background: item.capture.swatch }"></span>
         <span v-else class="thumb-icon"><GIcon :name="placeholderIcon(item)" :size="18" /></span>
         <span v-if="status(item) === 'progress'" class="g-status" data-status="progress">
           <ProgressRing :progress="ringProgress(item)" :label="t(item.capture ? 'toast.send.ring' : item.export ? 'toast.export.ring' : 'toast.upload.ring')" :size="22" />
@@ -1291,6 +1300,14 @@ onUnmounted(() => {
             {{ sentBody(item.capture) }}
           </div>
           <div v-else-if="item.capture.kind === 'subjectCopied'" class="g-toast-body">{{ subjectsLine(item.capture) }}</div>
+          <div
+            v-else-if="item.capture.kind === 'colorCopied'"
+            class="g-toast-body"
+            :data-kind="item.capture.format ? 'mono' : undefined"
+            :title="item.capture.text ?? undefined"
+          >
+            {{ colorLine(item.capture) }}
+          </div>
           <div v-else-if="item.capture.kind === 'textCopied'" class="g-toast-body" :title="item.capture.text ?? undefined">
             {{ quote(item.capture.text) }}
           </div>

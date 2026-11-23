@@ -48,6 +48,7 @@ pub enum Action {
     MeasureScreen,
     DrawOnScreen,
     Spotlight,
+    PickColor,
     /// Selects an area and goes straight into the scrolling capture (macOS).
     ScrollCapture,
 }
@@ -75,6 +76,7 @@ impl Action {
             Action::RepeatLastArea => CaptureMode::RepeatLastArea,
             Action::CopyText => CaptureMode::CopyText,
             Action::MeasureScreen => CaptureMode::Ruler,
+            Action::PickColor => CaptureMode::PickColor,
             // The scrolling capture streams through ScreenCaptureKit and posts scroll events
             // through Core Graphics, which only the macOS build has.
             Action::ScrollCapture if cfg!(target_os = "macos") => CaptureMode::ScrollCapture,
@@ -192,6 +194,7 @@ pub fn apply(app: &AppHandle, shortcuts: &Shortcuts) -> Vec<ShortcutProblem> {
         (Action::DiscardRecording, &shortcuts.discard_recording),
         (Action::OpenHistory, &shortcuts.open_history),
         (Action::MeasureScreen, &shortcuts.measure_screen),
+        (Action::PickColor, &shortcuts.pick_color),
         (Action::DrawOnScreen, &shortcuts.draw_on_screen),
         (Action::Spotlight, &shortcuts.spotlight),
         (Action::ScrollCapture, &shortcuts.scroll_capture),

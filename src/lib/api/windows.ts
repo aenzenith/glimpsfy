@@ -11,8 +11,18 @@ import type { SentToast } from "./send";
 export type WindowKind = "editor" | "recorder" | "popover" | "history" | "settings" | "firstrun";
 
 /** `diskFull`: a recording stopped because the disk was almost full, and it is saved at `path`.
- * `subjectCopied`: the subjects of a selection reached the clipboard as a transparent PNG; `subjects` says how many. */
-export type ToastKind = "copied" | "saved" | "failed" | "textCopied" | "diskFull" | "pathCopied" | "sent" | "subjectCopied";
+ * `subjectCopied`: the subjects of a selection reached the clipboard as a transparent PNG; `subjects` says how many.
+ * `colorCopied`: the colour picker copied `text`, a colour in `format` or a contrast line, and `swatch` is the colour. */
+export type ToastKind =
+  | "copied"
+  | "saved"
+  | "failed"
+  | "textCopied"
+  | "diskFull"
+  | "pathCopied"
+  | "sent"
+  | "subjectCopied"
+  | "colorCopied";
 
 /** The payload of `toast://show`. The toast page words it in the user's language. */
 export type Toast = {
@@ -31,8 +41,9 @@ export type Toast = {
   message: string | null;
   /** The copied text of a `textCopied` toast. */
   text: string | null;
-  /** The file format of a `copied` or `saved` toast: an image's, or a recording's or export's. */
-  format: "png" | "jpeg" | "webp" | "mp4" | "gif" | null;
+  /** The file format of a `copied` or `saved` toast: an image's, or a recording's or export's; the
+   * colour format of a `colorCopied` toast, none for a contrast line. */
+  format: "png" | "jpeg" | "webp" | "mp4" | "gif" | "HEX" | "RGB" | "HSL" | "P3" | null;
   /** The save folder that could not take the file, so it went to Pictures › Glimpsfy instead. */
   fallbackFrom: string | null;
   /** The capture a `copied` or `saved` toast reports, which its Send button sends; `null` for the
@@ -44,6 +55,8 @@ export type Toast = {
   temporary?: boolean;
   /** How many subjects a `subjectCopied` toast's image holds. */
   subjects?: number | null;
+  /** The CSS colour a `colorCopied` toast shows in place of a thumbnail. */
+  swatch?: string | null;
 };
 
 export const window_open = (kind: WindowKind) => call<void>("window_open", { kind });

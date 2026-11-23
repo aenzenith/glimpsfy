@@ -5,7 +5,10 @@
 // the seam in `annotations.ts` (milestone 2): with drawings, Copy and Save send the rendered
 // selection to the core, and ⌘O hands the capture with its drawings to the editor. The ruler
 // (`ruler/Ruler.vue`) measures the frozen screen instead, opened by its shortcut or by M before a
-// selection; while it is on, the pointer and the keys go to it first. ⌘↓ turns the
+// selection; while it is on, the pointer and the keys go to it first. The colour picker
+// (`ColorCard.vue`, mode "pick") reads colours the same way, opened by its shortcut or by I.
+// Beautify (B11) opens its panel beside the action bar; F turns it on or off for this capture at
+// any moment, and the outputs wait for the style to reach the core (`beautify.ts`). ⌘↓ turns the
 // selection into a scrolling capture (D27, mode "scroll", `ScrollMode.vue`): the frozen frame
 // and the drawings step aside, the selection lets the pointer through to the app under it, and
 // the core stitches what scrolls past; Esc brings the frozen selection back as it was.
@@ -86,6 +89,7 @@ import {
 } from "../lib/sizes";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import * as annotations from "./annotations";
+import { read as readColor } from "../lib/color";
 import { cssColor, drawLens, ensureContext, hex, loadFrame, pixelAt } from "./frame";
 import { place, placeLoupe, type Placement, type Rect } from "./layout";
 import { ACTIONS, TOOLS, WORKING_ACTIONS, actionForChord, toolForKey, type ActionId, type ToolId } from "./tools";
@@ -94,12 +98,14 @@ import { jobName } from "../ocr/text";
 import "./overlay.css";
 import * as modes from "./modes";
 import Ruler from "./ruler/Ruler.vue";
+import ColorCard from "./ColorCard.vue";
 import { pixelSource } from "./ruler/edges";
 import { useOverlayBeautify } from "./beautify";
 import ScrollMode from "./ScrollMode.vue";
 
-/** `scroll` is the scrolling capture of the selection (⌘↓). */
-type Mode = "idle" | "drag" | "sel" | "move" | "resize" | "scroll";
+/** `pick` is the colour picker (`ColorCard.vue`): its shortcut opens it, or I before a selection.
+ * `scroll` is the scrolling capture of the selection (⌘↓). */
+type Mode = "idle" | "drag" | "sel" | "move" | "resize" | "pick" | "scroll";
 type Point = { x: number; y: number };
 
 /** The smallest selection; a smaller drag is a click. */
@@ -155,6 +161,7 @@ const rulerOn = ref(false);
 /** This page holds the keyboard, so the ruler's bar shows here and on no other display. */
 const keyHeld = ref(false);
 const rulerEl = ref<InstanceType<typeof Ruler> | null>(null);
+const pickerEl = ref<InstanceType<typeof ColorCard> | null>(null);
 /** The size menu's choice (`lib/sizes.ts`): free, a locked ratio or a fixed size. It holds for
  * this capture only; every capture starts free. */
 const choice = shallowRef<SizeChoice>(FREE);
@@ -543,7 +550,9 @@ function updateLoupe(p: Point): void {
     lensAt.y = py;
     drawLens(lens, ctx.canvas, px, py, LENS_CELLS);
     const rgb = pixelAt(ctx, pixels, px, py);
-    text(hexEl.value, hex(rgb));
+    // HEX is sRGB: a P3 frame's bytes are converted, and a colour outside sRGB shows with ≈.
+    const reading = readColor({ space: frame.value.colorSpace, bytes: rgb });
+    text(hexEl.value, `${reading.out ? "≈ " : ""}${hex(reading.srgb)}`);
     text(xyEl.value, `${px}, ${py}`);
     if (swatchEl.value) put(swatchEl.value, "background", cssColor(rgb, frame.value.colorSpace));
   }
@@ -642,6 +651,7 @@ async function begin(next: OverlayFrame): Promise<void> {
   void beautify.start(next);
   windowMode.value = next.mode === "window";
   rulerOn.value = next.mode === "ruler";
+  if (next.mode === "pickColor") mode.value = "pick";
   loadedId = null;
   // The core gives the keyboard to the display under the pointer; focus events say the rest.
   keyHeld.value = next.pointer !== null || document.hasFocus();
@@ -667,9 +677,10 @@ async function begin(next: OverlayFrame): Promise<void> {
   pixels = loaded.pixels;
   loadedId = next.captureId;
   annotations.attach(next, ctx.canvas, loaded.pixels, view.w);
+  if (mode.value === "pick") pickerEl.value?.open(next.pointer);
   if (next.pointer) {
     pointer.value = next.pointer;
-    if (!rulerOn.value) updateLoupe(next.pointer);
+    if (!rulerOn.value && mode.value !== "pick") updateLoupe(next.pointer);
   }
   await nextTick();
   if (frame.value?.captureId !== next.captureId) return;
@@ -708,6 +719,30 @@ function openRuler(): void {
   loupeShown.value = false;
   menu.value = null;
   hintFaded.value = true;
+}
+
+/** The frozen frame for the colour picker, which reads its pixels. */
+const frameCanvas = () => ctx;
+const framePixels = () => pixels;
+
+/** I before a selection: the colour picker takes the frozen screen, without the dim. */
+function openPicker(): void {
+  mode.value = "pick";
+  hovered.value = null;
+  loupeShown.value = false;
+  menu.value = null;
+  hintFaded.value = true;
+  pickerEl.value?.open(pointer.value);
+}
+
+/** Esc in a picker that I opened, with no comparison left: back to the area selection. */
+function pickerBack(): void {
+  mode.value = "idle";
+  if (!pointer.value) return;
+  if (windowMode.value) {
+    hovered.value = windowAt(pointer.value);
+    void placeChip();
+  } else updateLoupe(pointer.value);
 }
 
 /** Esc in a ruler that M opened, with no measure left: back to the area selection. */
@@ -1507,6 +1542,7 @@ function onMouseDown(e: MouseEvent): void {
   if (rulerOn.value) return rulerEl.value?.press(p, e);
   // While the page scrolls, a press outside the selection keeps it: the bar ends the mode.
   if (mode.value === "scroll") return;
+  if (mode.value === "pick") return pickerEl.value?.press(e.shiftKey);
   // A press beside the open size menu only closes it.
   if (menu.value) return closeMenu();
   // So does a press beside the send list.
@@ -1576,6 +1612,7 @@ function handleMove(e: MouseEvent): void {
     cursor.value = "default";
     return;
   }
+  if (mode.value === "pick") return pickerEl.value?.move(p);
   if (mode.value !== "sel") annotations.hover(null, reach.value);
 
   switch (mode.value) {
@@ -1718,6 +1755,7 @@ function onMouseUp(e: MouseEvent): void {
 function onMouseLeave(): void {
   flushMove();
   annotations.hover(null, reach.value);
+  if (mode.value === "pick") pickerEl.value?.leave();
   if (mode.value === "idle") {
     loupeShown.value = false;
     pointer.value = null;
@@ -1750,6 +1788,10 @@ function onKeyDown(e: KeyboardEvent): void {
   keyHeld.value = true;
   if (mode.value === "scroll") return scrollKey(e);
   if (rulerOn.value) return rulerKey(e);
+  if (mode.value === "pick") {
+    if (pickerEl.value?.key(e)) e.preventDefault();
+    return;
+  }
   // F turns beautify on or off for this capture at any moment, during a drag too; ⇧F is free.
   if (e.key.toLowerCase() === "f" && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && beautifiable.value) {
     e.preventDefault();
@@ -1807,6 +1849,12 @@ function onKeyDown(e: KeyboardEvent): void {
       return;
     }
     return close();
+  }
+  // I before a selection picks a colour instead.
+  if (e.key.toLowerCase() === "i" && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && mode.value === "idle" && heldElsewhere.value === null) {
+    e.preventDefault();
+    openPicker();
+    return;
   }
   // M before a selection measures the frozen screen instead.
   if (e.key.toLowerCase() === "m" && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && mode.value === "idle" && heldElsewhere.value === null) {
@@ -2004,14 +2052,14 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="overlay" :style="{ cursor }" @mousedown="onMouseDown" @mouseleave="onMouseLeave" @dblclick="onDoubleClick" @wheel.passive="onWheel">
+  <div class="overlay" :style="{ cursor: mode === 'pick' ? 'none' : cursor }" @mousedown="onMouseDown" @mouseleave="onMouseLeave" @dblclick="onDoubleClick" @wheel.passive="onWheel">
     <!-- While the page scrolls, the live screen shows through where the frozen frame was. -->
     <div ref="frameHost" class="frame-host" :style="mode === 'scroll' ? { visibility: 'hidden' } : undefined" />
 
     <template v-if="frame">
       <!-- The dim: bands top, bottom, left and right of the hole, then the corners of a rounded
            hole (`paintDim`). -->
-      <div ref="dimEl" v-show="!rulerOn" class="o-dim" aria-hidden="true">
+      <div ref="dimEl" v-show="!rulerOn && mode !== 'pick'" class="o-dim" aria-hidden="true">
         <i data-band /><i data-band /><i data-band /><i data-band />
         <i data-corner="tl" /><i data-corner="tr" /><i data-corner="bl" /><i data-corner="br" />
       </div>
@@ -2157,6 +2205,19 @@ onUnmounted(() => {
         @settings="openAccessibility"
         @cover="coverScroll"
       />
+      <!-- The colour picker: the cross and the card that follow the pointer while the mode is "pick". -->
+      <ColorCard
+        ref="pickerEl"
+        :frame="frame"
+        :view="view"
+        :ratio="ratio"
+        :canvas="frameCanvas"
+        :pixels="framePixels"
+        :display-id="displayId"
+        @close="close"
+        @back="pickerBack"
+        @say="say"
+      />
       <!-- The ruler over the frozen frame, new for each capture so no measure outlives one. -->
       <Ruler
         v-if="rulerOn"
@@ -2184,7 +2245,7 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <div v-if="frame && !rulerOn" class="g-hint o-float hint" :class="{ 'o-hint-fade': hintFaded }">
+    <div v-if="frame && !rulerOn && mode !== 'pick'" class="g-hint o-float hint" :class="{ 'o-hint-fade': hintFaded }">
       <span>{{ t("overlay.hintDrag") }}</span>
       <span class="g-divider" role="separator" />
       <kbd class="g-kbd">Space</kbd><span class="g-muted">{{ t("overlay.hintWindow") }}</span>

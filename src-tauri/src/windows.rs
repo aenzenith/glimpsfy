@@ -242,6 +242,9 @@ pub enum ToastKind {
     /// Send to app: `send` says which app and how far the paste got, and `send://state` moves the
     /// same toast on to the next phase.
     Sent,
+    /// A colour from the picker reached the clipboard: `text` holds what was copied, `format`
+    /// its format ("HEX", "RGB", "HSL", "P3", none for a contrast line) and `swatch` the colour.
+    ColorCopied,
     /// The subjects of a selection reached the clipboard as a transparent PNG (Copy subject);
     /// `subjects` says how many.
     SubjectCopied,
@@ -268,7 +271,7 @@ pub struct Toast {
     /// The copied text of a `TextCopied` toast.
     pub text: Option<String>,
     /// The file format of a `Copied` or `Saved` toast: "png", "jpeg" or "webp" for a capture,
-    /// "mp4" or "gif" for a recording or an export.
+    /// "mp4" or "gif" for a recording or an export; the colour format of a `ColorCopied` toast.
     pub format: Option<&'static str>,
     /// The save folder that could not take the file, so it went to Pictures › Glimpsfy instead;
     /// the toast names it (capture area).
@@ -280,6 +283,8 @@ pub struct Toast {
     pub send: Option<crate::commands::send::SentToast>,
     /// A copied path points into the inbox, whose files are deleted after a day (history off).
     pub temporary: bool,
+    /// The CSS colour a `ColorCopied` toast shows in place of a thumbnail.
+    pub swatch: Option<String>,
     /// How many subjects a `SubjectCopied` toast's image holds.
     pub subjects: Option<u32>,
 }
@@ -304,6 +309,7 @@ impl Toast {
             capture_id: None,
             send: None,
             temporary: false,
+            swatch: None,
             subjects: None,
         }
     }

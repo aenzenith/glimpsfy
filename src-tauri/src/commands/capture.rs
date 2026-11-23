@@ -53,6 +53,10 @@ pub enum CaptureMode {
     /// Measure the frozen screen in the overlay (the ruler); it delivers nothing and records
     /// nothing in the history.
     Ruler,
+    /// The magnifier alone over the frozen screen, without the dim: a click copies the colour
+    /// under the pointer (`color_copy`), and the capture closes as cancelled, so nothing reaches
+    /// the history.
+    PickColor,
     /// Select an area in the overlay and go straight into the scrolling capture (`scroll.rs`),
     /// as ⌘↓ does from the action bar. macOS only (`scroll_capture`).
     ScrollCapture,
@@ -68,6 +72,7 @@ impl CaptureMode {
                 | CaptureMode::AreaDelayed
                 | CaptureMode::CopyText
                 | CaptureMode::Ruler
+                | CaptureMode::PickColor
                 | CaptureMode::ScrollCapture
         )
     }
@@ -126,7 +131,7 @@ pub struct OverlayWindow {
     pub rect: LogicalRect,
     pub corner_radius: Option<f64>,
     /// The window keeps itself out of captures, so the frame shows what lies behind it; the
-    /// ruler hatches it and measures nothing there.
+    /// ruler hatches it and measures nothing there, and the colour picker reads nothing there.
     pub capture_blocked: bool,
 }
 

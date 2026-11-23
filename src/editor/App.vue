@@ -74,6 +74,7 @@ import ObjectsPanel from "./ObjectsPanel.vue";
 import Overview from "./Overview.vue";
 import SubjectChip from "./SubjectChip.vue";
 import UnsavedSheet from "./UnsavedSheet.vue";
+import { hex as hexOf, read as readColor } from "../lib/color";
 import { GRID_ZOOM, MAX_ZOOM, MIN_ZOOM, TALL, ZOOM_MENU, clampPan, fit, fitWidth, kOf, opening, percentOf, step, zoomAt, type Room, type ZoomMode } from "./view";
 
 /** A handle's hit radius in screen points, as in the overlay. */
@@ -1162,8 +1163,11 @@ function updateReadout(p: { x: number; y: number }): void {
   }
   const i = (y * width + x) * 4;
   const [r, g, b] = [data[i], data[i + 1], data[i + 2]];
-  const hex = `#${[r, g, b].map((v) => v.toString(16).padStart(2, "0")).join("")}`.toUpperCase();
-  const css = s.colorSpace === "display-p3" ? `color(display-p3 ${r / 255} ${g / 255} ${b / 255})` : `rgb(${r} ${g} ${b})`;
+  // HEX is sRGB, as the colour picker writes it: a P3 image's bytes are converted, and a colour
+  // outside sRGB shows with ≈.
+  const reading = readColor({ space: s.colorSpace === "display-p3" ? "display-p3" : "srgb", bytes: [r, g, b] });
+  const hex = `${reading.out ? "≈ " : ""}${hexOf(reading.srgb)}`;
+  const css = reading.css;
   readout.value = { x, y, hex, css };
 }
 

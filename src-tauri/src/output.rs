@@ -26,6 +26,8 @@ pub mod beautify;
 mod naming;
 mod platform;
 
+pub use platform::copy_text;
+
 use std::collections::VecDeque;
 use std::fs;
 use std::path::{Path, PathBuf};

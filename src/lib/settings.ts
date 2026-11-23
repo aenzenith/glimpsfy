@@ -48,6 +48,7 @@ export type Shortcuts = Extra & {
   discardRecording: string | null;
   openHistory: string | null;
   measureScreen: string | null;
+  pickColor: string | null;
   /** Drawing mode and the spotlight; registered only while a take records or pauses. */
   drawOnScreen: string | null;
   spotlight: string | null;

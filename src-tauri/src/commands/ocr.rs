@@ -466,24 +466,11 @@ fn copy(
     if text.trim().is_empty() {
         return Ok(CopyTextResult { text: String::new(), line_count: 0, language });
     }
-    write_clipboard(app, &text)?;
+    crate::output::copy_text(&text)?;
     let mut toast = Toast::new(ToastKind::TextCopied);
     toast.text = Some(text.clone());
     windows::toast(app, display, toast);
     Ok(CopyTextResult { text, line_count, language })
-}
-
-fn write_clipboard(app: &AppHandle, text: &str) -> CommandResult<()> {
-    #[cfg(target_os = "macos")]
-    {
-        let _ = app;
-        crate::macos::copy_text(text).map_err(CommandError::internal)
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        use tauri_plugin_clipboard_manager::ClipboardExt;
-        app.clipboard().write_text(text.to_string()).map_err(|e| CommandError::internal(e.to_string()))
-    }
 }
 
 // ------------------------------------------------------------------------------- the jobs
