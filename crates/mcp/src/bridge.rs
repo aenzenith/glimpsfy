@@ -4,6 +4,7 @@
 use std::io::{self, Read, Write};
 
 /// What the bridge prints when it cannot reach the app.
+#[cfg(target_os = "macos")]
 const UNREACHABLE: &str = "Glimpsfy is not running, or Settings › Agents does not let agents send requests.";
 
 /// Runs the bridge and returns the process's exit code.

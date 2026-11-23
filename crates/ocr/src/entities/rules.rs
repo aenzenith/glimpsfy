@@ -168,6 +168,9 @@ fn links(text: &str) -> Vec<Candidate> {
 
 /// Whether a link written without a scheme ends in a known domain ([`TLDS`]) or starts with
 /// `www.`, so "main.rs" and "README.md" stay file names.
+// Only the NSDataDetector pass (apple.rs, macOS) calls this and the five other items marked the
+// same way; the rules keep them on every platform so their tests run everywhere.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(super) fn known_domain(piece: &str) -> bool {
     let host = piece.split(['/', '?', '#', ':']).next().unwrap_or_default();
     let tld = host.rsplit('.').next().unwrap_or_default().to_ascii_lowercase();
@@ -384,6 +387,7 @@ pub(super) fn labelled_id(text: &str, at: usize) -> bool {
 }
 
 /// Words before a card's expiry ("SKT 12/27", "Valid thru 12/27", "MM/YY").
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 const EXPIRY_LABELS: &[&str] = &[
     "exp",
     "expiry",
@@ -412,6 +416,7 @@ const EXPIRY_LABELS: &[&str] = &[
 /// Whether `range` holds a card's expiry, a month and a two-digit year ("12/27"), rather than a
 /// day: two digits, a slash and two digits after an expiry label, or on the line of a card
 /// number or the line under it.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(super) fn card_expiry(text: &str, range: Range<usize>) -> bool {
     static SHAPE: OnceLock<Regex> = OnceLock::new();
     static CARD: OnceLock<Regex> = OnceLock::new();
@@ -434,6 +439,7 @@ pub(super) fn card_expiry(text: &str, range: Range<usize>) -> bool {
 /// and a day and a month in figures must be the date's, in an order the separator allows (a dot
 /// writes the day first; a slash or a hyphen either way, or a year first). A text without either
 /// ("tomorrow at 9.30") is taken as the detector read it.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(super) fn fits_written(piece: &str, date: NaiveDate) -> bool {
     static FIGURES: OnceLock<Regex> = OnceLock::new();
     let named: Vec<u32> = piece.split(|c: char| !c.is_alphabetic()).filter_map(month_named).collect();
@@ -950,6 +956,7 @@ fn time_after(text: &str, at: usize) -> Option<(usize, (NaiveTime, Option<NaiveT
 
 /// Whether a date NSDataDetector found names a clock time ("14:30", "3 pm", "19 Uhr", "15時"),
 /// which decides between a timed and an all-day event. "27.11" is a day and a month, not a time.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(super) fn has_time(piece: &str) -> bool {
     static CLOCK: OnceLock<Regex> = OnceLock::new();
     static DOT: OnceLock<Regex> = OnceLock::new();
@@ -962,6 +969,7 @@ pub(super) fn has_time(piece: &str) -> bool {
 
 /// Whether a date NSDataDetector found names a day and not only a clock time: "14:02" in a mail's
 /// header or "9:00〜12:00" would otherwise become today's date.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(super) fn names_day(piece: &str) -> bool {
     static CLOCK: OnceLock<Regex> = OnceLock::new();
     let clock = compiled(&CLOCK, || {

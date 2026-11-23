@@ -44,6 +44,10 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
+          # The runner image carries LLVM's libunwind-14-dev, which conflicts with the libunwind-dev
+          # that libgstreamer1.0-dev needs. As a mere dependency apt gives up on it ("held broken
+          # packages"); asked for by name, it swaps the two. Docker's plain 22.04 has no conflict.
+          sudo apt-get install -y --no-install-recommends libunwind-dev
           sed 's/#.*//' tools/linux-check/packages.txt | xargs sudo apt-get install -y --no-install-recommends
 
       # rust-toolchain.toml pins the channel and adds rustfmt and clippy.

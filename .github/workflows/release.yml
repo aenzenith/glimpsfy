@@ -185,6 +185,8 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
+          # As in ci.yml: libunwind-dev by name, so apt swaps out the image's libunwind-14-dev.
+          sudo apt-get install -y --no-install-recommends libunwind-dev
           sed 's/#.*//' tools/linux-check/packages.txt | grep -v -F gstreamer1.0-plugins-ugly \
             | xargs sudo apt-get install -y --no-install-recommends patchelf xdg-utils
 
