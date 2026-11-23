@@ -92,6 +92,8 @@ const image = shallowRef<EditorImage | null>(null);
 const source = shallowRef<ImageSource | null>(null);
 const fileBytes = ref<number | null>(null);
 const fromHistory = ref(false);
+/** A combined image the user has not saved yet, which lives only in this window. */
+const unsavedNew = ref(false);
 const loading = ref(false);
 const busy = ref(false);
 
@@ -160,6 +162,7 @@ const countText = computed(() => (count.value === 1 ? t("editor.count.one") : t(
 const dirty = computed(() => (rev.value, source.value !== null && engine.dirty()));
 const subtitle = computed(() => {
   if (!image.value) return t("editor.noImage");
+  if (unsavedNew.value) return count.value ? `${t("editor.combined.subtitle")} · ${countText.value}` : t("editor.combined.subtitle");
   return dirty.value ? `${t("editor.edited")} · ${countText.value}` : countText.value;
 });
 
@@ -174,6 +177,12 @@ const facts = computed(() => {
   if (!img || !source.value) return t("editor.noImage");
   const { width, height } = source.value.pixels;
   const parts = [`${width} × ${height} px`];
+  // A combined image has no file, so no format or size of one: it says what it was made of.
+  if (img.combinedFrom !== null) {
+    parts.push(t("editor.combined.from", { n: img.combinedFrom }));
+    if (count.value) parts.push(countText.value);
+    return parts.join(" · ");
+  }
   const extension = img.path?.split(".").pop()?.toUpperCase();
   if (extension && extension.length <= 5) parts.push(extension === "JPG" ? "JPEG" : extension);
   if (fileBytes.value !== null) parts.push(size(fileBytes.value));
@@ -493,12 +502,13 @@ async function show(img: EditorImage): Promise<void> {
     source.value = next;
     fileBytes.value = img.encoding === "file" ? buffer.byteLength : null;
     fromHistory.value = img.entryId !== null;
+    unsavedNew.value = img.combinedFrom !== null;
     pngOnce.value = false;
     lastStyle.value = null;
     engine.setTool(null);
-    // Drawings handed over by the overlay are not kept anywhere yet; an edit reopened from the
-    // history is already what its entry holds.
-    engine.load(documentFor(img, width, height), img.document !== null && img.entryId === null);
+    // Drawings handed over by the overlay are not kept anywhere yet, and neither is a combined
+    // image; an edit reopened from the history is already what its entry holds.
+    engine.load(documentFor(img, width, height), (img.document !== null && img.entryId === null) || img.combinedFrom !== null);
     textLayerVisible.value = false;
     snapWords.reset();
     noticeShown.value = false;
@@ -520,9 +530,9 @@ async function show(img: EditorImage): Promise<void> {
  * history entry (`history_open_in_editor` calls `editor_open`). */
 async function incoming(img: EditorImage): Promise<void> {
   if (image.value?.token === img.token || loadingToken === img.token) return;
-  // A file can be opened again, so its question offers Cancel. A capture is already closed and
-  // cannot be refused, so only Save and Don't save remain.
-  if (!expected && !(await settle(t("editor.unsaved.titleNext"), img.path !== null))) {
+  // A file can be opened again, and a combined image made again, so their question offers
+  // Cancel. A capture is already closed and cannot be refused, so only Save and Don't save remain.
+  if (!expected && !(await settle(t("editor.unsaved.titleNext"), img.path !== null || img.combinedFrom !== null))) {
     void editor_close(img.token).catch(() => {});
     return;
   }
@@ -544,6 +554,7 @@ async function openPath(path: string): Promise<void> {
 // ------------------------------------------------------------------------- the question
 
 function unsavedText(): string {
+  if (unsavedNew.value) return t("editor.unsaved.lostCombined");
   const n = count.value;
   const lost = n === 0 ? t("editor.unsaved.lostCrop") : n === 1 ? t("editor.unsaved.lostOne") : t("editor.unsaved.lostOther", { n });
   const keep = !image.value?.path ? t("editor.unsaved.keepNothing") : fromHistory.value ? t("editor.unsaved.keepHistory") : t("editor.unsaved.keepFile");
@@ -596,6 +607,7 @@ async function output(kind: "copy" | "save" | "saveAs"): Promise<boolean> {
     else {
       await (kind === "save" ? output_save_rendered(r) : output_save_as_rendered(r));
       engine.markSaved();
+      unsavedNew.value = false;
     }
     return true;
   } catch (error) {

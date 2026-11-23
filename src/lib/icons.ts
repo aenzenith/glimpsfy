@@ -31,6 +31,19 @@ const ICONS: Record<string, IconDef> = {
     'bring-forward': '<path d="M7.25 7.25h-2a2 2 0 0 0-2 2v5.5a2 2 0 0 0 2 2h5.5a2 2 0 0 0 2-2v-2"/><rect class="fo" x="7.25" y="3.25" width="9.5" height="9.5" rx="2"/><rect x="7.25" y="3.25" width="9.5" height="9.5" rx="2"/>',
     'send-backward': '<path class="fo" d="M7.25 7.25h-2a2 2 0 0 0-2 2v5.5a2 2 0 0 0 2 2h5.5a2 2 0 0 0 2-2v-2H7.25Z"/><path d="M7.25 7.25h-2a2 2 0 0 0-2 2v5.5a2 2 0 0 0 2 2h5.5a2 2 0 0 0 2-2v-2"/><rect x="7.25" y="3.25" width="9.5" height="9.5" rx="2"/>',
 
+    /* combine (design/canvas row 13): the layouts, the alignments across them, and the merged frame.
+       Left, centre and right are top, middle and bottom turned a quarter, as the row draws them. */
+    combine: '<rect x="2.75" y="4.25" width="14.5" height="11.5" rx="2"/><path d="M7.75 4.25v11.5M12.25 4.25v11.5"/>',
+    'layout-row': '<rect x="2.75" y="5.25" width="6.5" height="9.5" rx="1.5"/><rect x="10.75" y="5.25" width="6.5" height="9.5" rx="1.5"/>',
+    'layout-col': '<rect x="5.25" y="2.75" width="9.5" height="6.5" rx="1.5"/><rect x="5.25" y="10.75" width="9.5" height="6.5" rx="1.5"/>',
+    'layout-free': '<rect x="2.75" y="3.25" width="9" height="7" rx="1.5"/><rect x="8.25" y="9.75" width="9" height="7" rx="1.5"/>',
+    'align-top': '<path d="M3 3.25h14"/><rect x="4.75" y="6" width="4.5" height="10.5" rx="1.25"/><rect x="10.75" y="6" width="4.5" height="6.5" rx="1.25"/>',
+    'align-middle': '<path d="M2.5 10h2.25M9.25 10h1.5M15.25 10h2.25"/><rect x="4.75" y="4.25" width="4.5" height="11.5" rx="1.25"/><rect x="10.75" y="6.75" width="4.5" height="6.5" rx="1.25"/>',
+    'align-bottom': '<path d="M3 16.75h14"/><rect x="4.75" y="3.5" width="4.5" height="10.5" rx="1.25"/><rect x="10.75" y="7.5" width="4.5" height="6.5" rx="1.25"/>',
+    'align-left': '<g transform="rotate(-90 10 10)"><path d="M3 3.25h14"/><rect x="4.75" y="6" width="4.5" height="10.5" rx="1.25"/><rect x="10.75" y="6" width="4.5" height="6.5" rx="1.25"/></g>',
+    'align-center': '<g transform="rotate(-90 10 10)"><path d="M2.5 10h2.25M9.25 10h1.5M15.25 10h2.25"/><rect x="4.75" y="4.25" width="4.5" height="11.5" rx="1.25"/><rect x="10.75" y="6.75" width="4.5" height="6.5" rx="1.25"/></g>',
+    'align-right': '<g transform="rotate(-90 10 10)"><path d="M3 16.75h14"/><rect x="4.75" y="3.5" width="4.5" height="10.5" rx="1.25"/><rect x="10.75" y="7.5" width="4.5" height="6.5" rx="1.25"/></g>',
+
     /* -------------------------------------------------------------- actions */
     copy: '<rect x="7" y="7" width="9.5" height="9.5" rx="2.25"/><path d="M13 7V5.75a2.25 2.25 0 0 0-2.25-2.25h-5A2.25 2.25 0 0 0 3.5 5.75v5A2.25 2.25 0 0 0 5.75 13H7"/>',
     /* Send to app: an arrow going into an app's window; Copy path: "~/" in a field, the path as text */

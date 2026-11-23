@@ -49,7 +49,22 @@ export type EditorImage = {
   document: string | null;
   /** The history entry the image is, when the history opened it. */
   entryId: string | null;
+  /** How many captures the history's Combine laid into the image; such an image has no file and
+   * no entry until its first output. */
+  combinedFrom: number | null;
 };
+
+/** What the history's Combine asks for: the combined image's size and each capture's place on
+ * it, in its pixels (`src/history/combine.ts` lays them out). */
+export type CombineRequest = {
+  width: number;
+  height: number;
+  /** Pixels per point of the combined image. */
+  scale: number;
+  background: CombineBackground;
+  pieces: { entryId: string; x: number; y: number; width: number; height: number }[];
+};
+export type CombineBackground = "clear" | "white" | "gray" | "dark";
 
 async function rendered<T>(command: string, image: RenderedImage, providerId: ProviderId | null = null): Promise<T> {
   const header = {
@@ -98,6 +113,9 @@ export const editor_open = (path: string, entryId: string | null = null) => call
 /** Hands the overlay's capture and its annotation document (JSON) to the editor, and closes the capture. */
 export const editor_open_capture = (captureId: CaptureId, displayId: DisplayId, document: string) =>
   call<EditorImage>("editor_open_capture", { captureId, displayId, document });
+/** Lays the history's screenshots onto one new image and opens it in the editor, which tells
+ * the page with `editor://opened`. */
+export const editor_combine = (request: CombineRequest) => call<EditorImage>("editor_combine", { request });
 /** The image the editor shows, if any. */
 export const editor_current = () => call<EditorImage | null>("editor_current");
 /** The editor image's bytes: RGBA rows or the file's own bytes (see `EditorImage.encoding`). */

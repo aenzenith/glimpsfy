@@ -38,6 +38,7 @@ import {
 } from "../lib/api/history";
 import { output_reveal } from "../lib/api/output";
 import { record_open_trim } from "../lib/api/record";
+import { editor_combine, type CombineRequest } from "../lib/api/render";
 import { send_copy_path, send_list_targets, send_to_app, type SendTargets } from "../lib/api/send";
 import { settings_get, settings_set } from "../lib/api/settings";
 import { onUploadDone, onUploadFailed, onUploadProgress, upload_cancel, upload_file, upload_providers } from "../lib/api/upload";
@@ -48,6 +49,8 @@ import { capsText } from "../lib/keys";
 import { can } from "../lib/platform";
 import type { Settings } from "../lib/settings";
 import AppIcon from "./AppIcon.vue";
+import { pieceOf } from "./combine";
+import CombineSheet from "./CombineSheet.vue";
 import { HISTORY, type Actions, type UploadState } from "./context";
 import DeleteSheet from "./DeleteSheet.vue";
 import EmptyState from "./EmptyState.vue";
@@ -118,6 +121,8 @@ const usage = ref<HistoryUsage | null>(null);
 const full = ref<Entry | null>(null);
 const matchIndex = ref(0);
 const sheet = ref<{ ids: EntryId[] } | null>(null);
+/** The combine sheet, with the selection it opened on, in selection order. */
+const combining = ref<{ ids: EntryId[] } | null>(null);
 const busy = ref(false);
 const confirming = ref<
   | { kind: "clear" }
@@ -614,6 +619,27 @@ function exportSelected(ids: EntryId[]): void {
     .catch((e) => failed(e, t("history.action.export")));
 }
 
+/** Opens the combine sheet on the selection; it takes two screenshots at least. */
+function openCombine(ids: EntryId[]): void {
+  const screenshots = ids.filter((id) => {
+    const entry = entryOf(id);
+    return entry && pieceOf(entry);
+  });
+  if (screenshots.length >= 2) combining.value = { ids: [...ids] };
+}
+async function confirmCombine(request: CombineRequest): Promise<void> {
+  busy.value = true;
+  try {
+    // The editor window opens on the result and takes the focus.
+    await editor_combine(request);
+    combining.value = null;
+  } catch (error) {
+    failed(error, t("history.bulk.combine"));
+  } finally {
+    busy.value = false;
+  }
+}
+
 function menuItems(): MenuItem[] {
   const ids = selection.value.ids;
   if (ids.length > 1) {
@@ -621,6 +647,7 @@ function menuItems(): MenuItem[] {
     return [
       { label: links === 1 ? t("history.bulk.copyLink") : t("history.bulk.copyLinks", { n: links }), icon: "link", keys: "⇧⌘L", disabled: !links, run: () => copyLinks(ids) },
       { label: t("history.action.upload"), icon: "upload", keys: "⌘U", run: () => act.upload(ids) },
+      { label: t("history.bulk.combine"), icon: "combine", keys: "⌘J", disabled: !combineOn.value, run: () => openCombine(ids) },
       { label: t("history.action.export"), icon: "save", keys: "⌘E", run: () => exportSelected(ids) },
       "separator",
       { label: t("history.action.deleteMany"), icon: "trash", keys: "⌘⌫", destructive: true, run: () => act.remove(ids) },
@@ -655,6 +682,7 @@ function menuItems(): MenuItem[] {
 
 // ------------------------------------------------------------------------------- the dialogs
 const sheetEntries = computed(() => (sheet.value?.ids ?? []).map((id) => entryOf(id)).filter((e): e is Entry => !!e));
+const combineEntries = computed(() => (combining.value?.ids ?? []).map((id) => entryOf(id)).filter((e): e is Entry => !!e));
 
 async function confirmDelete(options: DeleteOptions): Promise<void> {
   const ids = sheet.value?.ids ?? [];
@@ -780,7 +808,7 @@ function move(key: "ArrowLeft" | "ArrowRight" | "ArrowUp" | "ArrowDown", extend:
 }
 
 function key(event: KeyboardEvent): void {
-  if (sheet.value || confirming.value || menu.value) return;
+  if (sheet.value || combining.value || confirming.value || menu.value) return;
   const target = event.target as HTMLElement;
   const typing = target.matches("input:not([type=range]):not([type=checkbox]), textarea, select");
   const k = event.key.toLowerCase();
@@ -823,6 +851,7 @@ function key(event: KeyboardEvent): void {
   if (cmd && event.shiftKey && k === "l") return run(() => copyLinks(ids));
   if (cmd && !event.shiftKey && k === "u") return run(() => act.upload(ids));
   if (cmd && !event.shiftKey && !event.altKey && k === "p" && one) return run(() => act.pinToScreen(one));
+  if (cmd && !event.shiftKey && !event.altKey && k === "j" && ids.length > 1) return run(() => openCombine(ids));
   if (cmd && event.altKey && event.code === "KeyR" && one) return run(() => act.reveal(one));
   if (cmd && event.shiftKey && k === "s" && one) return run(() => act.saveAs(one));
   if (cmd && event.shiftKey && k === "e" && one && entryOf(one)?.kind === "recording") return run(() => act.trim(one, "gif"));
@@ -996,6 +1025,35 @@ const emptyFilterText = computed(() => {
 });
 const selectionBytes = computed(() => selected.value.reduce((n, i) => n + (i.entry.fileBytes ?? 0), 0));
 const linkCount = computed(() => selected.value.filter((i) => i.entry.hosted).length);
+const combineOn = computed(() => selected.value.filter((i) => pieceOf(i.entry)).length >= 2);
+
+// The bulk bar keeps its labels while they fit: past the window's width Export turns into an
+// icon first and Upload second, each named in its tooltip (design/canvas row 13).
+const floatEl = ref<HTMLElement | null>(null);
+const barEl = ref<HTMLElement | null>(null);
+const squeeze = ref(0);
+let fitting = 0;
+async function fitBar(): Promise<void> {
+  const run = ++fitting;
+  squeeze.value = 0;
+  await nextTick();
+  const room = () => (floatEl.value?.parentElement?.clientWidth ?? Infinity) - 32;
+  while (run === fitting && barEl.value && squeeze.value < 2 && barEl.value.scrollWidth > room()) {
+    squeeze.value += 1;
+    await nextTick();
+  }
+}
+const bodyResize = new ResizeObserver(() => void fitBar());
+watch(
+  floatEl,
+  (now, before) => {
+    if (before?.parentElement) bodyResize.unobserve(before.parentElement);
+    if (now?.parentElement) bodyResize.observe(now.parentElement);
+  },
+  { flush: "post" },
+);
+watch([language, () => selection.value.ids.length, linkCount, combineOn], () => void fitBar(), { flush: "post" });
+onBeforeUnmount(() => bodyResize.disconnect());
 const zoomPercent = computed(() => `${(((zoom.value - 140) / 140) * 100).toFixed(0)}%`);
 </script>
 
@@ -1184,17 +1242,33 @@ const zoomPercent = computed(() => `${(((zoom.value - 140) / 140) * 100).toFixed
         />
 
         <!-- the bulk bar -->
-        <div v-if="multi && !emptyKind" class="hv-float">
-          <div class="g-bar" role="toolbar" :aria-label="t('history.bulk.label')">
+        <div v-if="multi && !emptyKind" ref="floatEl" class="hv-float">
+          <div ref="barEl" class="g-bar" role="toolbar" :aria-label="t('history.bulk.label')">
             <span class="hv-bar-text">{{ t("history.bulk.selected", { n: selection.ids.length }) }}</span>
             <span class="g-divider" role="separator" />
             <button type="button" class="g-button" :disabled="!linkCount" :data-tip="t('history.bulk.copyLinksTip')" data-key="⇧⌘L" @click="copyLinks(selection.ids)">
               <GIcon name="link" :size="16" />{{ linkCount === 1 ? t("history.bulk.copyLink") : t("history.bulk.copyLinks", { n: linkCount }) }}
             </button>
-            <button type="button" class="g-button" :data-tip="t('history.action.upload')" data-key="⌘U" @click="act.upload(selection.ids)">
+            <button v-if="squeeze >= 2" type="button" class="g-btn" :aria-label="t('history.action.upload')" :data-tip="t('history.action.upload')" data-key="⌘U" @click="act.upload(selection.ids)">
+              <GIcon name="upload" />
+            </button>
+            <button v-else type="button" class="g-button" :data-tip="t('history.action.upload')" data-key="⌘U" @click="act.upload(selection.ids)">
               <GIcon name="upload" :size="16" />{{ t("history.action.upload") }}
             </button>
-            <button type="button" class="g-button" :data-tip="t('history.bulk.exportTip')" data-key="⌘E" @click="exportSelected(selection.ids)">
+            <button
+              type="button"
+              class="g-button"
+              :aria-disabled="combineOn ? undefined : 'true'"
+              :data-tip="combineOn ? t('history.bulk.combine') : t('history.bulk.combineOff')"
+              :data-key="combineOn ? '⌘J' : undefined"
+              @click="openCombine(selection.ids)"
+            >
+              <GIcon name="combine" :size="16" />{{ t("history.bulk.combine") }}
+            </button>
+            <button v-if="squeeze >= 1" type="button" class="g-btn" :aria-label="t('history.action.export')" :data-tip="t('history.bulk.exportTip')" data-key="⌘E" @click="exportSelected(selection.ids)">
+              <GIcon name="save" />
+            </button>
+            <button v-else type="button" class="g-button" :data-tip="t('history.bulk.exportTip')" data-key="⌘E" @click="exportSelected(selection.ids)">
               <GIcon name="save" :size="16" />{{ t("history.action.export") }}
             </button>
             <button type="button" class="g-button" data-variant="destructive" :data-tip="t('history.action.delete')" data-key="⌘⌫" @click="act.remove(selection.ids)">
@@ -1233,6 +1307,7 @@ const zoomPercent = computed(() => `${(((zoom.value - 140) / 140) * 100).toFixed
     </div>
 
     <DeleteSheet v-if="sheet && sheetEntries.length" :entries="sheetEntries" :busy="busy" @confirm="confirmDelete" @cancel="sheet = null" />
+    <CombineSheet v-if="combining && combineEntries.length" :entries="combineEntries" :busy="busy" @open="confirmCombine" @cancel="combining = null" />
     <ConfirmDialog
       v-if="confirming"
       :title="confirmText.title"

@@ -9,9 +9,10 @@
 //! fast path of `output_copy` and `output_save`, which crop in Rust.
 //!
 //! The editor window shows one image at a time: a file (`editor_open`, from the history or a
-//! file dropped on the window) or a capture handed over by the overlay with its drawings
-//! (`editor_open_capture`). The core keeps the image and gives the page its bytes as the raw
-//! binary response of `editor_image`, again never as base64.
+//! file dropped on the window), a capture handed over by the overlay with its drawings
+//! (`editor_open_capture`), or the history's screenshots laid onto one new image
+//! (`editor_combine`). The core keeps the image and gives the page its bytes as the raw binary
+//! response of `editor_image`, again never as base64.
 //!
 //! Every image of the editor carries an `EditorRecord` of the history, and each Copy, Save and
 //! Save as of it names that record (`history::expect_editor_output`) with the document the page
@@ -128,6 +129,9 @@ pub struct EditorImage {
     pub document: Option<String>,
     /// The history entry the image is, when the history opened it.
     pub entry_id: Option<EntryId>,
+    /// How many captures the history's Combine laid into the image; `None` for any other image.
+    /// Such an image has no file and no entry until its first output.
+    pub combined_from: Option<u32>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -719,6 +723,7 @@ pub async fn editor_open(app: AppHandle, path: PathBuf, entry_id: Option<EntryId
             scale: file_scale.unwrap_or(1.0),
             document: None,
             entry_id: None,
+            combined_from: None,
         };
         let origin = EditorOrigin { name: Some(stem.clone()), ..EditorOrigin::default() };
         keep(EditorSource {
@@ -767,6 +772,7 @@ pub async fn editor_open_entry(app: AppHandle, entry: Entry) -> CommandResult<Ed
             scale: entry.scale.or(file_scale).filter(|s| *s >= 1.0).unwrap_or(1.0),
             document: opened.document.clone(),
             entry_id: Some(entry.id.clone()),
+            combined_from: None,
         };
         let origin = EditorOrigin {
             name: Some(entry.name.clone()).filter(|n| !n.trim().is_empty()),
@@ -836,6 +842,7 @@ pub fn editor_open_capture(
         scale: frame.scale.0,
         document: Some(document),
         entry_id: None,
+        combined_from: None,
     };
     keep(EditorSource {
         image: image.clone(),
@@ -849,6 +856,217 @@ pub fn editor_open_capture(
     session::close(&app, capture_id, CloseReason::Editor);
     show_editor(&app, &image);
     Ok(image)
+}
+
+// ------------------------------------------------------------------------------ the combine
+
+/// The longest side a combined image may have. Past it a clipboard and an upload host struggle,
+/// so the sheet lays the pieces out at 1x first and refuses only what is too large even there.
+pub const COMBINE_MAX_SIDE: u32 = 16_384;
+
+/// What the history's Combine asks for: the size of the combined image and where each capture
+/// lies on it, in its pixels, as `src/history/combine.ts` laid them out for the sheet's preview,
+/// so the image is the preview. Pieces are drawn in their order, a later one over an earlier one.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CombineRequest {
+    pub width: u32,
+    pub height: u32,
+    /// Pixels per point of the combined image: the highest of the captures', or 1.
+    pub scale: f64,
+    pub background: CombineBackground,
+    pub pieces: Vec<CombinePiece>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CombineBackground {
+    Clear,
+    White,
+    Gray,
+    Dark,
+}
+
+impl CombineBackground {
+    /// The colour under the pieces. White, the grey and the dark are neutral, and a neutral has
+    /// the same values in sRGB and in Display P3, so one set serves both.
+    fn rgba(self) -> [u8; 4] {
+        match self {
+            CombineBackground::Clear => [0, 0, 0, 0],
+            CombineBackground::White => [255, 255, 255, 255],
+            CombineBackground::Gray => [0xE9, 0xE9, 0xEE, 255],
+            CombineBackground::Dark => [0x1C, 0x1C, 0x1E, 255],
+        }
+    }
+}
+
+/// One capture on the combined image, in its pixels. The numbers are `f64` so that a fractional
+/// value from the page cannot make the request fail to parse; they are rounded here.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CombinePiece {
+    pub entry_id: EntryId,
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+/// The colour space a combined image is drawn in. On macOS a capture is sRGB or Display P3, and
+/// Display P3 holds both without clipping; elsewhere every frame is sRGB.
+fn combine_space() -> ColorSpace {
+    if cfg!(target_os = "macos") {
+        ColorSpace::DisplayP3
+    } else {
+        ColorSpace::Srgb
+    }
+}
+
+/// Lays the history's screenshots onto one new image and opens it in the editor as an image
+/// without a file or an entry; its first output adds an entry of its own, and the captures stay
+/// as they were. Each capture is read in the combined image's colour space and, when its piece is
+/// another size (a 1x capture in a 2x image), resized to it: an exact 2x repeats every pixel.
+/// Fails with `invalid_argument` for fewer than two pieces, a piece that is not a screenshot or a
+/// size past [`COMBINE_MAX_SIDE`], and with `not_found` for a capture whose file is gone.
+#[tauri::command]
+pub async fn editor_combine(app: AppHandle, request: CombineRequest) -> CommandResult<EditorImage> {
+    let handle = app.clone();
+    let image = off_main(move || combine(&handle, request)).await?;
+    show_editor(&app, &image);
+    Ok(image)
+}
+
+fn combine(app: &AppHandle, request: CombineRequest) -> CommandResult<EditorImage> {
+    let (width, height) = (request.width, request.height);
+    if width == 0 || height == 0 || width > COMBINE_MAX_SIDE || height > COMBINE_MAX_SIDE {
+        return Err(CommandError::invalid(format!(
+            "a combined image of {width} × {height} pixels is past the limit of {COMBINE_MAX_SIDE}"
+        )));
+    }
+    if !(request.scale.is_finite() && (1.0..=4.0).contains(&request.scale)) {
+        return Err(CommandError::invalid(format!("{} pixels per point cannot be combined", request.scale)));
+    }
+    if request.pieces.len() < 2 {
+        return Err(CommandError::invalid("combining needs at least two screenshots"));
+    }
+    let store = super::history::store(app)?;
+    let space = combine_space();
+    let mut canvas = Canvas::new(width, height, request.background.rgba());
+    for piece in &request.pieces {
+        let place = [piece.x, piece.y, piece.width, piece.height].map(f64::round);
+        if place.iter().any(|v| !v.is_finite()) || place[2] < 1.0 || place[3] < 1.0 {
+            return Err(CommandError::invalid(format!("the piece of {} has no size", piece.entry_id)));
+        }
+        let entry = store.get(&piece.entry_id)?;
+        if entry.kind != EntryKind::Screenshot {
+            return Err(CommandError::invalid(format!("{} is not a screenshot", piece.entry_id)));
+        }
+        let path = entry
+            .media_path()
+            .filter(|p| p.is_file())
+            .ok_or_else(|| CommandError::not_found(format!("the file of {}", piece.entry_id)))?;
+        let mut frame = glimpsfy_ocr::load_image_as(path, space)?;
+        let size = PhysicalSize::new(
+            place[2].min(COMBINE_MAX_SIDE as f64) as u32,
+            place[3].min(COMBINE_MAX_SIDE as f64) as u32,
+        );
+        if frame.size != size {
+            frame = frame.resized(size);
+        }
+        canvas.draw(&frame, place[0] as i64, place[1] as i64);
+    }
+    let frame = Arc::new(Frame::new(
+        PhysicalSize::new(width, height),
+        width as usize * 4,
+        PixelFormat::Rgba8,
+        ColorInfo::for_space(space),
+        ScaleFactor(request.scale),
+        canvas.data,
+    )?);
+
+    let language = app.state::<AppState>().settings.get().general.language;
+    let (date, time) = crate::output::Naming::clock(chrono::Local::now());
+    let name = crate::i18n::text(language, "editor.combinedName", &[("date", &date), ("time", &time)]);
+    let image = EditorImage {
+        token: token(),
+        name,
+        path: None,
+        encoding: EditorEncoding::Rgba,
+        width: Some(width),
+        height: Some(height),
+        color_space: space,
+        scale: request.scale,
+        document: None,
+        entry_id: None,
+        combined_from: Some(request.pieces.len() as u32),
+    };
+    keep(EditorSource {
+        image: image.clone(),
+        color: frame.color.clone(),
+        // No source entry: the combined image is a picture of its own, so its first output adds
+        // a new entry, even one without drawings.
+        record: EditorRecord::new(EditorBase::Frame(frame.clone()), EditorOrigin::default(), None, None),
+        bytes: Bytes::Frame(frame),
+        front_app: None,
+        document: None,
+        suggest: None,
+    });
+    Ok(image)
+}
+
+/// The combined image while its pieces are laid on: tight RGBA rows with straight alpha.
+struct Canvas {
+    width: u32,
+    height: u32,
+    data: Vec<u8>,
+}
+
+impl Canvas {
+    fn new(width: u32, height: u32, fill: [u8; 4]) -> Canvas {
+        let data = fill.repeat(width as usize * height as usize);
+        Canvas { width, height, data }
+    }
+
+    /// Lays `frame` (RGBA) with its top left at `x`, `y` over what is there (source-over with
+    /// straight alpha); the part outside the canvas is cut off.
+    fn draw(&mut self, frame: &Frame, x: i64, y: i64) {
+        let left = x.max(0);
+        let top = y.max(0);
+        let right = (x + frame.size.width as i64).min(self.width as i64);
+        let bottom = (y + frame.size.height as i64).min(self.height as i64);
+        if left >= right || top >= bottom {
+            return;
+        }
+        let span = (right - left) as usize * 4;
+        for row in top..bottom {
+            let from = (row - y) as usize * frame.bytes_per_row + (left - x) as usize * 4;
+            let to = (row as usize * self.width as usize + left as usize) * 4;
+            let source = &frame.data[from..from + span];
+            let target = &mut self.data[to..to + span];
+            for (d, s) in target.chunks_exact_mut(4).zip(source.chunks_exact(4)) {
+                over(d, s);
+            }
+        }
+    }
+}
+
+/// `source` over `target`, both RGBA with straight alpha.
+fn over(target: &mut [u8], source: &[u8]) {
+    let sa = source[3] as u32;
+    if sa == 255 || target[3] == 0 {
+        target.copy_from_slice(source);
+        return;
+    }
+    if sa == 0 {
+        return;
+    }
+    // In 255ths: the result's alpha, then each channel weighted by how much of it shows.
+    let da = target[3] as u32 * (255 - sa) / 255;
+    let a = sa + da;
+    for (t, s) in target[..3].iter_mut().zip(&source[..3]) {
+        *t = ((*s as u32 * sa + *t as u32 * da + a / 2) / a) as u8;
+    }
+    target[3] = a.min(255) as u8;
 }
 
 /// Keeps the page's annotation document (JSON) for the editor's image `token`, so the next Copy,

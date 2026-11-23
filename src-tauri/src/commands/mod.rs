@@ -59,6 +59,7 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Syn
         render::upload_capture_rendered,
         render::editor_open,
         render::editor_open_capture,
+        render::editor_combine,
         render::editor_current,
         render::editor_image,
         render::editor_close,

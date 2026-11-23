@@ -169,3 +169,42 @@
 /* The window's own notes have no short titles, so a long one wraps instead of being cut. */
 .hv-toasts .g-toast-title { white-space: normal; }
 .hv-empty { height: 100%; box-sizing: border-box; justify-content: center; }
+
+/* ------------------------------------------------ combine sheet (design/canvas row 13, Y1) */
+.hv-combine { --dialog-w: 640px; }
+.hv-combine-body { display: grid; grid-template-columns: 360px minmax(0, 1fr); gap: 20px; }
+.hv-combine-stage {
+  position: relative; display: grid; place-items: center; height: 206px; overflow: hidden;
+  border-radius: var(--radius-thumb); background: var(--win-sunken); box-shadow: inset 0 0 0 var(--hairline) var(--win-line);
+}
+.hv-combine-comp { position: relative; flex: none; box-shadow: 0 0 0 var(--hairline) var(--win-line), 0 1px 2px rgba(0, 0, 0, 0.10); }
+.hv-combine-checker { background: repeating-conic-gradient(#e4e4ea 0 25%, #ffffff 0 50%) 0 0 / 12px 12px; }
+[data-theme="dark"] .hv-combine-checker { background: repeating-conic-gradient(#3b3b43 0 25%, #2b2b31 0 50%) 0 0 / 12px 12px; }
+.hv-combine-piece { position: absolute; overflow: hidden; background: var(--win-raised); }
+.hv-combine-piece > img { display: block; width: 100%; height: 100%; object-fit: cover; pointer-events: none; user-select: none; }
+.hv-combine-piece[data-free] { cursor: grab; }
+.hv-combine-piece[data-free]:active { cursor: grabbing; }
+.hv-combine-order { display: flex; align-items: center; gap: 6px; margin-top: 8px; min-width: 0; }
+.hv-combine-order[data-many] { gap: 4px; }
+.hv-combine-thumb { position: relative; flex: none; width: 44px; height: 30px; border-radius: 6px; overflow: hidden; background: var(--win-sunken); cursor: grab; touch-action: none; }
+.hv-combine-order[data-many] .hv-combine-thumb { width: 36px; height: 24px; }
+.hv-combine-thumb::after { content: ""; position: absolute; inset: 0; border-radius: inherit; box-shadow: inset 0 0 0 var(--hairline) var(--win-media-rim); }
+.hv-combine-thumb:hover { box-shadow: 0 0 0 2px var(--iris); }
+.hv-combine-thumb:focus-visible { outline: 2px solid var(--win-focus); outline-offset: 1px; }
+.hv-combine-thumb > img { display: block; width: 100%; height: 100%; object-fit: cover; pointer-events: none; user-select: none; }
+.hv-combine-num { position: absolute; left: 3px; top: 3px; z-index: 2; min-width: 14px; height: 14px; padding: 0 3px; box-sizing: border-box; border-radius: 7px; background: rgba(19, 17, 32, 0.78); color: #ffffff; font: 600 9.5px/14px var(--font-mono); text-align: center; }
+.hv-combine-hint { margin-left: 4px; min-width: 0; overflow: hidden; text-overflow: ellipsis; font: var(--type-caption); color: var(--win-text-3); white-space: nowrap; }
+.hv-combine-opts { display: grid; gap: 14px; align-content: start; min-width: 0; }
+.hv-combine-opt { min-width: 0; }
+.hv-combine-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
+.hv-combine-head > b { font: var(--type-label); color: var(--win-text); white-space: nowrap; }
+.hv-combine-head > span { min-width: 0; font: var(--type-caption); color: var(--win-text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hv-combine .g-seg > button:has(> g-icon:only-child) { width: 36px; padding: 0; }
+.hv-combine-num-seg > button { padding: 0 10px; font-variant-numeric: tabular-nums; }
+.hv-combine-swatches { display: flex; gap: 0; margin-left: -2px; }
+.hv-combine-facts { min-width: 0; font: var(--type-body); color: var(--win-text-2); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hv-combine-note { display: flex; align-items: flex-start; gap: 8px; margin: 0; padding: 8px 12px 8px 10px; border-radius: var(--radius-field); background: var(--win-warn-soft); font: var(--type-body); color: var(--win-text); }
+.hv-combine-note > g-icon { flex: none; color: var(--win-warn); }
+.hv-combine-info { display: flex; align-items: flex-start; gap: 8px; margin: 0; font: var(--type-body); color: var(--win-text-2); }
+.hv-combine-info > g-icon { flex: none; color: var(--win-iris-text); }
+.hv-combine-info[data-tone="warn"] > g-icon { color: var(--win-warn); }
