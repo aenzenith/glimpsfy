@@ -1,0 +1,78 @@
+# Debian/Ubuntu packages Glimpsfy needs to compile and test on Linux. Read by
+# .github/workflows/*.yml and tools/linux-check/Dockerfile, so CI and the local check install the
+# same thing.
+
+# Tauri 2's Linux prerequisites: https://v2.tauri.app/start/prerequisites/#linux
+libwebkit2gtk-4.1-dev
+build-essential
+curl
+wget
+file
+libxdo-dev
+libssl-dev
+libayatana-appindicator3-dev
+librsvg2-dev
+pkg-config
+
+# Cut-by-text: whisper.cpp (crates/speech, through whisper-rs-sys) is built with CMake, and its
+# Rust bindings are generated with bindgen, which loads libclang.
+cmake
+clang
+libclang-dev
+
+# Recording: the GStreamer the capture stream, the MP4 writer and the reader link against, and
+# the plugins they load at run time (H.264, AAC, MP4, PipeWire, PulseAudio, X11).
+libgstreamer1.0-dev
+libgstreamer-plugins-base1.0-dev
+gstreamer1.0-plugins-base
+gstreamer1.0-plugins-good
+gstreamer1.0-plugins-bad
+gstreamer1.0-plugins-ugly
+gstreamer1.0-libav
+gstreamer1.0-pipewire
+gstreamer1.0-pulseaudio
+gstreamer1.0-x
+gstreamer1.0-tools
+
+# Tests only: a display, a window manager, a session bus and a sound server without hardware.
+xvfb
+xauth
+x11-utils
+x11-xserver-utils
+x11-apps
+openbox
+dbus-x11
+pulseaudio
+# The capture backend's own checks. A compositing manager, for the Composite path of window
+# captures (Xvfb alone keeps no window's picture off screen):
+xcompmgr
+# A headless Wayland session with XWayland, the portals and PipeWire, for the Screenshot and
+# ScreenCast paths (sway with WLR_BACKENDS=headless; the wlr portal takes its stills with grim):
+sway
+xwayland
+xdg-desktop-portal
+xdg-desktop-portal-wlr
+pipewire
+wireplumber
+grim
+
+# Tests only: a Secret Service. The upload crate stores and reads a secret in a GNOME Keyring it
+# starts on a session bus of its own (crates/upload/tests/keyring.rs).
+gnome-keyring
+
+# Tests only: gst-discoverer-1.0, which checks a recording the way GStreamer's players read it
+# (duration, size and tracks), beside the record crate's own reader.
+gstreamer1.0-plugins-base-apps
+
+# Tests only: driving the app shell under Xvfb the way a person would. xdotool moves the pointer
+# and types, xclip reads what the app put on the clipboard, ImageMagick's `import` and `compare`
+# take and compare screenshots of the virtual screen, stalonetray is a tray host (the indicator
+# falls back to it when no StatusNotifier host runs), xfwm4 is a window manager with a compositor
+# of its own, and PyGObject's GTK is a drop target for a file dragged out of the app.
+xdotool
+xclip
+imagemagick
+stalonetray
+xfwm4
+python3-gi
+gir1.2-gtk-3.0

@@ -1,5 +1,6 @@
-# Checks every push and pull request on macOS, the first platform. The release workflow waits for
-# this run (by its file name, ci.yml) before it merges a release PR.
+# Checks every push and pull request on macOS, Windows and Linux. The release workflow waits for
+# this run (by its file name, ci.yml) before it merges a release PR, and it reads the conclusion
+# of the whole run: a failure on any platform keeps the release PR open.
 name: CI
 
 on:
@@ -16,12 +17,34 @@ concurrency:
 
 jobs:
   check:
-    runs-on: macos-latest
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS
+            os: macos-latest
+          - name: Windows
+            os: windows-latest
+          # 22.04 is the oldest LTS that has webkit2gtk-4.1, and the release is built on it too:
+          # what links against its glibc runs on newer distributions.
+          - name: Linux
+            os: ubuntu-22.04
+    runs-on: ${{ matrix.os }}
     env:
       # As in release.yml: whisper.cpp is built for a baseline CPU, never for the runner's own.
       GGML_NATIVE: "OFF"
     steps:
       - uses: actions/checkout@v5
+
+      # Tauri's prerequisites, GStreamer and what gives the tests a screen. The list is shared
+      # with tools/linux-check, the same checks in Docker, so it is read here and never copied.
+      - name: Linux packages
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sed 's/#.*//' tools/linux-check/packages.txt | xargs sudo apt-get install -y --no-install-recommends
 
       # rust-toolchain.toml pins the channel and adds rustfmt and clippy.
       - name: Rust toolchain
@@ -40,6 +63,8 @@ jobs:
           fi
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.os }}
 
       - uses: actions/setup-node@v5
         with:
@@ -49,14 +74,23 @@ jobs:
       - name: Install packages
         run: npm ci
 
+      # rustfmt reads every module whatever platform it is compiled for, so one runner is enough.
       - name: cargo fmt
+        if: runner.os == 'macOS'
         run: cargo fmt --all --check
 
       - name: cargo clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: cargo test
+        if: runner.os != 'Linux'
         run: cargo test --workspace
+
+      # The Linux capture tests need a screen. enter.sh gives them the session bus and the virtual
+      # X display the Docker check runs in; --in-place keeps it on this checkout.
+      - name: cargo test (Linux)
+        if: runner.os == 'Linux'
+        run: bash tools/linux-check/enter.sh --in-place cargo test --workspace
 
       - name: Type check
         run: npm run typecheck
