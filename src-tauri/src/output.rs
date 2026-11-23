@@ -32,12 +32,13 @@ use std::collections::VecDeque;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use glimpsfy_annotate::BeautifyStyle;
 use glimpsfy_capture::{selection_to_frame, ColorInfo, Display, Frame, ImageEncoding, PixelFormat, PngEffort};
 use glimpsfy_history::EntryKind;
+use glimpsfy_ocr::CancelToken;
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::commands::capture::{CaptureId, CaptureMode, CloseReason, Selection};
@@ -48,7 +49,7 @@ use crate::settings::{HistoryRetention, ImageFormat, Output, RetinaScale};
 use crate::windows::{Toast, ToastKind};
 use crate::{events, session, trace, windows, AppState};
 
-pub use naming::{file_stem, file_stem_titled, save_named, save_unique, save_unique_titled, Naming};
+pub use naming::{file_stem, file_stem_titled, first_line, save_named, save_unique, save_unique_titled, Naming};
 pub(crate) use platform::bring_forward;
 
 /// The toast's thumbnail fits in this many pixels (2× its 64 × 44 point slot).
@@ -190,16 +191,21 @@ fn deliver_all(
     };
     let settings = app.state::<AppState>().settings.get();
     let reason = if action == OutputAction::Copy { CloseReason::Copied } else { CloseReason::Saved };
+    // `{text}` reads the pixels as they arrive, before the scaling to 1× (small text reads better
+    // at full size) and the beautify style, and it reads while the capture closes and the image
+    // encodes. A drawing's blurs are already flattened into them, so a hidden word stays hidden.
+    let lines = (action == OutputAction::Save && settings.output.file_name_template.contains("{text}"))
+        .then(|| read_first_lines(app, &images));
     let images = finish(app, images, reason);
 
     let result = match &action {
         OutputAction::Copy => copy_images(app, &settings.output, &images).map(|all| all.into_iter().map(Ok).collect()),
-        OutputAction::Save => Ok(save_images(app, &settings.output, &images, None)),
-        OutputAction::SaveAs(Some(path)) => Ok(save_images(app, &settings.output, &images, Some(path))),
+        OutputAction::Save => Ok(save_images(app, &settings.output, &images, None, lines.as_ref())),
+        OutputAction::SaveAs(Some(path)) => Ok(save_images(app, &settings.output, &images, Some(path), None)),
         OutputAction::SaveAs(None) => {
             let (frame, origin) = &images[0];
             pick_path(app, &settings.output, frame, origin)
-                .map(|path| save_images(app, &settings.output, &images, Some(&path)))
+                .map(|path| save_images(app, &settings.output, &images, Some(&path), None))
         }
     };
     report(app, &images, &first, result, report_to, subjects)
@@ -344,13 +350,14 @@ fn save_images(
     output: &Output,
     images: &[(Frame, Origin)],
     target: Option<&Path>,
+    lines: Option<&FirstLines>,
 ) -> Vec<CommandResult<Delivered>> {
     let mut results = Vec::with_capacity(images.len());
     // The PNGs for the clipboard, with their frames and the results they belong to.
     let (mut pngs, mut frames, mut copied) = (Vec::new(), Vec::new(), Vec::new());
     for (i, (frame, origin)) in images.iter().enumerate() {
         let format = target.and_then(format_of).or(origin.format).unwrap_or(output.format);
-        let (bytes, plain, path, fallback_from) = match write_image(output, frame, origin, i, format, target) {
+        let (bytes, plain, path, fallback_from) = match write_image(output, frame, origin, i, format, target, lines) {
             Ok(written) => written,
             Err(error) => {
                 results.push(Err(error));
@@ -400,7 +407,8 @@ fn save_images(
 /// the path and the folder that failed.
 type Written = (Vec<u8>, Option<Vec<u8>>, PathBuf, Option<String>);
 
-/// Encodes one image and writes its file.
+/// Encodes one image and writes its file. A name with `{text}` waits for the image's first line
+/// only after the encoding, which ran meanwhile.
 fn write_image(
     output: &Output,
     frame: &Frame,
@@ -408,11 +416,15 @@ fn write_image(
     index: usize,
     format: ImageFormat,
     target: Option<&Path>,
+    lines: Option<&FirstLines>,
 ) -> CommandResult<Written> {
     let (bytes, plain) = encode_file(output, frame, format)?;
     let (path, fallback_from) = match target {
         Some(path) => (write_picked(path, index, format, &bytes)?, None),
-        None => write_in_folder(output, frame, origin, format, &bytes)?,
+        None => {
+            let text = lines.and_then(|lines| lines.wait(index));
+            write_in_folder(output, frame, origin, text.as_deref(), format, &bytes)?
+        }
     };
     Ok((bytes, plain, path, fallback_from))
 }
@@ -478,12 +490,19 @@ fn write_in_folder(
     output: &Output,
     frame: &Frame,
     origin: &Origin,
+    text: Option<&str>,
     format: ImageFormat,
     bytes: &[u8],
 ) -> CommandResult<(PathBuf, Option<String>)> {
     let (date, time) = Naming::clock(chrono::DateTime::<chrono::Local>::from(origin.taken_at));
-    let naming =
-        Naming { date, time, app: origin.app_name.as_deref(), width: frame.size.width, height: frame.size.height };
+    let naming = Naming {
+        date,
+        time,
+        app: origin.app_name.as_deref(),
+        text,
+        width: frame.size.width,
+        height: frame.size.height,
+    };
     let attempt = |folder: &Path| -> Result<PathBuf, (bool, String)> {
         naming::check_folder(folder).map_err(|problem| (true, problem.to_string()))?;
         save_unique_titled(
@@ -526,6 +545,77 @@ fn write_in_folder(
         }
         Err((false, error)) => Err(folder_error(chosen, &error)),
     }
+}
+
+// ------------------------------------------------------------------------ the text in a name
+
+/// How long a Save waits for the first lines of `{text}`, counted from the start of the Save.
+const TEXT_WAIT: Duration = Duration::from_secs(2);
+
+/// What reads one image's first line; it stops early once its token is cancelled.
+type ReadLine = dyn Fn(Arc<Frame>, CancelToken) -> Option<String> + Send + Sync;
+
+/// The first lines of a Save's images, each read on a thread of its own (`glimpsfy-name-text`),
+/// with one deadline for all of them.
+struct FirstLines {
+    deadline: Instant,
+    reads: Vec<(mpsc::Receiver<Option<String>>, CancelToken)>,
+}
+
+impl FirstLines {
+    /// The `index`-th image's first line, once it is read and while the deadline holds. A read
+    /// still running then is cancelled and its line is never used, so `{text}` stays empty.
+    fn wait(&self, index: usize) -> Option<String> {
+        let (line, cancel) = self.reads.get(index)?;
+        match line.recv_timeout(self.deadline.saturating_duration_since(Instant::now())) {
+            Ok(line) => line,
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                cancel.cancel();
+                // Only that the name went without it; the text on the screen stays out of the log.
+                trace::log(format!(
+                    "[glimpsfy] no text was read within {} s; the name leaves it out",
+                    TEXT_WAIT.as_secs()
+                ));
+                None
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => None,
+        }
+    }
+}
+
+impl Drop for FirstLines {
+    /// A read nobody waits for any more (its image failed to encode) stops.
+    fn drop(&mut self) {
+        for (_, cancel) in &self.reads {
+            cancel.cancel();
+        }
+    }
+}
+
+/// Starts reading the first line of each of `frames` with `read`, the deadline from now.
+fn first_lines(frames: Vec<Arc<Frame>>, read: Arc<ReadLine>) -> FirstLines {
+    let deadline = Instant::now() + TEXT_WAIT;
+    let reads = frames
+        .into_iter()
+        .map(|frame| {
+            let (send, line) = mpsc::channel();
+            let cancel = CancelToken::new();
+            let (read, token) = (read.clone(), cancel.clone());
+            // A thread that cannot start drops its sender, and the wait gives no line.
+            let _ = std::thread::Builder::new().name("glimpsfy-name-text".into()).spawn(move || {
+                let _ = send.send(read(frame, token));
+            });
+            (line, cancel)
+        })
+        .collect();
+    FirstLines { deadline, reads }
+}
+
+/// Reads the first lines of a Save's images with the engine of Settings › Text recognition.
+fn read_first_lines(app: &AppHandle, images: &[(Frame, Origin)]) -> FirstLines {
+    let app = app.clone();
+    let frames = images.iter().map(|(frame, _)| Arc::new(frame.clone())).collect();
+    first_lines(frames, Arc::new(move |frame, cancel| crate::commands::ocr::read_first_line(&app, frame, cancel)))
 }
 
 // ------------------------------------------------------------------------- interval series
@@ -638,8 +728,15 @@ fn pick_path(app: &AppHandle, output: &Output, frame: &Frame, origin: &Origin) -
         return Err(CommandError::not_implemented("the save panel"));
     }
     let (date, time) = Naming::clock(chrono::DateTime::<chrono::Local>::from(origin.taken_at));
-    let naming =
-        Naming { date, time, app: origin.app_name.as_deref(), width: frame.size.width, height: frame.size.height };
+    // The save panel opens at once, so its name reads no text and leaves `{text}` empty.
+    let naming = Naming {
+        date,
+        time,
+        app: origin.app_name.as_deref(),
+        text: None,
+        width: frame.size.width,
+        height: frame.size.height,
+    };
     let stem = file_stem_titled(&output.file_name_template, &naming, origin.window_title.as_deref(), 1);
     let mut dialog = app.dialog().file().set_file_name(format!("{stem}.{}", output.format.extension()));
     if output.save_folder.is_dir() {
@@ -860,7 +957,7 @@ pub(crate) fn write_inbox_named(
         inbox_dir(app).ok_or_else(|| CommandError::new(ErrorCode::Io, "the history inbox folder could not be made"))?;
     let template = app.state::<AppState>().settings.get().output.file_name_template;
     let (date, time) = Naming::clock(chrono::DateTime::<chrono::Local>::from(origin.taken_at));
-    let naming = Naming { date, time, app: origin.app_name.as_deref(), width: size.0, height: size.1 };
+    let naming = Naming { date, time, app: origin.app_name.as_deref(), text: None, width: size.0, height: size.1 };
     Ok(save_unique_titled(&dir, &template, &naming, origin.window_title.as_deref(), "png", png)?)
 }
 
@@ -1027,6 +1124,97 @@ pub fn save_frame(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The pixels of a PNG file as RGBA rows.
+    fn png_pixels(path: &Path) -> Vec<u8> {
+        let mut decoder = png::Decoder::new(std::io::Cursor::new(fs::read(path).unwrap()));
+        decoder.set_transformations(png::Transformations::normalize_to_color8() | png::Transformations::ALPHA);
+        let mut reader = decoder.read_info().unwrap();
+        let mut buffer = vec![0u8; reader.output_buffer_size().unwrap()];
+        let info = reader.next_frame(&mut buffer).unwrap();
+        let pixels = &buffer[..info.buffer_size()];
+        match info.color_type {
+            png::ColorType::Rgba => pixels.to_vec(),
+            png::ColorType::GrayscaleAlpha => pixels.chunks_exact(2).flat_map(|p| [p[0], p[0], p[0], p[1]]).collect(),
+            other => panic!("{} came out as {other:?}", path.display()),
+        }
+    }
+
+    /// The text in a saved file's name is read from that file's own pixels and nothing else.
+    /// Two images of one Save (two displays) each get the line of their own pixels, the drawing
+    /// that covered a word (the red pixel) keeps the word out of the name, and the reader saw
+    /// exactly what the PNG holds. A reader that runs past the 2 s puts nothing into the name,
+    /// which falls back to "Glimpsfy" and leaves the file that already has that name whole.
+    #[test]
+    fn the_name_reads_only_the_saved_pixels() {
+        const RED: [u8; 4] = [255, 0, 0, 255];
+        const BLUE: [u8; 4] = [0, 0, 255, 255];
+        let image = |pixel: Option<[u8; 4]>| {
+            let mut data = vec![200u8; 4 * 2 * 4];
+            if let Some(pixel) = pixel {
+                data[..4].copy_from_slice(&pixel);
+            }
+            let size = glimpsfy_capture::PhysicalSize::new(4, 2);
+            Frame::new(size, 16, PixelFormat::Rgba8, ColorInfo::srgb(), glimpsfy_capture::ScaleFactor::ONE, data)
+                .unwrap()
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let output =
+            Output { save_folder: dir.path().to_path_buf(), file_name_template: "{text}".into(), ..Output::default() };
+        let origin = Origin::unknown(CaptureId(0));
+
+        // The reader keeps every image it was given under the line it read from it.
+        let seen = Arc::new(Mutex::new(Vec::<(String, Arc<Frame>)>::new()));
+        let read: Arc<ReadLine> = {
+            let seen = seen.clone();
+            Arc::new(move |frame: Arc<Frame>, _| {
+                let rgba = frame.to_rgba();
+                let line = if rgba.chunks_exact(4).any(|px| px == RED) {
+                    "SECRET"
+                } else if rgba.chunks_exact(4).any(|px| px == BLUE) {
+                    "Notes"
+                } else {
+                    "Invoice"
+                };
+                seen.lock().unwrap().push((line.to_string(), frame));
+                Some(line.to_string())
+            })
+        };
+        // The red word was covered before the Save, so its pixel is grey like the rest.
+        let saved = [image(None), image(Some(BLUE))];
+        let lines = first_lines(saved.iter().cloned().map(Arc::new).collect(), read);
+        let mut names = Vec::new();
+        for (index, frame) in saved.iter().enumerate() {
+            let (.., path, _) =
+                write_image(&output, frame, &origin, index, ImageFormat::Png, None, Some(&lines)).unwrap();
+            let name = path.file_stem().unwrap().to_string_lossy().into_owned();
+            let seen = seen.lock().unwrap();
+            let (_, read) = seen.iter().find(|(line, _)| *line == name).expect("the name holds a line that was read");
+            assert_eq!(png_pixels(&path), read.to_rgba(), "{name} was read from other pixels than it holds");
+            assert_eq!(read.to_rgba(), frame.to_rgba());
+            names.push(name);
+        }
+        assert_eq!(names, ["Invoice", "Notes"]);
+
+        // A reader that is still busy when the time is up.
+        fs::write(dir.path().join("Glimpsfy.png"), b"mine").unwrap();
+        let (stopped, was_stopped) = mpsc::channel();
+        let slow: Arc<ReadLine> = Arc::new(move |_, cancel: CancelToken| {
+            let started = Instant::now();
+            while !cancel.is_cancelled() && started.elapsed() < Duration::from_secs(10) {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            let _ = stopped.send(cancel.is_cancelled());
+            Some("LATE".into())
+        });
+        let frame = image(None);
+        let lines = first_lines(vec![Arc::new(frame.clone())], slow);
+        let (.., path, _) = write_image(&output, &frame, &origin, 0, ImageFormat::Png, None, Some(&lines)).unwrap();
+        assert_eq!(path.file_name().unwrap().to_string_lossy(), "Glimpsfy (2).png");
+        assert_eq!(fs::read(dir.path().join("Glimpsfy.png")).unwrap(), b"mine");
+        assert_eq!(was_stopped.recv_timeout(Duration::from_secs(5)), Ok(true), "the late read was not cancelled");
+        assert!(!fs::read_dir(dir.path()).unwrap().flatten().any(|e| e.file_name().to_string_lossy().contains("LATE")));
+    }
 
     /// The inbox sweep deletes the inbox's own files once they are a day old and nothing else: a
     /// file written an hour ago stays, a link in the inbox stays and so does the history's file it

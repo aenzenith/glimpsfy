@@ -112,8 +112,9 @@ pub fn settings_pause_shortcuts(app: AppHandle, state: State<'_, AppState>, paus
 
 // ------------------------------------------------------------------------- file name preview
 
-/// The tokens a file name template knows (`output::file_stem_titled`).
-const TOKENS: [&str; 7] = ["date", "time", "app", "title", "counter", "width", "height"];
+/// The tokens a file name template knows (`output::file_stem_titled`). `{window}` means
+/// `{title}`, and `{text}` is the first line of the text read from a saved image.
+const TOKENS: [&str; 9] = ["date", "time", "app", "title", "counter", "width", "height", "window", "text"];
 
 /// Why a template cannot name a file.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -137,8 +138,9 @@ pub struct NamePreview {
     pub problem: Option<TemplateProblem>,
 }
 
-/// Fills `template` with the current date and time, an example app ("Safari") and window title
-/// ("Glimpsfy"), and a 1280 × 720 capture, and adds the extension of `format`.
+/// Fills `template` with the current date and time, an example app ("Safari"), window title
+/// ("Glimpsfy") and first line of text ("Quarterly report"), and a 1280 × 720 capture, and adds
+/// the extension of `format`.
 #[tauri::command]
 pub fn settings_preview_name(template: String, format: ImageFormat) -> NamePreview {
     preview_name(&template, format, chrono::Local::now())
@@ -149,7 +151,7 @@ fn preview_name(template: &str, format: ImageFormat, now: chrono::DateTime<chron
         return NamePreview { file_name: None, problem: Some(problem) };
     }
     let (date, time) = Naming::clock(now);
-    let naming = Naming { date, time, app: Some("Safari"), width: 1280, height: 720 };
+    let naming = Naming { date, time, app: Some("Safari"), text: Some("Quarterly report"), width: 1280, height: 720 };
     NamePreview {
         file_name: Some(format!("{}.{}", file_stem_titled(template, &naming, Some("Glimpsfy"), 1), format.extension())),
         problem: None,

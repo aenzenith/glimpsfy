@@ -553,6 +553,7 @@ fn stage(app: &AppHandle, header: RenderHeader, pixels: Vec<u8>, for_upload: boo
         date,
         time,
         app: ready.front_app.as_deref(),
+        text: None,
         width: frame.size.width,
         height: frame.size.height,
     };

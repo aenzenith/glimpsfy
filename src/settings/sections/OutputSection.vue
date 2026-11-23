@@ -27,10 +27,16 @@ const o = computed(() => props.settings.output);
 const ids = { template: uid("tpl"), templateError: uid("tpl-err"), format: uid("fmt"), quality: uid("q"), retina: uid("ret"), copy: uid("copy"), shadow: uid("shadow"), corners: uid("corners"), background: uid("bg"), keep: uid("keep"), trash: uid("trash") };
 
 // ------------------------------------------------------------------ file name template
-// `{title}` is the captured window's title; an area or display capture leaves it empty.
-const TOKENS = ["{date}", "{time}", "{app}", "{title}", "{counter}", "{width}×{height}"];
+// `{title}` is the captured window's title; an area or display capture leaves it empty. `{text}`
+// is the first line of the text read from a saved image (a Save waits up to 2 s for it), and the
+// core also takes `{window}` for `{title}` without a chip.
+const TOKENS = ["{date}", "{time}", "{app}", "{title}", "{text}", "{counter}", "{width}×{height}"];
 const field = ref<HTMLInputElement | null>(null);
 const draft = ref(o.value.fileNameTemplate);
+const nameHelp = computed(() => {
+  const help = t("settings.output.nameHelp");
+  return draft.value.includes("{text}") ? `${help} ${t("settings.output.textHelp", { token: "{text}" })}` : help;
+});
 const focused = ref(false);
 const touched = ref(false);
 const preview = ref<NamePreview | null>(null);
@@ -234,7 +240,7 @@ function cancelClear(): void {
   <SectionHead :title="t('settings.output.headSaving')" />
   <div class="g-group">
     <FolderRow :label="t('settings.output.folder')" :path="o.saveFolder" @change="(path) => update((s) => (s.output.saveFolder = path))" />
-    <FormRow :label="t('settings.output.name')" :for="ids.template" :help="t('settings.output.nameHelp')" stacked>
+    <FormRow :label="t('settings.output.name')" :for="ids.template" :help="nameHelp" stacked>
       <div class="p-template">
         <input
           :id="ids.template"

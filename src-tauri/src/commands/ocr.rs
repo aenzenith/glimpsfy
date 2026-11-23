@@ -32,7 +32,7 @@ use glimpsfy_capture::{
 use glimpsfy_ocr::models::{self, ModelInfo, ModelStore, Progress};
 use glimpsfy_ocr::{
     CancelToken, CodeResult, EngineId, Entity, EntityKind, LanguageInfo, LanguageTag, OcrEngine, OcrError, OcrRequest,
-    OcrResult,
+    OcrResult, Preparation,
 };
 use serde::{Deserialize, Serialize};
 use tauri::ipc::{InvokeBody, Request};
@@ -445,6 +445,23 @@ pub(crate) fn recognize(
     request.keep_line_breaks = settings.keep_line_breaks;
     request.cancel = guard.cancel.clone();
     Ok(glimpsfy_ocr::recognize(engine.as_ref(), &request)?)
+}
+
+/// The first line of the text in `frame`, for `{text}` in a saved file's name
+/// (`output::FirstLines`). It reads with the engine and languages of Settings › Text recognition
+/// but without the upscaled second pass, which would cost a Save more time than a name gains.
+/// It registers no job: the capture the pixels came from closes while it reads, and the Save
+/// cancels it through `cancel` when its time is up.
+pub(crate) fn read_first_line(app: &AppHandle, frame: Arc<Frame>, cancel: CancelToken) -> Option<String> {
+    let settings = app.state::<AppState>().settings.get().ocr;
+    let engine = engine(app).ok()?;
+    let mut request = OcrRequest::new(frame);
+    request.languages = settings.languages.iter().map(|l| LanguageTag::new(l.clone())).collect();
+    request.detect_language = settings.detect_language;
+    request.prepare = Preparation { upscale_small_text: false, ..Preparation::default() };
+    request.cancel = cancel;
+    let result = glimpsfy_ocr::recognize(engine.as_ref(), &request).ok()?;
+    crate::output::first_line(result.lines.iter().map(|line| line.text.as_str()))
 }
 
 fn detect(

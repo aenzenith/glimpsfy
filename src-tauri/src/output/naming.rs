@@ -2,10 +2,11 @@
 //! safe, and new files written so that no existing file is ever replaced.
 //!
 //! A filled-in template is one file name, never a path: the values of `{app}` and `{title}` come
-//! from other apps, so a separator, `..`, a leading dot, a control or bidi character or a
-//! reserved device name (`CON`, `NUL`, `COM1`…) can reach it, and each is neutralised before the
-//! name meets the file system. On Windows those two values also lose the characters a shell runs
-//! code with inside the quotes of a copied path ([`SHELL_ACTIVE`]).
+//! from other apps and `{text}` from whatever the screen showed, so a separator, `..`, a leading
+//! dot, a control or bidi character or a reserved device name (`CON`, `NUL`, `COM1`…) can reach
+//! it, and each is neutralised before the name meets the file system. On Windows those values
+//! also lose the characters a shell runs code with inside the quotes of a copied path
+//! ([`SHELL_ACTIVE`]).
 
 use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
@@ -15,6 +16,11 @@ use std::path::{Path, PathBuf};
 /// A name longer than this many bytes is cut (at a character boundary), which leaves room for
 /// " (10000)" and the extension under the 255-byte limit of APFS, NTFS and ext4.
 const MAX_STEM_BYTES: usize = 200;
+
+/// `{text}` holds at most this many characters; a longer line is cut at its last space after
+/// [`TEXT_MIN_CHARS`], so the name ends on a whole word when it can.
+const TEXT_MAX_CHARS: usize = 60;
+const TEXT_MIN_CHARS: usize = 30;
 
 /// The name a template gives when nothing usable is left of it.
 const FALLBACK_STEM: &str = "Glimpsfy";
@@ -30,6 +36,9 @@ pub struct Naming<'a> {
     pub time: String,
     /// The frontmost app at capture time.
     pub app: Option<&'a str>,
+    /// The first line of the text read from the saved image (`{text}`, [`first_line`]). Only a
+    /// Save into the save folder reads one; every other name leaves the token empty.
+    pub text: Option<&'a str>,
     pub width: u32,
     pub height: u32,
 }
@@ -48,21 +57,49 @@ pub fn file_stem(template: &str, naming: &Naming, counter: u32) -> String {
     file_stem_titled(template, naming, None, counter)
 }
 
-/// [`file_stem`] with the `{title}` token: the captured window's title, when there is one.
+/// [`file_stem`] with the `{title}` token (and `{window}`, which means the same): the captured
+/// window's title, when there is one.
 pub fn file_stem_titled(template: &str, naming: &Naming, title: Option<&str>, counter: u32) -> String {
+    fill(template, naming, title, counter, cfg!(windows))
+}
+
+/// [`file_stem_titled`] for the shell rules of Windows (`windows`) or of macOS and Linux.
+fn fill(template: &str, naming: &Naming, title: Option<&str>, counter: u32, windows: bool) -> String {
     // Each value is made safe before it goes in, so it cannot form a separator or `..` together
     // with the template's own characters; the whole name is checked once more afterwards.
     let value = |text: &str| neutralise(text);
-    let foreign = |text: &str| foreign_value(text, cfg!(windows));
+    let foreign = |text: &str| foreign_value(text, windows);
+    // `{text}` goes in last, so a screen that shows `{date}` or `{counter}` stays text.
     let name = template
+        .replace("{window}", "{title}")
         .replace("{date}", &value(&naming.date))
         .replace("{time}", &value(&naming.time))
         .replace("{app}", &foreign(naming.app.unwrap_or("Screen")))
         .replace("{title}", &foreign(title.unwrap_or("")))
         .replace("{counter}", &counter.to_string())
         .replace("{width}", &naming.width.to_string())
-        .replace("{height}", &naming.height.to_string());
+        .replace("{height}", &naming.height.to_string())
+        .replace("{text}", &foreign(naming.text.unwrap_or("")));
     sanitize(&name)
+}
+
+/// The value of `{text}` from the lines a recognition read, in reading order: the first line
+/// that holds more than spaces, each run of spaces, tabs and breaks made one space, and cut to
+/// 60 characters. It is still anyone's text, so [`fill`] makes it safe like a window's title.
+pub fn first_line<'a>(lines: impl IntoIterator<Item = &'a str>) -> Option<String> {
+    let line = lines.into_iter().find(|line| !line.trim().is_empty())?;
+    let line = line.split_whitespace().collect::<Vec<_>>().join(" ");
+    // The character after the limit, when the line is longer.
+    let Some((over, next)) = line.char_indices().nth(TEXT_MAX_CHARS) else {
+        return Some(line);
+    };
+    let floor = line.char_indices().nth(TEXT_MIN_CHARS).map_or(over, |(at, _)| at);
+    // A space right after the 60th character still ends a whole word.
+    let end = match line[..over + next.len_utf8()].rfind(' ') {
+        Some(space) if space >= floor => space,
+        _ => over,
+    };
+    Some(line[..end].trim_end().to_string())
 }
 
 /// One file name from any text: separators, `:` and the characters Windows refuses become `-`,
@@ -325,14 +362,15 @@ mod tests {
     use super::*;
 
     fn naming(app: Option<&str>) -> Naming<'_> {
-        Naming { date: "2026-11-16".into(), time: "14.32.07".into(), app, width: 640, height: 360 }
+        Naming { date: "2026-11-16".into(), time: "14.32.07".into(), app, text: None, width: 640, height: 360 }
     }
 
     /// A save never replaces a file, in every format and with every kind of template: a taken
     /// name gets " (2)", " (3)"…, a template with `{counter}` counts up (skipping a file the user
     /// made by hand under the next number), a template that gives the same name twice in one
-    /// second (no `{time}`, or the same second) keeps both, and a name picked in Save as never
-    /// replaces the file it names. Every earlier file keeps its bytes.
+    /// second (no `{time}`, or the same second) keeps both, a name from the text on the screen
+    /// (`{text}`), or from no text when none was read in time, keeps both, and a name picked in
+    /// Save as never replaces the file it names. Every earlier file keeps its bytes.
     #[test]
     fn saving_never_replaces_an_existing_file() {
         let dir = tempfile::tempdir().unwrap();
@@ -340,29 +378,32 @@ mod tests {
         let templates = [
             (
                 "Glimpsfy {date} at {time}",
+                None,
                 vec![
                     "Glimpsfy 2026-11-16 at 14.32.07",
                     "Glimpsfy 2026-11-16 at 14.32.07 (2)",
                     "Glimpsfy 2026-11-16 at 14.32.07 (3)",
                 ],
             ),
-            ("{app} {counter}", vec!["Safari 1", "Safari 3", "Safari 4"]),
-            ("Shot", vec!["Shot", "Shot (2)", "Shot (3)"]),
-            ("{title} {width}x{height}", vec!["Inbox 640x360", "Inbox 640x360 (2)", "Inbox 640x360 (3)"]),
+            ("{app} {counter}", None, vec!["Safari 1", "Safari 3", "Safari 4"]),
+            ("Shot", None, vec!["Shot", "Shot (2)", "Shot (3)"]),
+            ("{title} {width}x{height}", None, vec!["Inbox 640x360", "Inbox 640x360 (2)", "Inbox 640x360 (3)"]),
+            ("{text}", Some("Invoice"), vec!["Invoice", "Invoice (2)"]),
+            ("{text}", None, vec!["Glimpsfy", "Glimpsfy (2)"]),
         ];
         for extension in formats {
             let folder = dir.path().join(extension);
             fs::create_dir_all(&folder).unwrap();
             // A file the user made by hand under the counter's second number.
             fs::write(folder.join(format!("Safari 2.{extension}")), b"mine").unwrap();
-            for (template, expected) in &templates {
+            for (template, text, expected) in &templates {
                 let mut written = Vec::new();
                 for (i, name) in expected.iter().enumerate() {
-                    let bytes = format!("{template} {i}");
+                    let bytes = format!("{template} {text:?} {i}");
                     let path = save_unique_titled(
                         &folder,
                         template,
-                        &naming(Some("Safari")),
+                        &Naming { text: *text, ..naming(Some("Safari")) },
                         Some("Inbox"),
                         extension,
                         bytes.as_bytes(),
@@ -404,9 +445,11 @@ mod tests {
         assert_eq!(fs::read(parent.join("Aralıklı 2026-11-22 14.32 (3)")).unwrap(), b"a file");
     }
 
-    /// Whatever an app calls itself or its window, and whatever the template holds, the name is
-    /// one file inside the save folder: no separator, no `..`, no absolute path, no hidden file,
-    /// no reserved device name, no control or bidi character, and not over the length limit.
+    /// Whatever an app calls itself or its window, whatever text the screen shows, and whatever
+    /// the template holds, the name is one file inside the save folder: no separator, no `..`, no
+    /// absolute path, no hidden file, no reserved device name, no control or bidi character, and
+    /// not over the length limit. The screen's text arrives as a Save reads it, through
+    /// [`first_line`].
     #[test]
     fn file_names_never_leave_the_save_folder() {
         let hostile = [
@@ -436,11 +479,16 @@ mod tests {
             "..{app}..",
             "/{title}",
             "{date} {app} {counter}",
+            "{text}",
+            "{window} {text}",
+            "../{text}",
         ];
         let dir = tempfile::tempdir().unwrap();
         for value in hostile {
+            let text = first_line([value]);
+            let named = || Naming { text: text.as_deref(), ..naming(Some(value)) };
             for template in templates {
-                let stem = file_stem_titled(template, &naming(Some(value)), Some(value), 1);
+                let stem = file_stem_titled(template, &named(), Some(value), 1);
                 for refused in ['/', '\\', ':', '*', '?', '"', '<', '>', '|', '\u{0}', '\n', '\t', '\u{202E}'] {
                     assert!(!stem.contains(refused), "{template} with {value:?} gave {stem:?}");
                 }
@@ -448,15 +496,15 @@ mod tests {
                 assert!(!stem.is_empty() && stem.len() <= MAX_STEM_BYTES, "{template} with {value:?} gave {stem:?}");
                 assert!(!is_reserved(&stem), "{template} with {value:?} gave {stem:?}");
 
-                let path =
-                    save_unique_titled(dir.path(), template, &naming(Some(value)), Some(value), "png", b"x").unwrap();
+                let path = save_unique_titled(dir.path(), template, &named(), Some(value), "png", b"x").unwrap();
                 assert_eq!(path.parent().unwrap(), dir.path(), "{template} with {value:?} wrote {}", path.display());
             }
         }
     }
 
-    /// A web page's title never brings shell syntax into a Windows name, so a copied path pasted
-    /// into Git Bash, PowerShell or cmd runs nothing; elsewhere the title stays as it reads.
+    /// A web page's title, and the text a screen shows, never bring shell syntax into a Windows
+    /// name, through any token that carries them, so a copied path pasted into Git Bash,
+    /// PowerShell or cmd runs nothing; elsewhere the title stays as it reads.
     #[test]
     fn a_title_brings_no_shell_syntax_into_a_windows_name() {
         let titles =
@@ -464,6 +512,12 @@ mod tests {
         for title in titles {
             let windows = foreign_value(title, true);
             assert!(!windows.contains(SHELL_ACTIVE), "{title:?} gave {windows:?}");
+            let text = first_line([title]);
+            let named = Naming { text: text.as_deref(), ..naming(Some(title)) };
+            for template in ["{app}", "{title}", "{window}", "{text}"] {
+                let stem = fill(template, &named, Some(title), 1, true);
+                assert!(!stem.contains(SHELL_ACTIVE), "{template} with {title:?} gave {stem:?}");
+            }
         }
         assert_eq!(foreign_value("Fiyat $5!", true), "Fiyat 5");
         assert_eq!(foreign_value("Fiyat $5!", false), "Fiyat $5!");

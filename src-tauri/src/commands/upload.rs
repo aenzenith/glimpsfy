@@ -346,8 +346,14 @@ fn upload_selection(
 /// The name Settings › Output gives a capture, as the host receives it.
 fn capture_file_name(settings: &Settings, origin: &Origin, frame: &Frame) -> String {
     let (date, time) = Naming::clock(chrono::DateTime::<chrono::Local>::from(origin.taken_at));
-    let naming =
-        Naming { date, time, app: origin.app_name.as_deref(), width: frame.size.width, height: frame.size.height };
+    let naming = Naming {
+        date,
+        time,
+        app: origin.app_name.as_deref(),
+        text: None,
+        width: frame.size.width,
+        height: frame.size.height,
+    };
     let stem = file_stem_titled(&settings.output.file_name_template, &naming, origin.window_title.as_deref(), 1);
     format!("{stem}.png")
 }

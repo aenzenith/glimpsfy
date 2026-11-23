@@ -1316,6 +1316,7 @@
   "settings.output.folder": "Ordner zum Sichern",
   "settings.output.name": "Dateiname",
   "settings.output.nameHelp": "Beim Sichern wird nie eine Datei ersetzt, stattdessen wird dem Namen ein Zähler angehängt.",
+  "settings.output.textHelp": "Steht {token} im Namen, wartet das Sichern bis zu 2 Sekunden auf die erste Zeile des erkannten Texts; wird in dieser Zeit kein Text gelesen, entsteht der Name ohne sie.",
   "settings.output.insert": "Einfügen",
   "settings.output.insertLabel": "Token einfügen",
   "settings.output.insertToken": "{token} einfügen",

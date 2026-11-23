@@ -1316,6 +1316,7 @@
   "settings.output.folder": "Save folder",
   "settings.output.name": "File name",
   "settings.output.nameHelp": "Saving never replaces a file; a counter is added to the name instead.",
+  "settings.output.textHelp": "With {token} in the name, a save waits up to 2 seconds for the first line of the recognised text, and the name leaves it out when none is read in time.",
   "settings.output.insert": "Insert",
   "settings.output.insertLabel": "Insert a token",
   "settings.output.insertToken": "Insert {token}",

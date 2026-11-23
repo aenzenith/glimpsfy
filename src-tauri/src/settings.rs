@@ -546,8 +546,9 @@ pub enum HistoryRetention {
 #[serde(default, rename_all = "camelCase")]
 pub struct Output {
     pub save_folder: PathBuf,
-    /// The file name without its extension. Tokens: `{date}`, `{time}`, `{app}`, `{title}`,
-    /// `{counter}`, `{width}` and `{height}` (`output::file_stem_titled`).
+    /// The file name without its extension. Tokens: `{date}`, `{time}`, `{app}`, `{title}` (or
+    /// `{window}`), `{counter}`, `{width}`, `{height}` and `{text}`, the first line of the text read
+    /// from a saved image (`output::file_stem_titled`).
     pub file_name_template: String,
     pub format: ImageFormat,
     /// JPEG and WebP quality, 50 to 100.

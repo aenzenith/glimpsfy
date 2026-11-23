@@ -1316,6 +1316,7 @@
   "settings.output.folder": "Kaydetme klasörü",
   "settings.output.name": "Dosya adı",
   "settings.output.nameHelp": "Dosya adı her kayıtta bu şablona göre oluşturulur ve var olan bir dosyanın üzerine yazılmaz.",
+  "settings.output.textHelp": "Adda {token} varsa kayıt, tanınan metnin ilk satırı için en fazla 2 saniye bekler; bu sürede metin okunamazsa ad onsuz oluşturulur.",
   "settings.output.insert": "Ekle",
   "settings.output.insertLabel": "Simge ekle",
   "settings.output.insertToken": "{token} ekle",

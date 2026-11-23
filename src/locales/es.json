@@ -1316,6 +1316,7 @@
   "settings.output.folder": "Carpeta de guardado",
   "settings.output.name": "Nombre del archivo",
   "settings.output.nameHelp": "Guardar nunca reemplaza un archivo; en su lugar se añade un contador al nombre.",
+  "settings.output.textHelp": "Si el nombre lleva {token}, al guardar se esperan hasta 2 segundos a la primera línea del texto reconocido, y si no se lee a tiempo, el nombre se crea sin ella.",
   "settings.output.insert": "Insertar",
   "settings.output.insertLabel": "Insertar un token",
   "settings.output.insertToken": "Insertar {token}",

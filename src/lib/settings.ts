@@ -78,7 +78,7 @@ export type HistoryRetention = "off" | "days7" | "days30" | "days90" | "forever"
 
 export type Output = Extra & {
   saveFolder: string;
-  /** Tokens: {date} {time} {app} {counter} {width} {height}. */
+  /** Tokens: {date} {time} {app} {title} (or {window}) {counter} {width} {height} {text}. */
   fileNameTemplate: string;
   format: ImageFormat;
   /** 50 to 100, for JPEG and WebP. */

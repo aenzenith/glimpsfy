@@ -1316,6 +1316,7 @@
   "settings.output.folder": "Папка для сохранения",
   "settings.output.name": "Имя файла",
   "settings.output.nameHelp": "Сохранение никогда не заменяет файл, а вместо этого к имени добавляется счётчик.",
+  "settings.output.textHelp": "Если в имени есть {token}, при сохранении Glimpsfy ждёт первую строку распознанного текста до 2 секунд, а если за это время текст не прочитан, имя создаётся без неё.",
   "settings.output.insert": "Вставить",
   "settings.output.insertLabel": "Вставить токен",
   "settings.output.insertToken": "Вставить {token}",

@@ -244,6 +244,7 @@ fn captured_at(app: &AppHandle, selection: &Selection) -> Option<(String, Logica
         date,
         time,
         app: session.front_app.as_deref(),
+        text: None,
         width: (at.width * scale).round() as u32,
         height: (at.height * scale).round() as u32,
     };
@@ -448,7 +449,8 @@ pub fn save(app: &AppHandle, id: u64) -> CommandResult<PathBuf> {
         bytes
     };
     let (date, time) = crate::output::Naming::clock(chrono::Local::now());
-    let naming = crate::output::Naming { date, time, app: None, width: info.pixel_width, height: info.pixel_height };
+    let naming =
+        crate::output::Naming { date, time, app: None, text: None, width: info.pixel_width, height: info.pixel_height };
     let path =
         crate::output::save_unique(&output.save_folder, &output.file_name_template, &naming, kind.extension(), &bytes)?;
     let mut toast = crate::windows::Toast::new(crate::windows::ToastKind::Saved);

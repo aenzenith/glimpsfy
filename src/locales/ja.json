@@ -1316,6 +1316,7 @@
   "settings.output.folder": "保存先フォルダ",
   "settings.output.name": "ファイル名",
   "settings.output.nameHelp": "保存時に既存のファイルが置き換えられることはなく、代わりに名前に連番が付きます。",
+  "settings.output.textHelp": "名前に {token} が含まれていると、保存時に認識したテキストの最初の行を最大 2 秒待ち、その間に読み取れなければその部分を除いて名前を付けます。",
   "settings.output.insert": "挿入",
   "settings.output.insertLabel": "トークンを挿入",
   "settings.output.insertToken": "{token}を挿入",

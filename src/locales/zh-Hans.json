@@ -1316,6 +1316,7 @@
   "settings.output.folder": "保存文件夹",
   "settings.output.name": "文件名",
   "settings.output.nameHelp": "保存时绝不会替换已有文件，而是在名称后加上序号。",
+  "settings.output.textHelp": "名称中含有 {token} 时，保存会最多等待 2 秒来读取识别文本的第一行；如果在此期间没有读到文本，名称会省略这一部分。",
   "settings.output.insert": "插入",
   "settings.output.insertLabel": "插入标记",
   "settings.output.insertToken": "插入 {token}",
