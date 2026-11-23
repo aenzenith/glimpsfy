@@ -298,6 +298,11 @@ pub struct Shortcuts {
     /// Selects an area and goes straight into the scrolling capture; macOS only. It comes last
     /// in `known_mut`, so a file from before it that gave ⌥⇧⌘S to another action keeps it there.
     pub scroll_capture: Option<String>,
+    /// The clipboard's image in the editor or pinned to the screen (`clipboard.rs`). They have no
+    /// default: ⌥⇧⌘V is Paste and Match Style in other apps, and the free ⌥⇧⌘ letters belong to
+    /// planned actions. They come after the scrolling capture in `known_mut`.
+    pub open_clipboard_in_editor: Option<String>,
+    pub pin_clipboard: Option<String>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
@@ -329,6 +334,8 @@ impl Default for Shortcuts {
             spotlight: key("Alt+Shift+CommandOrControl+L"),
             interval_capture: key("Alt+Shift+CommandOrControl+K"),
             scroll_capture: if mac { key("Alt+Shift+Command+S") } else { None },
+            open_clipboard_in_editor: None,
+            pin_clipboard: None,
             extra: Map::new(),
         }
     }
@@ -357,10 +364,10 @@ impl Shortcuts {
 
     /// The known actions by their names in the file, in the order of the shortcut table and then
     /// the actions added since (the ruler, the colour picker, drawing, the spotlight, the
-    /// interval capture and the scrolling capture), so a newer action's default never takes the
-    /// keys an older file gave another row. On a clash that no earlier holder decides, the earlier
-    /// row keeps the key.
-    fn known_mut(&mut self) -> [(&'static str, &mut Option<String>); 19] {
+    /// interval capture, the scrolling capture and the clipboard's two), so a newer action's
+    /// default never takes the keys an older file gave another row. On a clash that no earlier
+    /// holder decides, the earlier row keeps the key.
+    fn known_mut(&mut self) -> [(&'static str, &mut Option<String>); 21] {
         [
             ("captureArea", &mut self.capture_area),
             ("captureWindow", &mut self.capture_window),
@@ -381,6 +388,8 @@ impl Shortcuts {
             ("spotlight", &mut self.spotlight),
             ("intervalCapture", &mut self.interval_capture),
             ("scrollCapture", &mut self.scroll_capture),
+            ("openClipboardInEditor", &mut self.open_clipboard_in_editor),
+            ("pinClipboard", &mut self.pin_clipboard),
         ]
     }
 
@@ -1509,6 +1518,18 @@ mod tests {
         assert!(clashes_on_disk(&path).is_empty(), "the scrolling capture's default clashed with a key on disk");
         assert_eq!(older.shortcuts.open_history.as_deref(), Some("Alt+Shift+CommandOrControl+S"));
         assert_eq!(older.shortcuts.scroll_capture, None);
+
+        // A file edited by hand that gives Pin clipboard to screen the keys Capture area holds:
+        // the newer row never takes the user's key from an older one.
+        fs::write(
+            &path,
+            br#"{ "shortcuts": { "pinClipboard": "shift+cmdorctrl+2", "captureArea": "Shift+CommandOrControl+2" } }"#,
+        )
+        .unwrap();
+        let older = SettingsStore::open_with(path.clone(), SecretFields::new()).get();
+        assert!(clashes_on_disk(&path).is_empty(), "Pin clipboard to screen kept the keys Capture area holds");
+        assert_eq!(older.shortcuts.capture_area.as_deref(), Some("Shift+CommandOrControl+2"));
+        assert_eq!(older.shortcuts.pin_clipboard, None);
     }
 
     /// A secret typed into a provider's form never reaches `settings.json`: not when a form

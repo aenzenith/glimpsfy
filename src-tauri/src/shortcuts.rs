@@ -54,10 +54,13 @@ pub enum Action {
     IntervalCapture,
     /// Selects an area and goes straight into the scrolling capture (macOS).
     ScrollCapture,
+    /// Opens the clipboard's image in the editor, or pins it (`clipboard.rs`).
+    OpenClipboardInEditor,
+    PinClipboard,
 }
 
 /// Every action, for the command line.
-const ACTIONS: [Action; 19] = [
+const ACTIONS: [Action; 21] = [
     Action::CaptureArea,
     Action::CaptureWindow,
     Action::CaptureDisplay,
@@ -77,6 +80,8 @@ const ACTIONS: [Action; 19] = [
     Action::PickColor,
     Action::IntervalCapture,
     Action::ScrollCapture,
+    Action::OpenClipboardInEditor,
+    Action::PinClipboard,
 ];
 
 impl Action {
@@ -103,13 +108,18 @@ impl Action {
             Action::Spotlight => "spotlight",
             Action::IntervalCapture => "interval-capture",
             Action::ScrollCapture => "scroll-capture",
+            Action::OpenClipboardInEditor => "open-clipboard-in-editor",
+            Action::PinClipboard => "pin-clipboard",
         }
     }
 
     /// Whether the action does something in this build.
     fn works(self) -> bool {
         self.mode().is_some()
-            || matches!(self, Action::OpenHistory | Action::IntervalCapture)
+            || matches!(
+                self,
+                Action::OpenHistory | Action::IntervalCapture | Action::OpenClipboardInEditor | Action::PinClipboard
+            )
             || crate::recording::handles(self)
     }
 
@@ -219,6 +229,15 @@ pub(crate) fn run(app: &AppHandle, action: Action, at: Instant) {
             std::thread::spawn(move || session::interval::toggle(&app));
             Ok(())
         }
+        // Both read the clipboard and decode files off the main thread (`clipboard.rs`).
+        (Action::OpenClipboardInEditor, None) => {
+            crate::clipboard::open_in_editor(app);
+            Ok(())
+        }
+        (Action::PinClipboard, None) => {
+            crate::clipboard::pin(app);
+            Ok(())
+        }
         (recording, None) if crate::recording::handles(recording) => {
             crate::recording::shortcut(app, recording);
             Ok(())
@@ -280,7 +299,7 @@ pub(crate) fn bound() -> Vec<(String, Action)> {
 }
 
 /// Every action with the keys Settings › Shortcuts gives it.
-fn assigned(shortcuts: &Shortcuts) -> [(Action, &Option<String>); 19] {
+fn assigned(shortcuts: &Shortcuts) -> [(Action, &Option<String>); 21] {
     [
         (Action::CaptureArea, &shortcuts.capture_area),
         (Action::CaptureWindow, &shortcuts.capture_window),
@@ -301,6 +320,8 @@ fn assigned(shortcuts: &Shortcuts) -> [(Action, &Option<String>); 19] {
         (Action::Spotlight, &shortcuts.spotlight),
         (Action::IntervalCapture, &shortcuts.interval_capture),
         (Action::ScrollCapture, &shortcuts.scroll_capture),
+        (Action::OpenClipboardInEditor, &shortcuts.open_clipboard_in_editor),
+        (Action::PinClipboard, &shortcuts.pin_clipboard),
     ]
 }
 

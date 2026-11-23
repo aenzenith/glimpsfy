@@ -1170,6 +1170,32 @@ pub fn copy_file(path: &Path) -> Result<(), String> {
     platform::copy_file(path)
 }
 
+/// The image the clipboard holds (`clipboard.rs`): the first image file among the files it names
+/// (`platform::clipboard_files`), or else its picture as a PNG. When it names any file its picture
+/// is never read, because a file manager may put the file's icon there. The plugin hands the
+/// picture over as RGBA without a colour profile, so the PNG is sRGB, and it takes the pixels per
+/// point of the screen under the pointer. Not on the main thread, which Linux's files come through.
+pub fn read_image() -> Option<crate::clipboard::Pasted> {
+    use tauri_plugin_clipboard_manager::ClipboardExt;
+    let files = platform::clipboard_files();
+    if !files.is_empty() {
+        return crate::clipboard::first_image(files);
+    }
+    let image = app()?.clipboard().read_image().ok()?;
+    let (width, height) = (image.width(), image.height());
+    let scale = screen_area(None).map(|(_, scale)| scale).unwrap_or(1.0);
+    let frame = glimpsfy_capture::Frame::new(
+        PhysicalSize::new(width, height),
+        width as usize * 4,
+        glimpsfy_capture::PixelFormat::Rgba8,
+        glimpsfy_capture::ColorInfo::for_space(ColorSpace::Srgb),
+        ScaleFactor(scale),
+        image.rgba().to_vec(),
+    )
+    .ok()?;
+    frame.encode_png(glimpsfy_capture::PngEffort::Fast).ok().map(crate::clipboard::Pasted::Image)
+}
+
 /// Starts dragging `file` out of `window`, with `image` under the pointer at `size` points
 /// (`platform::drag_out`).
 pub fn drag_out(window: &WebviewWindow, file: &Path, image: &Path, size: (f64, f64)) -> Result<(), String> {

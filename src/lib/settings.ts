@@ -69,6 +69,9 @@ export type Shortcuts = Extra & {
   intervalCapture: string | null;
   /** Selects an area and goes straight into the scrolling capture; macOS only. */
   scrollCapture: string | null;
+  /** The clipboard's image in the editor or pinned to the screen; no default. */
+  openClipboardInEditor: string | null;
+  pinClipboard: string | null;
 };
 
 export type ImageFormat = "png" | "jpeg" | "webp";

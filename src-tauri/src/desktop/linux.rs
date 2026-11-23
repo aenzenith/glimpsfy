@@ -823,6 +823,21 @@ pub fn copy_file(path: &Path) -> Result<(), String> {
     }
 }
 
+/// The files the clipboard names (`text/uri-list`, a file manager's Copy), in their order. GTK
+/// answers on the main thread; the caller waits off it, for a second at most, so the main loop
+/// never stops for a clipboard owner that is slow to answer.
+pub fn clipboard_files() -> Vec<PathBuf> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    super::on_main(move || {
+        gtk::Clipboard::get(&gdk::SELECTION_CLIPBOARD).request_uris(move |_, uris| {
+            let files: Vec<PathBuf> =
+                uris.iter().filter_map(|uri| glib::filename_from_uri(uri).ok().map(|(path, _)| path)).collect();
+            let _ = tx.send(files);
+        });
+    });
+    rx.recv_timeout(Duration::from_secs(1)).unwrap_or_default()
+}
+
 /// Puts a JPEG on the clipboard as an image. GdkPixbuf decodes it with the JPEG loader every
 /// desktop ships, and GTK's clipboard offers the picture in each format it can write (PNG among
 /// them), as a paste target asks.

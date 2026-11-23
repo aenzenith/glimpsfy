@@ -9,10 +9,10 @@
 //! fast path of `output_copy` and `output_save`, which crop in Rust.
 //!
 //! The editor window shows one image at a time: a file (`editor_open`, from the history or a
-//! file dropped on the window), a capture handed over by the overlay with its drawings
-//! (`editor_open_capture`), or the history's screenshots laid onto one new image
-//! (`editor_combine`). The core keeps the image and gives the page its bytes as the raw binary
-//! response of `editor_image`, again never as base64.
+//! file dropped on the window), the clipboard's image (`editor_open_clipboard`), a capture handed
+//! over by the overlay with its drawings (`editor_open_capture`), or the history's screenshots
+//! laid onto one new image (`editor_combine`). The core keeps the image and gives the page its
+//! bytes as the raw binary response of `editor_image`, again never as base64.
 //!
 //! Every image of the editor carries an `EditorRecord` of the history, and each Copy, Save and
 //! Save as of it names that record (`history::expect_editor_output`) with the document the page
@@ -113,10 +113,12 @@ pub struct EditorImage {
     pub token: String,
     /// The window's title: the file's or the history entry's name, or the captured app's.
     pub name: String,
-    /// The file the image came from; `None` for a capture.
+    /// The file the image came from; `None` for a capture, a combined image and the clipboard's
+    /// image data.
     pub path: Option<String>,
     /// `rgba`: `editor_image` answers raw pixels of `width × height`. `file`: it answers the
-    /// file's own bytes, which the page decodes (`width` and `height` are known for PNG only).
+    /// file's own bytes (or the clipboard's PNG or JPEG), which the page decodes (`width` and
+    /// `height` are known for PNG only).
     pub encoding: EditorEncoding,
     pub width: Option<u32>,
     pub height: Option<u32>,
@@ -640,7 +642,7 @@ fn pick_save_path(app: &AppHandle, folder: PathBuf, name: &str, format: Option<I
 
 /// What a PNG tells about itself: its colour space, its size, and its pixels per point when it
 /// carries a resolution (macOS writes 144 dpi into a Retina screenshot).
-fn png_facts(bytes: &[u8]) -> Option<(ColorSpace, (u32, u32), Option<f64>)> {
+pub(crate) fn png_facts(bytes: &[u8]) -> Option<(ColorSpace, (u32, u32), Option<f64>)> {
     let reader = png::Decoder::new(std::io::Cursor::new(bytes)).read_info().ok()?;
     let info = reader.info();
     let space = match info.icc_profile.as_deref() {
@@ -726,37 +728,75 @@ pub async fn editor_open(app: AppHandle, path: PathBuf, entry_id: Option<EntryId
         if !std::fs::metadata(&path)?.is_file() {
             return Err(CommandError::invalid(format!("{} is not a file", path.display())));
         }
-        let bytes = Arc::new(std::fs::read(&path)?);
-        let (space, size, file_scale) = file_facts(&bytes);
+        let bytes = std::fs::read(&path)?;
         let stem = path.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "Glimpsfy".into());
-        let image = EditorImage {
-            token: token(),
-            name: path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| stem.clone()),
-            path: Some(path.to_string_lossy().into_owned()),
-            encoding: EditorEncoding::File,
-            width: size.map(|s| s.0),
-            height: size.map(|s| s.1),
-            color_space: space,
-            scale: file_scale.unwrap_or(1.0),
-            document: None,
-            entry_id: None,
-            combined_from: None,
-        };
-        let origin = EditorOrigin { name: Some(stem.clone()), ..EditorOrigin::default() };
-        keep(EditorSource {
-            image: image.clone(),
-            record: EditorRecord::new(EditorBase::Bytes(bytes.clone()), origin, None, None),
-            bytes: Bytes::File(bytes),
-            color: ColorInfo::for_space(space),
-            front_app: None,
-            document: None,
-            suggest: Some((path.parent().map(Path::to_path_buf), stem)),
-        });
-        Ok(image)
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| stem.clone());
+        Ok(open_bytes(bytes, name, Some(&path), stem, || 1.0))
     })
     .await?;
     show_editor(&app, &image);
     Ok(image)
+}
+
+/// Makes image bytes the editor's image under `name`: a file's, beside which Save as suggests
+/// "<stem> edited", or the clipboard's, which has no file and is saved like a capture. The
+/// pixels per point come from the bytes' resolution, else from `scale`.
+fn open_bytes(
+    bytes: Vec<u8>,
+    name: String,
+    path: Option<&Path>,
+    stem: String,
+    scale: impl FnOnce() -> f64,
+) -> EditorImage {
+    let bytes = Arc::new(bytes);
+    let (space, size, file_scale) = file_facts(&bytes);
+    let image = EditorImage {
+        token: token(),
+        name,
+        path: path.map(|p| p.to_string_lossy().into_owned()),
+        encoding: EditorEncoding::File,
+        width: size.map(|s| s.0),
+        height: size.map(|s| s.1),
+        color_space: space,
+        scale: file_scale.unwrap_or_else(scale),
+        document: None,
+        entry_id: None,
+        combined_from: None,
+    };
+    let origin = EditorOrigin { name: Some(stem.clone()), ..EditorOrigin::default() };
+    keep(EditorSource {
+        image: image.clone(),
+        record: EditorRecord::new(EditorBase::Bytes(bytes.clone()), origin, None, None),
+        bytes: Bytes::File(bytes),
+        color: ColorInfo::for_space(space),
+        front_app: None,
+        document: None,
+        suggest: path.map(|p| (p.parent().map(Path::to_path_buf), stem)),
+    });
+    image
+}
+
+/// Opens the clipboard's image in the editor (A1): ⌘V in the editor, and Open clipboard in editor
+/// from its shortcut or the menu (`clipboard.rs`). An image file the clipboard names opens by its
+/// path, as a dropped file does; image data opens as "Pasted image", at the pixels per point of
+/// its resolution or else of the screen under the pointer. Either way the page hears of it
+/// through `editor://opened`, which asks about unsaved drawings first. `None` when the clipboard
+/// holds no image, and the image the editor shows stays.
+#[tauri::command]
+pub async fn editor_open_clipboard(app: AppHandle) -> CommandResult<Option<EditorImage>> {
+    let pasted = off_main(|| Ok(crate::clipboard::read())).await?;
+    let bytes = match pasted {
+        None => return Ok(None),
+        Some(crate::clipboard::Pasted::File(path)) => return editor_open(app, path, None).await.map(Some),
+        Some(crate::clipboard::Pasted::Image(bytes)) => bytes,
+    };
+    let name = crate::clipboard::pasted_name(&app);
+    let handle = app.clone();
+    let image =
+        off_main(move || Ok(open_bytes(bytes, name.clone(), None, name, || crate::pins::pointer_scale(&handle))))
+            .await?;
+    show_editor(&app, &image);
+    Ok(Some(image))
 }
 
 /// Opens a history entry in the editor under its name and with its pixels per point. An entry

@@ -116,6 +116,9 @@ export const send_rendered = (image: RenderedImage, sendTarget: string | null) =
 
 /** Opens an image file in the editor window (a history entry gives its id). */
 export const editor_open = (path: string, entryId: string | null = null) => call<EditorImage>("editor_open", { path, entryId });
+/** Opens the clipboard's image in the editor, which hears of it through `editor://opened`; `null`
+ * when the clipboard holds no image. */
+export const editor_open_clipboard = () => call<EditorImage | null>("editor_open_clipboard");
 /** Hands the overlay's capture and its annotation document (JSON) to the editor, and closes the capture. */
 export const editor_open_capture = (captureId: CaptureId, displayId: DisplayId, document: string) =>
   call<EditorImage>("editor_open_capture", { captureId, displayId, document });

@@ -266,6 +266,9 @@ pub enum ToastKind {
     /// Only macOS tells the app when the screen locks.
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     AgentLocked,
+    /// Open clipboard in editor or Pin clipboard to screen found no image on the clipboard
+    /// (`clipboard.rs`); an amber toast that says to copy one.
+    ClipboardEmpty,
 }
 
 /// Why an interval series stopped before its end, for a `SeriesStopped` toast.

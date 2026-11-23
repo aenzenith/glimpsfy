@@ -18,7 +18,8 @@ export type WindowKind = "editor" | "recorder" | "popover" | "history" | "settin
  * `colorCopied`: the colour picker copied `text`, a colour in `format` or a contrast line, and `swatch` is the colour.
  * `agentSent`: a timed permission sent a capture to an agent; `agent` names it and the minutes left.
  * `agentTimedOut`: nobody answered an agent's request within 60 seconds, so it was denied.
- * `agentLocked`: requests that came while the screen was locked were refused; told once after the unlock. */
+ * `agentLocked`: requests that came while the screen was locked were refused; told once after the unlock.
+ * `clipboardEmpty`: Open clipboard in editor or Pin clipboard to screen found no image on the clipboard. */
 export type ToastKind =
   | "copied"
   | "saved"
@@ -33,7 +34,8 @@ export type ToastKind =
   | "colorCopied"
   | "agentSent"
   | "agentTimedOut"
-  | "agentLocked";
+  | "agentLocked"
+  | "clipboardEmpty";
 
 /** Why an interval series stopped before its end. */
 export type SeriesStop = "diskFull" | "stalled" | "permission" | "windowGone";

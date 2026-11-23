@@ -21,6 +21,7 @@
 mod agents;
 mod calendar;
 mod capture_log;
+mod clipboard;
 mod colors;
 pub mod commands;
 #[cfg(not(target_os = "macos"))]

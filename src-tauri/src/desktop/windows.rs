@@ -1338,6 +1338,37 @@ pub fn copy_file(path: &Path) -> Result<(), String> {
     }
 }
 
+/// The files the clipboard names (`CF_HDROP`, Explorer's Copy), in their order.
+pub fn clipboard_files() -> Vec<std::path::PathBuf> {
+    use std::os::windows::ffi::OsStringExt;
+    use windows_sys::Win32::System::DataExchange::{GetClipboardData, IsClipboardFormatAvailable};
+    use windows_sys::Win32::UI::Shell::DragQueryFileW;
+
+    // SAFETY: asking for a format needs no open clipboard.
+    if unsafe { IsClipboardFormatAvailable(u32::from(CF_HDROP)) } == 0 || !open_clipboard() {
+        return Vec::new();
+    }
+    let mut files = Vec::new();
+    // SAFETY: the clipboard is open, and the drop list stays the clipboard's: it is only read,
+    // with buffers of the lengths `DragQueryFileW` gave, before the clipboard closes.
+    unsafe {
+        let list = GetClipboardData(u32::from(CF_HDROP));
+        if !list.is_null() {
+            let count = DragQueryFileW(list, u32::MAX, null_mut(), 0);
+            for index in 0..count {
+                let length = DragQueryFileW(list, index, null_mut(), 0);
+                let mut name = vec![0u16; length as usize + 1];
+                let written = DragQueryFileW(list, index, name.as_mut_ptr(), name.len() as u32) as usize;
+                if written > 0 {
+                    files.push(std::ffi::OsString::from_wide(&name[..written]).into());
+                }
+            }
+        }
+        CloseClipboard();
+    }
+    files
+}
+
 /// The largest side of a JPEG put on the clipboard.
 const MAX_SIDE: usize = 16_384;
 

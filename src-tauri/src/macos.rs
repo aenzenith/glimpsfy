@@ -711,6 +711,59 @@ pub fn copy_png(png: &[u8]) -> Result<(), String> {
     }
 }
 
+/// The image the general pasteboard holds (`clipboard.rs`): the first image file among the files
+/// it names, or else its PNG, JPEG or TIFF data, a TIFF as a PNG. When it names any file its data
+/// is never read, because Finder puts the file's icon there. Callable from any thread.
+pub fn read_image() -> Option<crate::clipboard::Pasted> {
+    let pasteboard = NSPasteboard::generalPasteboard();
+    let files = pasteboard_files(&pasteboard);
+    if !files.is_empty() {
+        return crate::clipboard::first_image(files);
+    }
+    for kind in ["public.png", "public.jpeg", "public.tiff"] {
+        let Some(data) = pasteboard.dataForType(&NSString::from_str(kind)) else {
+            continue;
+        };
+        let bytes = data.to_vec();
+        if bytes.is_empty() {
+            continue;
+        }
+        // The web view decodes TIFF only through an image element, and a pin not at all.
+        let bytes = if kind == "public.tiff" { png_of(&bytes)? } else { bytes };
+        return Some(crate::clipboard::Pasted::Image(bytes));
+    }
+    None
+}
+
+/// The files the pasteboard names, in their order. Finder names them by file reference URLs
+/// (`file:///.file/id=…`), which only the system turns into paths.
+fn pasteboard_files(pasteboard: &NSPasteboard) -> Vec<std::path::PathBuf> {
+    // SAFETY: an AppKit constant, valid for the life of the process.
+    let file_url = unsafe { objc2_app_kit::NSPasteboardTypeFileURL };
+    let Some(items) = pasteboard.pasteboardItems() else {
+        return Vec::new();
+    };
+    items
+        .iter()
+        .filter_map(|item| {
+            let text = item.stringForType(file_url)?;
+            let url = objc2_foundation::NSURL::URLWithString(&text)?;
+            url.filePathURL()?.to_file_path()
+        })
+        .collect()
+}
+
+/// An image in any format ImageIO reads (TIFF, HEIC, WebP…) as a PNG; the PNG keeps the colour
+/// profile and the resolution. Callable from any thread.
+pub fn png_of(bytes: &[u8]) -> Option<Vec<u8>> {
+    use objc2_app_kit::{NSBitmapImageFileType, NSBitmapImageRep};
+    let rep = NSBitmapImageRep::imageRepWithData(&NSData::with_bytes(bytes))?;
+    let properties = objc2_foundation::NSDictionary::new();
+    // SAFETY: an empty dictionary is a valid property list for every file type.
+    let png = unsafe { rep.representationUsingType_properties(NSBitmapImageFileType::PNG, &properties) }?;
+    Some(png.to_vec())
+}
+
 // ---------------------------------------------------------------------------- display changes
 
 static DISPLAY_APP: OnceLock<AppHandle> = OnceLock::new();

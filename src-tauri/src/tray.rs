@@ -2,8 +2,9 @@
 //! and Windows; the right button opens this menu, and Linux, whose AppIndicator reports no
 //! clicks, opens it with either button.
 //!
-//! The menu holds every capture mode with its shortcut from Settings › Shortcuts, the one-shot
-//! delay, History, Settings and Quit, in the language of Settings › General. It is built again
+//! The menu holds every capture mode with its shortcut from Settings › Shortcuts, the clipboard's
+//! image in the editor or on the screen, the one-shot delay, History, Settings and Quit, in the
+//! language of Settings › General. It is built again
 //! whenever the settings are saved (`settings://changed`) and when the delay changes, so its
 //! words, its shortcuts and its check marks are never stale. During a countdown the icon shows
 //! the seconds left and the menu offers to cancel; while an interval series runs, the icon shows
@@ -31,6 +32,8 @@ const COPY_TEXT: &str = "copy-text";
 const PICK_COLOR: &str = "pick-color";
 const SCROLL_CAPTURE: &str = "scroll-capture";
 const INTERVAL: &str = "interval-capture";
+const OPEN_CLIPBOARD: &str = "open-clipboard-in-editor";
+const PIN_CLIPBOARD: &str = "pin-clipboard";
 const CANCEL_DELAY: &str = "cancel-delay";
 const DELAY_PREFIX: &str = "delay-";
 const HISTORY: &str = "history";
@@ -174,6 +177,12 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
     items.push(Box::new(item(app, INTERVAL, interval, keys.interval_capture.as_deref())?));
     items.push(Box::new(PredefinedMenuItem::separator(app)?));
 
+    // The clipboard's image, in the editor or on the screen (`clipboard.rs`).
+    let open_clipboard = word("tray.openClipboard");
+    items.push(Box::new(item(app, OPEN_CLIPBOARD, open_clipboard, keys.open_clipboard_in_editor.as_deref())?));
+    items.push(Box::new(item(app, PIN_CLIPBOARD, word("tray.pinClipboard"), keys.pin_clipboard.as_deref())?));
+    items.push(Box::new(PredefinedMenuItem::separator(app)?));
+
     // AppIndicator reports no clicks, so Linux has no popover: the recording starts, pauses,
     // resumes, stops and is discarded from here, and the items follow the take's state.
     #[cfg(target_os = "linux")]
@@ -292,6 +301,8 @@ pub(crate) fn on_menu(app: &AppHandle, id: &str) {
                 session::interval::toggle(&app);
             });
         }
+        OPEN_CLIPBOARD => crate::clipboard::open_in_editor(app),
+        PIN_CLIPBOARD => crate::clipboard::pin(app),
         HISTORY => windows::open(app, WindowKind::History),
         SETTINGS => windows::open(app, WindowKind::Settings),
         QUIT => app.exit(0),

@@ -637,7 +637,7 @@ function showCapture(toast: Toast): void {
   if (toast.kind === "sent") {
     armSent(key);
     void sentThumb(key);
-  } else if (!STAYS.has(toast.kind)) arm(key, toast.fallbackFrom ? STAY_WARN_MS : STAY_MS);
+  } else if (!STAYS.has(toast.kind)) arm(key, toast.fallbackFrom || toast.kind === "clipboardEmpty" ? STAY_WARN_MS : STAY_MS);
 }
 
 // ------------------------------------------------------------------------------------ agents
@@ -1030,7 +1030,7 @@ async function copyLink(upload: Upload): Promise<void> {
  * main action under them. */
 function tall(item: Item): boolean {
   const toast = item.capture;
-  if (toast) return STAYS.has(toast.kind) || !!toast.fallbackFrom || (toast.kind === "sent" && sentTall(toast));
+  if (toast) return STAYS.has(toast.kind) || !!toast.fallbackFrom || toast.kind === "clipboardEmpty" || (toast.kind === "sent" && sentTall(toast));
   return item.upload?.phase === "failed";
 }
 
@@ -1084,6 +1084,7 @@ function sentence(item: Item): string {
     if (toast.kind === "seriesStopped") {
       return toast.seriesStop === "diskFull" ? t("toast.series.diskFull") : t("toast.series.stopped");
     }
+    if (toast.kind === "clipboardEmpty") return t("clipboard.empty");
     return t("toast.failed");
   }
   if (item.export) return exportTitle(item.export);
@@ -1465,6 +1466,7 @@ onUnmounted(() => {
             {{ seriesBody(item.capture) }}
           </div>
           <div v-else-if="item.capture.kind === 'timeUp'" class="g-toast-body">{{ timeUpLine(item.capture) }}</div>
+          <div v-else-if="item.capture.kind === 'clipboardEmpty'" class="g-toast-body" data-kind="wrap">{{ t("clipboard.emptyFix") }}</div>
           <div v-else class="g-toast-body" data-kind="wrap" :title="item.capture.message ?? undefined">
             {{ failureText(item.capture.errorCode) }}
           </div>

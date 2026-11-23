@@ -167,6 +167,20 @@ pub async fn open(app: &AppHandle, source: PinSource) -> CommandResult<PinInfo> 
             (bytes, name, anchor, 0.0)
         }
     };
+    open_bytes(app, bytes, name, anchor, scale, entry_id)
+}
+
+/// Opens a pin of `bytes`, a PNG or a JPEG, under `name`: at `anchor` when the image was captured
+/// there, else centred on the screen under the pointer. A `scale` of 0 takes the anchor's or that
+/// screen's pixels per point. Blocking, like [`open`].
+pub fn open_bytes(
+    app: &AppHandle,
+    bytes: Vec<u8>,
+    name: String,
+    anchor: Option<LogicalRect>,
+    scale: f64,
+    entry_id: Option<glimpsfy_history::EntryId>,
+) -> CommandResult<PinInfo> {
     let (image_type, pixel_width, pixel_height) = image_size(&bytes).ok_or_else(|| {
         CommandError::invalid(
             "Glimpsfy can pin PNG and JPEG images only, so open this file in Preview and export it as PNG",
@@ -278,6 +292,12 @@ fn place(anchor: Option<LogicalRect>, width: f64, height: f64, visible: LogicalR
 struct ScreenArea {
     visible: LogicalRect,
     scale: f64,
+}
+
+/// The pixels per point of the screen under the pointer, for an image that carries no resolution
+/// of its own (the clipboard's, `clipboard.rs`).
+pub(crate) fn pointer_scale(app: &AppHandle) -> f64 {
+    screen_at(app, None).scale
 }
 
 /// The visible area and scale of the screen that holds `point` (or the pointer), in global

@@ -73,7 +73,7 @@ export const SHORTCUT_GROUPS = [
       "spotlight",
     ],
   },
-  { group: "app", actions: ["openHistory"] },
+  { group: "app", actions: ["openHistory", "openClipboardInEditor", "pinClipboard"] },
 ] as const;
 
 export type ShortcutAction = (typeof SHORTCUT_GROUPS)[number]["actions"][number];

@@ -54,6 +54,7 @@ import {
   editor_current,
   editor_image,
   editor_open,
+  editor_open_clipboard,
   editor_set_document,
   output_copy_rendered,
   output_save_as_rendered,
@@ -569,13 +570,25 @@ async function show(img: EditorImage): Promise<void> {
  * history entry (`history_open_in_editor` calls `editor_open`). */
 async function incoming(img: EditorImage): Promise<void> {
   if (image.value?.token === img.token || loadingToken === img.token) return;
-  // A file can be opened again, and a combined image made again, so their question offers
-  // Cancel. A capture is already closed and cannot be refused, so only Save and Don't save remain.
-  if (!expected && !(await settle(t("editor.unsaved.titleNext"), img.path !== null || img.combinedFrom !== null))) {
+  // A file or the clipboard's image can be opened again, and a combined image made again, so
+  // their question offers Cancel. A capture is already closed and cannot be refused, so only Save
+  // and Don't save remain.
+  if (!expected && !(await settle(t("editor.unsaved.titleNext"), img.encoding === "file" || img.combinedFrom !== null))) {
     void editor_close(img.token).catch(() => {});
     return;
   }
   await show(img);
+}
+
+/** ⌘V: opens the clipboard's image as its shortcut does. The image arrives through
+ * `editor://opened`, so `incoming` asks about unsaved drawings first; a clipboard without an image
+ * asks nothing, and the hint says so while the image stays. */
+async function openClipboard(): Promise<void> {
+  try {
+    if (!(await editor_open_clipboard())) say(`${t("clipboard.empty")} ${t("clipboard.emptyFix")}`);
+  } catch (error) {
+    say(errorText(error));
+  }
 }
 
 /** Opens a file dropped on the window, after the unsaved question. */
@@ -1251,6 +1264,12 @@ function onKeyDown(e: KeyboardEvent): void {
   if (command && e.altKey && e.code === "KeyO") {
     e.preventDefault();
     objectsOpen.value = !objectsOpen.value;
+    return;
+  }
+  // ⌘V works in an empty editor too.
+  if (command && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "v") {
+    e.preventDefault();
+    void openClipboard();
     return;
   }
   if (!source.value) return;
