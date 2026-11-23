@@ -111,7 +111,15 @@ impl Session {
 
     fn call(&mut self, id: u64, tool: &str, arguments: Value) -> RequestId {
         self.send(json!({ "jsonrpc": "2.0", "id": id, "method": "tools/call", "params": { "name": tool, "arguments": arguments } }));
-        self.offered.recv_timeout(Duration::from_secs(5)).expect("the card")
+        let id = self.offered.recv_timeout(Duration::from_secs(5)).expect("the card");
+        // The server offers the card a moment before it opens the request; a user's answer always
+        // comes later than that, so the test waits for the gate to hold the request open.
+        let until = Instant::now() + Duration::from_secs(5);
+        while !self.gate.view().queue.iter().any(|p| p.id == id) {
+            assert!(Instant::now() < until, "the request was never opened");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        id
     }
 
     /// The card shows the request long enough for an answer to count.

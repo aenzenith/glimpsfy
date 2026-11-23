@@ -1067,7 +1067,8 @@ mod tests {
                 .chain(std::fs::read_dir(self.dir.path().join("Trash")).unwrap())
                 .filter_map(|e| e.ok())
                 .filter(|e| e.path().is_file())
-                .map(|e| e.path().strip_prefix(self.dir.path()).unwrap().display().to_string())
+                // Forward slashes on every system, so Windows's `Trash\\x` reads as `Trash/x`.
+                .map(|e| e.path().strip_prefix(self.dir.path()).unwrap().display().to_string().replace('\\', "/"))
                 .collect();
             names.sort();
             names

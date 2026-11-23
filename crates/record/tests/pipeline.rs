@@ -250,7 +250,9 @@ impl Rig {
                 samples: sys,
             });
             *counter += 1;
-            std::thread::sleep(Duration::from_millis(4));
+            // At the screen's own pace: a runner's software encoder (x265, or Media Foundation's H.264)
+            // cannot take frames faster than real time, and the writers drop what they cannot keep up with.
+            std::thread::sleep(Duration::from_nanos(FRAME_NS));
         }
     }
 
