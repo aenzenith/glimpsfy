@@ -1,6 +1,7 @@
 <script setup lang="ts">
 // The control bar (design `controlBar`): Discard · the elapsed time · the microphone with its
-// meter · pause or resume · stop. After Discard the core pauses the take and the bar turns into
+// meter · Presentation, which opens the card for drawing and the spotlight · pause or resume ·
+// stop. After Discard the core pauses the take and the bar turns into
 // the question: the time, "Discard this recording?", Keep recording (focused, with its ring kept
 // after a pointer click until the focus leaves) and the amber Discard at the far end. It only draws
 // and reports; `Bar.vue` acts.
@@ -9,7 +10,7 @@ import { nextTick, ref, watch } from "vue";
 import GIcon from "../components/GIcon.vue";
 import { t } from "../lib/i18n";
 
-export type ControlAction = "discard" | "mute" | "pause" | "stop" | "keep" | "confirm";
+export type ControlAction = "discard" | "mute" | "present" | "pause" | "stop" | "keep" | "confirm";
 
 const props = defineProps<{
   time: string;
@@ -19,6 +20,9 @@ const props = defineProps<{
   /** `recorded`: the take records a microphone; `live`: it is not muted. */
   mic: { recorded: boolean; live: boolean; level: number };
   asked: boolean;
+  /** `shown`: the platform follows the pointer, so drawing and the spotlight work; `pressed`:
+   * the card is open, or drawing or the spotlight is on. */
+  present: { shown: boolean; pressed: boolean };
   /** The global keys as one key cap each, empty when there is none. */
   keys: { mute: string; pause: string; stop: string };
 }>();
@@ -104,6 +108,20 @@ const level = (v: number) => Math.max(0, Math.min(1, v));
         :aria-valuenow="level(mic.level).toFixed(2)"
         :style="{ '--level': level(mic.level) }"
       />
+    </button>
+    <button
+      v-if="present.shown"
+      type="button"
+      class="g-btn"
+      data-id="present"
+      aria-haspopup="menu"
+      :aria-pressed="present.pressed ? true : undefined"
+      :aria-label="t('record.present')"
+      :disabled="finishing"
+      :data-tip="t('record.present')"
+      @click="emit('action', 'present')"
+    >
+      <GIcon name="cursor" />
     </button>
     <button
       type="button"

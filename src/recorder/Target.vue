@@ -7,7 +7,8 @@
 // the clear part of the dim; the pointer comes from the core, because this page gets no mouse
 // moves while the bar holds the keyboard. During the countdown it draws the red frame, the ring and Cancel, and it owns the keyboard
 // (Esc cancels, Return starts at once). During the take it draws only the frame, dashed and
-// neutral while paused; the core makes the window click-through then. While the webcam bubble is
+// neutral while paused, and with an iris glow around it while drawing mode is on (B19); the core
+// makes the window click-through then. While the webcam bubble is
 // dragged it shows the four corner slots it can snap to. The area's size label opens the size
 // menu (`components/SizeMenu.vue`), as in the capture overlay: a locked ratio, a fixed size or a
 // saved one, and a size typed into the label.
@@ -19,6 +20,7 @@ import SizeMenu from "../components/SizeMenu.vue";
 import {
   onRecordBubble,
   onRecordPointer,
+  onRecordPresent,
   onRecordSetup,
   onRecordState,
   record_bubble_state,
@@ -28,6 +30,7 @@ import {
   record_setup_state,
   record_setup_update,
   record_state,
+  record_present_state,
   type BubbleState,
   type RecordingState,
   type RecordSetup,
@@ -68,6 +71,8 @@ const BAR_ROOM = 8 + 40 + 8;
 const setup = ref<RecordSetup | null>(null);
 const state = ref<RecordingState>({ kind: "idle" });
 const bubble = ref<BubbleState | null>(null);
+/** Drawing mode is on, so the area wears the iris glow. */
+const drawing = ref(false);
 /** The area while the user drags it, before the core has the final one. */
 const draft = ref<Rect | null>(null);
 const pointer = ref<Point | null>(null);
@@ -712,6 +717,16 @@ onMounted(async () => {
       }),
     );
     stops.push(await onRecordState((next) => void (state.value = next)));
+    let heardPresent = false;
+    stops.push(
+      await onRecordPresent((next) => {
+        heardPresent = true;
+        drawing.value = !!next?.drawing;
+      }),
+    );
+    void record_present_state().then((first) => {
+      if (!heardPresent) drawing.value = !!first?.drawing;
+    });
     stops.push(
       await onRecordPointer((global) => {
         const frame = setup.value?.display.frame;
@@ -826,9 +841,11 @@ onUnmounted(() => {
     <!-- the take: no dim, the screen stays live -->
     <template v-else-if="phase === 'recording' && frameBox">
       <div class="g-rec-frame" :style="box(frameBox)" />
+      <div v-if="drawing" class="r-glow" :style="box(frameBox)" />
     </template>
     <template v-else-if="phase === 'paused' && frameBox">
       <div class="r-frame-paused" :style="box(frameBox)" />
+      <div v-if="drawing" class="r-glow" :style="box(frameBox)" />
       <span v-if="tagAt" class="g-tag r-abs" :style="tagAt"><GIcon name="pause" :size="12" />{{ t("record.paused") }}</span>
     </template>
 
@@ -873,6 +890,9 @@ onUnmounted(() => {
 .r-target-display { position: absolute; inset: 0; pointer-events: none;
   box-shadow: inset 0 0 0 3px var(--iris), inset 0 0 0 4px var(--selection-inner); }
 .r-chip { position: absolute; left: 50%; top: 50%; transform: translate(-50%, calc(-50% - 20px)); pointer-events: none; }
+
+/* drawing mode is on: clicks in the area draw instead of reaching the app (design B19 Y2) */
+.r-glow { position: absolute; pointer-events: none; box-shadow: 0 0 0 1px var(--iris), 0 0 26px 6px color-mix(in srgb, var(--iris) 55%, transparent); }
 
 /* paused: the frame stays, dashed and neutral */
 .r-frame-paused { position: absolute; pointer-events: none; border-radius: 2px; outline: 1.5px dashed var(--text); box-shadow: 0 0 0 2.5px var(--edge-outer); }

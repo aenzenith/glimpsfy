@@ -47,6 +47,9 @@ export type Shortcuts = Extra & {
   muteMicrophone: string | null;
   discardRecording: string | null;
   openHistory: string | null;
+  /** Drawing mode and the spotlight; registered only while a take records or pauses. */
+  drawOnScreen: string | null;
+  spotlight: string | null;
 };
 
 export type ImageFormat = "png" | "jpeg" | "webp";
@@ -128,6 +131,8 @@ export type Recording = Extra & {
   gifFps: number;
   /** `null` keeps the original width. */
   gifWidth: number | null;
+  /** Whether drawings on a take fade 3 s after the last stroke; the Presentation card sets it. */
+  inkFades: boolean;
 };
 
 export type OcrEngineChoice = "system" | "ppOcr";

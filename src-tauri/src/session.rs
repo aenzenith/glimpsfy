@@ -343,6 +343,8 @@ pub fn start(app: &AppHandle, mode: CaptureMode, at: Instant) -> CommandResult<(
         trace::log(format!("[glimpsfy] {mode:?} ignored: a capture is open"));
         return Ok(());
     }
+    // The overlay takes the keyboard and the mouse, which drawing mode holds while it is on.
+    crate::recording::present::end_drawing(app);
     let state = app.state::<AppState>();
     let seconds = match mode {
         CaptureMode::AreaDelayed => {

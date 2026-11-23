@@ -24,7 +24,18 @@ export const SHORTCUT_GROUPS = [
       "copyText",
     ],
   },
-  { group: "recording", actions: ["recordScreen", "recordDisplay", "pauseRecording", "muteMicrophone", "discardRecording"] },
+  {
+    group: "recording",
+    actions: [
+      "recordScreen",
+      "recordDisplay",
+      "pauseRecording",
+      "muteMicrophone",
+      "discardRecording",
+      "drawOnScreen",
+      "spotlight",
+    ],
+  },
   { group: "app", actions: ["openHistory"] },
 ] as const;
 

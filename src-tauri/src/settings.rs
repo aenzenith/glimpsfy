@@ -192,6 +192,11 @@ pub struct Shortcuts {
     /// Discard has no default, so a stray key never deletes a recording.
     pub discard_recording: Option<String>,
     pub open_history: Option<String>,
+    /// Drawing mode and the spotlight on a take. Their keys are registered only while a take
+    /// records or pauses (`shortcuts::bind_take`). They come last in `known_mut`, so a file from
+    /// before them that gave ⌥⇧⌘D or ⌥⇧⌘L to another action keeps it there.
+    pub draw_on_screen: Option<String>,
+    pub spotlight: Option<String>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
@@ -217,6 +222,8 @@ impl Default for Shortcuts {
             mute_microphone: key("Alt+Shift+CommandOrControl+M"),
             discard_recording: None,
             open_history: key("Alt+Shift+CommandOrControl+H"),
+            draw_on_screen: key("Alt+Shift+CommandOrControl+D"),
+            spotlight: key("Alt+Shift+CommandOrControl+L"),
             extra: Map::new(),
         }
     }
@@ -245,7 +252,7 @@ impl Shortcuts {
 
     /// The known actions by their names in the file, in the order of the shortcut table. On a
     /// clash that no earlier holder decides, the earlier row keeps the key.
-    fn known_mut(&mut self) -> [(&'static str, &mut Option<String>); 13] {
+    fn known_mut(&mut self) -> [(&'static str, &mut Option<String>); 15] {
         [
             ("captureArea", &mut self.capture_area),
             ("captureWindow", &mut self.capture_window),
@@ -260,6 +267,8 @@ impl Shortcuts {
             ("muteMicrophone", &mut self.mute_microphone),
             ("discardRecording", &mut self.discard_recording),
             ("openHistory", &mut self.open_history),
+            ("drawOnScreen", &mut self.draw_on_screen),
+            ("spotlight", &mut self.spotlight),
         ]
     }
 
@@ -652,6 +661,9 @@ pub struct Recording {
     /// GIF export defaults: frames per second (10, 15 or 20) and width (`None` keeps the original).
     pub gif_fps: u32,
     pub gif_width: Option<u32>,
+    /// Whether drawings on a take fade 3 s after the last stroke. The Presentation card sets it,
+    /// and the next take starts with the same choice.
+    pub ink_fades: bool,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
@@ -681,6 +693,7 @@ impl Default for Recording {
             recordings_folder: crate::paths::default_movies(),
             gif_fps: 15,
             gif_width: Some(640),
+            ink_fades: false,
             extra: Map::new(),
         }
     }
@@ -1292,6 +1305,15 @@ mod tests {
         assert_eq!(loaded.shortcuts.record_screen, None);
         reopened.set(loaded).unwrap();
         assert!(clashes_on_disk(&path).is_empty());
+
+        // And for Draw on screen's ⌥⇧⌘D, held by the history row in a file from before it: the
+        // new default never silently takes the user's key.
+        fs::write(&path, br#"{ "shortcuts": { "openHistory": "Alt+Shift+CommandOrControl+D" } }"#).unwrap();
+        let older = SettingsStore::open_with(path.clone(), SecretFields::new()).get();
+        assert!(clashes_on_disk(&path).is_empty(), "Draw on screen's default clashed with a key on disk");
+        assert_eq!(older.shortcuts.open_history.as_deref(), Some("Alt+Shift+CommandOrControl+D"));
+        assert_eq!(older.shortcuts.draw_on_screen, None);
+        assert_eq!(older.shortcuts.spotlight.as_deref(), Some("Alt+Shift+CommandOrControl+L"));
     }
 
     /// A secret typed into a provider's form never reaches `settings.json`: not when a form

@@ -286,6 +286,32 @@ export type CanvasConfig = {
   dropTop: number;
 };
 
+export type InkTool = "pen" | "highlighter" | "arrow" | "rect";
+export type InkColor = "red" | "yellow" | "blue";
+
+/** Drawing and the spotlight on the take that runs (`record://present`); `null` without one. */
+export type PresentState = {
+  drawing: boolean;
+  spotlight: boolean;
+  /** Drawings fade 3 s after the last stroke. */
+  fade: boolean;
+  tool: InkTool;
+  ink: InkColor;
+  /** The spotlight's radius in points, 40 to 240. */
+  radius: number;
+};
+
+/** A change from the card, the rail or the canvas; what is left out stays. */
+export type PresentChange = Partial<Pick<PresentState, "drawing" | "spotlight" | "fade" | "tool" | "ink" | "radius">> & {
+  /** The last drawing goes. */
+  undo?: boolean;
+  /** Every drawing goes. */
+  clear?: boolean;
+};
+
+/** What the canvas does with its drawings (`record://ink`). */
+export type InkCommand = { kind: "undo" } | { kind: "clear" };
+
 /** The trim window's recording (`record://trim`). */
 export type RecordingInfo = {
   result: RecordingResult;
@@ -314,6 +340,8 @@ export const RECORD_KEYS = "record://keys";
 export const RECORD_POINTER = "record://pointer";
 export const RECORD_TRIM = "record://trim";
 export const RECORD_BAR_LAYOUT = "record://bar-layout";
+export const RECORD_PRESENT = "record://present";
+export const RECORD_INK = "record://ink";
 
 /** The URL scheme that serves recordings, their frames and their waveforms
  * (`glimpsfy-recording://file/<id>`; `http://glimpsfy-recording.localhost/file/<id>` on Windows). */
@@ -440,6 +468,23 @@ export function record_canvas_state(): Promise<CanvasConfig | null> {
   return call("record_canvas_state");
 }
 
+// ------------------------------------------------------------------- drawing and spotlight
+
+/** Turns drawing or the spotlight on or off, or changes the tool, the ink, the fade or the
+ * spot's radius; fails with `invalid_argument` when no take records or pauses. */
+export function record_present(change: PresentChange): Promise<PresentState> {
+  return call("record_present", { change });
+}
+
+export function record_present_state(): Promise<PresentState | null> {
+  return call("record_present_state");
+}
+
+/** The rail page measured its glass; the core fits the window and the glass under it. */
+export function record_rail_fit(size: { width: number; height: number; radius: number }): Promise<void> {
+  return call("record_rail_fit", { size });
+}
+
 // ------------------------------------------------------------------- trim and export
 
 /** Opens the trim window for a finished take or a history entry (the history's "Trim and export"
@@ -523,9 +568,21 @@ export function onRecordKeys(handler: (keys: { caps: string[] }) => void) {
   return onWindow<{ caps: string[] }>(RECORD_KEYS, handler);
 }
 
-/** The pointer in global points while the keystroke overlay needs it, `null` when it left. */
+/** The pointer in global points while the keystroke overlay, drawing or the spotlight needs it,
+ * `null` when it left the recorded rectangle. */
 export function onRecordPointer(handler: (pointer: LogicalPoint | null) => void) {
   return onWindow<LogicalPoint | null>(RECORD_POINTER, handler);
+}
+
+/** Drawing and the spotlight changed, or the take that has them began or ended (to the `rec-*`
+ * panels). */
+export function onRecordPresent(handler: (state: PresentState | null) => void) {
+  return onWindow<PresentState | null>(RECORD_PRESENT, handler);
+}
+
+/** Take back the last stroke or wipe them all (to the canvas window). */
+export function onRecordInk(handler: (command: InkCommand) => void) {
+  return onWindow<InkCommand>(RECORD_INK, handler);
 }
 
 export function onRecordTrim(handler: (info: RecordingInfo) => void) {

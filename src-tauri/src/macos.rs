@@ -1226,6 +1226,16 @@ pub mod recording {
             return;
         };
         w.setIgnoresMouseEvents(true);
+        resign_key(window, mtm);
+    }
+
+    /// Gives the keyboard back to the app in front when `window` holds it (a click on a bar's
+    /// button made the bar the key panel). Ordering the panel out and in again hands it back
+    /// without activating anything; drawing mode leaves the keyboard to the app being recorded.
+    pub fn resign_key(window: &WebviewWindow, mtm: MainThreadMarker) {
+        let Some(w) = ns_window(window, mtm) else {
+            return;
+        };
         if w.isKeyWindow() {
             w.orderOut(None);
             w.orderFrontRegardless();
@@ -1496,6 +1506,8 @@ pub mod recording {
     thread_local! {
         /// The glass under the bar window, made on the main thread the first time the bar shows.
         static BACKDROP: RefCell<Option<Retained<NSPanel>>> = const { RefCell::new(None) };
+        /// The glass under the drawing rail (`rec-rail`), which shows next to the bar's.
+        static RAIL_BACKDROP: RefCell<Option<Retained<NSPanel>>> = const { RefCell::new(None) };
     }
 
     fn make_backdrop(mtm: MainThreadMarker) -> Retained<NSPanel> {
@@ -1579,11 +1591,35 @@ pub mod recording {
     /// (in points from the window's top-left corner) the material blurs the screen behind it and
     /// the kit's shadow and outer ring sit around it.
     pub fn backdrop_show(bar: &WebviewWindow, frame: LogicalRect, pieces: &[GlassPiece], mtm: MainThreadMarker) {
-        let Some(bar_window) = ns_window(bar, mtm) else {
+        glass_show(&BACKDROP, bar, frame, pieces, mtm);
+    }
+
+    /// Puts the glass under the drawing rail, as `backdrop_show` does under the bar; the rail
+    /// has its own panel because both show at once.
+    pub fn rail_backdrop_show(rail: &WebviewWindow, frame: LogicalRect, pieces: &[GlassPiece], mtm: MainThreadMarker) {
+        glass_show(&RAIL_BACKDROP, rail, frame, pieces, mtm);
+    }
+
+    pub fn rail_backdrop_hide(_mtm: MainThreadMarker) {
+        RAIL_BACKDROP.with(|slot| {
+            if let Some(panel) = slot.borrow().as_ref() {
+                panel.orderOut(None);
+            }
+        });
+    }
+
+    fn glass_show(
+        slot: &'static std::thread::LocalKey<RefCell<Option<Retained<NSPanel>>>>,
+        window: &WebviewWindow,
+        frame: LogicalRect,
+        pieces: &[GlassPiece],
+        mtm: MainThreadMarker,
+    ) {
+        let Some(host_window) = ns_window(window, mtm) else {
             return;
         };
-        let hairline = 1.0 / bar_window.backingScaleFactor().max(1.0);
-        BACKDROP.with(|slot| {
+        let hairline = 1.0 / host_window.backingScaleFactor().max(1.0);
+        slot.with(|slot| {
             let mut slot = slot.borrow_mut();
             let panel = slot.get_or_insert_with(|| make_backdrop(mtm));
             let room = BACKDROP_ROOM;
@@ -1716,6 +1752,46 @@ pub mod recording {
                 // SAFETY: each one is a monitor `addGlobalMonitorForEventsMatchingMask:` returned.
                 unsafe { NSEvent::removeMonitor(&monitor) };
             }
+        });
+    }
+
+    thread_local! {
+        /// The pointer monitors while drawing or the spotlight is on (`follow_pointer`).
+        static POINTER_MONITORS: RefCell<Vec<Retained<AnyObject>>> = const { RefCell::new(Vec::new()) };
+    }
+
+    /// Hands every pointer move to `on_move` while drawing or the spotlight is on, as
+    /// `toast_monitors` does: the watch thread's pace would make the spot and the brush ring lag
+    /// behind the pointer, and the monitors exist only then because kept for good they would
+    /// wake the main thread on every move in every app.
+    pub fn follow_pointer(app: &AppHandle, on: bool, on_move: fn(&AppHandle, LogicalPoint), _mtm: MainThreadMarker) {
+        POINTER_MONITORS.with_borrow_mut(|monitors| {
+            if !on {
+                for monitor in monitors.drain(..) {
+                    // SAFETY: each one is a monitor that `add…MonitorForEventsMatchingMask:` returned.
+                    unsafe { NSEvent::removeMonitor(&monitor) };
+                }
+                return;
+            }
+            if !monitors.is_empty() {
+                return;
+            }
+            let moves = NSEventMask::MouseMoved | NSEventMask::LeftMouseDragged | NSEventMask::RightMouseDragged;
+            // Moves over other apps, and over the canvas once it takes the mouse to draw.
+            let outside = {
+                let app = app.clone();
+                block2::RcBlock::new(move |_: NonNull<NSEvent>| on_move(&app, super::pointer()))
+            };
+            let inside = {
+                let app = app.clone();
+                block2::RcBlock::new(move |event: NonNull<NSEvent>| -> *mut NSEvent {
+                    on_move(&app, super::pointer());
+                    event.as_ptr()
+                })
+            };
+            monitors.extend(NSEvent::addGlobalMonitorForEventsMatchingMask_handler(moves, &outside));
+            // SAFETY: the block hands back the event it was given, a valid pointer.
+            monitors.extend(unsafe { NSEvent::addLocalMonitorForEventsMatchingMask_handler(moves, &inside) });
         });
     }
 

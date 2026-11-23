@@ -14,6 +14,7 @@ use tauri::AppHandle;
 
 use crate::commands::error::{CommandError, CommandResult, ErrorCode};
 use crate::recording::media::{self, RecordingInfo, StartFormat, TrimSource};
+use crate::recording::present::{self, PresentChange, PresentState, RailSize};
 use crate::recording::setup::{BarGlass, BarLayout, RecordSetup, SetupRequest, SetupUpdate, Size};
 use crate::recording::{self, BubbleChange, BubbleState, CanvasConfig};
 
@@ -70,10 +71,15 @@ pub mod events {
     pub const CLICK: &str = "record://click";
     /// To `rec-canvas` only: a key press as caps. Payload: `{ caps: string[] }`.
     pub const KEYS: &str = "record://keys";
-    /// To `rec-canvas`, with the keystroke overlay on: the pointer, global, or `null` when it left
-    /// the recorded rectangle. To `rec-target`, while the setup picks a window: the pointer,
-    /// global, or `null` over the bar or off the display.
+    /// To `rec-canvas`, with the keystroke overlay, drawing or the spotlight on: the pointer,
+    /// global, or `null` when it left the recorded rectangle. To `rec-target`, while the setup
+    /// picks a window: the pointer, global, or `null` over the bar or off the display.
     pub const POINTER: &str = "record://pointer";
+    /// To the `rec-*` panels: drawing or the spotlight changed, or the take that has them began
+    /// or ended. Payload: `PresentState` or `null`.
+    pub const PRESENT: &str = "record://present";
+    /// To `rec-canvas` only: take back the last stroke or wipe them all. Payload: `InkCommand`.
+    pub const INK: &str = "record://ink";
     /// To the trim window only: the recording it shows. Payload: `RecordingInfo`.
     pub const TRIM: &str = "record://trim";
     /// To `rec-bar` only: the bar belongs on the other side of its stage, and the window waits
@@ -216,6 +222,27 @@ pub fn record_bubble_set(app: AppHandle, change: BubbleChange) {
 #[tauri::command]
 pub fn record_canvas_state(app: AppHandle) -> Option<CanvasConfig> {
     recording::canvas_state(&app)
+}
+
+// ------------------------------------------------------------------- drawing and spotlight
+
+/// Turns drawing or the spotlight on or off, or changes the tool, the ink, the fade or the spot's
+/// radius, while a take records or pauses; fails with `invalid_argument` without one.
+#[tauri::command]
+pub fn record_present(app: AppHandle, change: PresentChange) -> CommandResult<PresentState> {
+    present::change(&app, change)
+}
+
+/// Drawing and the spotlight of the take that runs, or `None` without one.
+#[tauri::command]
+pub fn record_present_state() -> Option<PresentState> {
+    present::state_now()
+}
+
+/// The rail page reports the size its glass laid out at, so the window fits it.
+#[tauri::command]
+pub fn record_rail_fit(app: AppHandle, size: RailSize) -> CommandResult<()> {
+    present::fit_rail(&app, size)
 }
 
 // ------------------------------------------------------------------- trim and export

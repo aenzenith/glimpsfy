@@ -9,21 +9,25 @@
 //!   take runs it lets every click through. Never recorded.
 //! - `rec-bar` holds the setup bar and the control bar; the page measures it and calls
 //!   `record_bar_fit`. Never recorded.
-//! - `rec-canvas` covers the recorded rectangle, click-through, and draws the click rings and the
-//!   key caps. Recorded.
+//! - `rec-canvas` covers the recorded rectangle, click-through, and draws the click rings, the
+//!   key caps, the drawings and the spotlight. It takes the mouse only in drawing mode
+//!   (`present`). Recorded.
 //! - the webcam bubble, a native panel with the camera's preview (`macos::recording`). Recorded.
 //! - `rec-bubble-ctl` holds the bubble's hover controls. Never recorded.
+//! - `rec-rail` holds drawing mode's tools beside the recorded area; it never takes the keyboard
+//!   (`present`). Never recorded.
 //! - `recorder` is the trim window, an ordinary window.
 //!
 //! Threads: the commands' blocking calls (opening the stream, finishing the file, exports) run
 //! on worker threads; one countdown thread per take ticks the seconds; one tick thread sends
 //! `record://tick` four times a second while a take runs; one watch thread follows the pointer
-//! for the bubble's drag and hover and the keystroke overlay while a setup or a take is open; one
-//! thread at start removes the posters of earlier runs. A quit during a take holds the exit
-//! ([`hold_exit`]); one quit thread stops the take as Stop does, waits until its file is finished
-//! and in the history, and exits.
+//! for the bubble's drag and hover, the keystroke overlay, the rail's and the canvas's hold on the
+//! mouse while a setup or a take is open; one thread at start removes the posters of earlier
+//! runs. A quit during a take holds the exit ([`hold_exit`]); one quit thread stops the take as
+//! Stop does, waits until its file is finished and in the history, and exits.
 
 pub mod media;
+pub mod present;
 pub mod setup;
 
 use std::path::Path;
@@ -52,8 +56,9 @@ pub const TARGET: &str = "rec-target";
 pub const BAR: &str = "rec-bar";
 pub const CANVAS: &str = "rec-canvas";
 pub const BUBBLE_CONTROLS: &str = "rec-bubble-ctl";
+pub const RAIL: &str = "rec-rail";
 /// Every panel of the recorder, which a capture's overlay never takes the keyboard from.
-pub const PANELS: [&str; 4] = [TARGET, BAR, CANVAS, BUBBLE_CONTROLS];
+pub const PANELS: [&str; 5] = [TARGET, BAR, CANVAS, BUBBLE_CONTROLS, RAIL];
 /// The bubble's hover controls, laid over its lower edge.
 const CONTROLS_SIZE: (f64, f64) = (96.0, 44.0);
 
@@ -274,6 +279,7 @@ fn panel(app: &AppHandle, label: &str) -> Option<WebviewWindow> {
                     TARGET => Panel::Target,
                     BAR => Panel::Bar,
                     CANVAS => Panel::Canvas,
+                    // The rail is a keyless panel at the bars' level, as the bubble's controls are.
                     _ => Panel::BubbleControls,
                 };
                 let w = window.clone();
@@ -854,8 +860,10 @@ fn watch(app: &AppHandle) {
                     picking,
                 )
             };
-            // The outline follows the pointer at the display's pace while a window is picked.
-            pace = Duration::from_millis(if picking.is_some() { 16 } else { 30 });
+            // The outline follows the pointer at the display's pace while a window is picked, and
+            // so do the spotlight and the brush ring where they hear the pointer from here.
+            let fast = picking.is_some() || present::wants_fast_watch();
+            pace = Duration::from_millis(if fast { 16 } else { 30 });
             if !open {
                 state(&app).watching.store(false, Ordering::SeqCst);
                 if controls {
@@ -900,6 +908,8 @@ fn watch(app: &AppHandle) {
                     }
                 }
             }
+            // The same for the rail, and the canvas's own hold on the mouse while presenting.
+            present::watch_tick(&app, pointer, down);
 
             if let Some(bubble) = bubble.filter(|b| b.visible) {
                 let over = bubble.rect.contains(pointer);
@@ -968,6 +978,9 @@ fn watch(app: &AppHandle) {
             }
             was_down = down;
 
+            // While drawing or the spotlight follows every move (`present`), this slower feed of
+            // the same pointer would only send old points between them.
+            let keys = keys && !present::feeds_pointer();
             if let (true, Some(canvas)) = (keys, canvas) {
                 let inside = canvas.rect.contains(pointer).then_some(pointer);
                 let moved = match (inside, last_pointer) {
@@ -1255,6 +1268,8 @@ fn go_live(app: &AppHandle, id: &RecordingId) {
         let _ = fit_bar(app, bar, pop, glass);
     }
     ticks(app, id.clone());
+    // Drawing and the spotlight, with their two keys, from now until the take ends.
+    present::begin(app);
 }
 
 fn on_click(app: &AppHandle, point: LogicalPoint) {
@@ -1418,6 +1433,8 @@ fn error_code(code: &str) -> ErrorCode {
 /// Hides the take's windows; back to the setup when the take came from it and ended before
 /// anything was recorded, closed otherwise.
 fn end_take_windows(app: &AppHandle, back_to_setup: bool) {
+    // Drawing mode, the spotlight, the rail and their keys end with the take.
+    present::end(app);
     #[cfg(target_os = "macos")]
     crate::macos::on_main(app, crate::macos::recording::unwatch_input);
     {
@@ -1701,6 +1718,10 @@ pub fn shortcut(app: &AppHandle, action: Action) {
             (Action::DiscardRecording, RecordingState::Recording { .. } | RecordingState::Paused { .. }) => {
                 discard(app.clone(), false).await.map(|_| ())
             }
+            (Action::DrawOnScreen | Action::Spotlight, _) => {
+                present::toggle(&app, action);
+                Ok(())
+            }
             _ => Ok(()),
         };
         if let Err(error) = result {
@@ -1791,16 +1812,18 @@ fn end_for_quit(app: &AppHandle, deadline: Instant) {
     app.exit(0);
 }
 
-/// Whether the recording actions have their keys: always, now that recording works.
+/// Whether the recording actions have their keys: always, now that recording works, and drawing
+/// and the spotlight wherever the pointer can be followed.
 pub fn handles(action: Action) -> bool {
-    matches!(
-        action,
+    match action {
         Action::RecordScreen
-            | Action::RecordDisplay
-            | Action::PauseRecording
-            | Action::MuteMicrophone
-            | Action::DiscardRecording
-    )
+        | Action::RecordDisplay
+        | Action::PauseRecording
+        | Action::MuteMicrophone
+        | Action::DiscardRecording => true,
+        Action::DrawOnScreen | Action::Spotlight => present::available(),
+        _ => false,
+    }
 }
 
 /// The recorder's state, for a bar or target page that opens or reloads during a take.

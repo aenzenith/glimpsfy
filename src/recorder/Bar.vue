@@ -25,6 +25,7 @@ import { permissions_open_settings, permissions_request, permissions_status, typ
 import {
   onRecordBarLayout,
   onRecordLevels,
+  onRecordPresent,
   onRecordSetup,
   onRecordState,
   onRecordTick,
@@ -34,6 +35,8 @@ import {
   record_keep,
   record_meter,
   record_pause,
+  record_present,
+  record_present_state,
   record_resume,
   record_set_microphone_muted,
   record_setup_close,
@@ -45,6 +48,8 @@ import {
   type BarGlass,
   type BarLayout,
   type MeterLevels,
+  type PresentChange,
+  type PresentState,
   type RecordingDevices,
   type RecordingState,
   type RecordSetup,
@@ -63,9 +68,10 @@ import { clamp } from "./geometry";
 import { clock, codeOf, errorText, type ErrorPlace } from "./format";
 import OptionsPop from "./OptionsPop.vue";
 import PermissionPop from "./PermissionPop.vue";
+import PresentPop from "./PresentPop.vue";
 import SetupBar, { type SetupAction } from "./SetupBar.vue";
 
-type Popover = "more" | "mic" | "cam" | "permMic" | "permCam" | "error";
+type Popover = "more" | "mic" | "cam" | "permMic" | "permCam" | "present" | "error";
 
 /** The gap between the bar and what hangs from it. */
 const GAP = 8;
@@ -81,6 +87,8 @@ const devices = ref<RecordingDevices | null>(null);
 const perms = reactive<{ microphone: PermissionState; camera: PermissionState }>({ microphone: "notDetermined", camera: "notDetermined" });
 const levels = shallowRef<MeterLevels>({ microphones: {}, system: null });
 const popover = ref<Popover | null>(null);
+/** Drawing and the spotlight on the take, `null` without one. */
+const present = shallowRef<PresentState | null>(null);
 const problem = ref("");
 const side = ref<"below" | "above">("below");
 /** The bar window's size as the core made it, 0 until it has. */
@@ -153,6 +161,10 @@ const controlModel = computed(() => ({
   finishing: state.value.kind === "finishing" || stopping.value,
   mic: { recorded: takeHasMic.value, live: !muted.value, level: !muted.value && state.value.kind === "recording" ? take.micLevel : 0 },
   asked: asked.value,
+  present: {
+    shown: true,
+    pressed: popover.value === "present" || !!present.value?.drawing || !!present.value?.spotlight,
+  },
   keys: {
     mute: capsText(settings.value?.shortcuts.muteMicrophone),
     pause: capsText(settings.value?.shortcuts.pauseRecording),
@@ -418,6 +430,9 @@ async function controlAction(id: ControlAction): Promise<void> {
       case "mute":
         await record_set_microphone_muted(!muted.value);
         break;
+      case "present":
+        togglePopover("present");
+        break;
       case "stop":
         stopping.value = true;
         await record_stop();
@@ -427,6 +442,17 @@ async function controlAction(id: ControlAction): Promise<void> {
     fail(error, "take");
   } finally {
     if (id === "stop") stopping.value = false;
+  }
+}
+
+/** A change from the Presentation card. Draw on screen closes the card, since drawing mode hands
+ * the keyboard back to the app in front and the card would close with the focus anyway. */
+async function presentChange(change: PresentChange): Promise<void> {
+  if (change.drawing) popover.value = null;
+  try {
+    present.value = await record_present(change);
+  } catch (error) {
+    fail(error, "take");
   }
 }
 
@@ -536,6 +562,7 @@ function anchorOf(kind: string | null): HTMLElement | null {
   if (!bar) return null;
   if (kind === "mic" || kind === "permMic") return bar.querySelector<HTMLElement>('[data-id="mic"]');
   if (kind === "cam" || kind === "permCam") return bar.querySelector<HTMLElement>('[data-id="camera"]');
+  // The Presentation card hangs from the bar's right end, as the design draws it.
   if (kind === "tip") return drawn.value?.tip?.el ?? null;
   return null;
 }
@@ -634,7 +661,14 @@ watch(drawn, () => nextTick(scheduleLayout));
 function closePopover(): void {
   const kind = popover.value;
   popover.value = null;
-  const opener: Partial<Record<Popover, string>> = { more: "more", mic: "micMenu", cam: "cameraMenu", permMic: "mic", permCam: "camera" };
+  const opener: Partial<Record<Popover, string>> = {
+    more: "more",
+    mic: "micMenu",
+    cam: "cameraMenu",
+    permMic: "mic",
+    permCam: "camera",
+    present: "present",
+  };
   const id = kind ? opener[kind] : undefined;
   if (id) barEl.value?.querySelector<HTMLElement>(`[data-id="${id}"]`)?.focus({ preventScroll: true });
 }
@@ -720,6 +754,17 @@ onMounted(async () => {
       }),
     );
     stops.push(await onRecordLevels((next) => void (levels.value = next)));
+    let heardPresent = false;
+    stops.push(
+      await onRecordPresent((next) => {
+        heardPresent = true;
+        present.value = next;
+        if (!next && popover.value === "present") popover.value = null;
+      }),
+    );
+    void record_present_state().then((first) => {
+      if (!heardPresent) present.value = first;
+    });
     stops.push(await on<Settings>(SETTINGS_CHANGED, (next) => void (settings.value = next)));
     stops.push(await on<Permissions>(PERMISSIONS_CHANGED, applyPermissions));
     const [first, saved, status, now] = await Promise.all([
@@ -818,6 +863,15 @@ const onClicks = (on: boolean) => persist((r) => void (r.highlightClicks = on));
         @without="withoutDevice('microphone')"
       />
       <PermissionPop v-else-if="drawn.kind === 'permCam'" device="camera" @open="openPrivacy('camera')" @without="withoutDevice('camera')" />
+      <PresentPop
+        v-else-if="drawn.kind === 'present'"
+        :spotlight="!!present?.spotlight"
+        :fade="present?.fade ?? !!rec?.inkFades"
+        :keys="{ draw: settings?.shortcuts.drawOnScreen ?? null, spotlight: settings?.shortcuts.spotlight ?? null }"
+        @draw="presentChange({ drawing: !present?.drawing })"
+        @spotlight="presentChange({ spotlight: !present?.spotlight })"
+        @fade="presentChange({ fade: $event })"
+      />
       <div v-else-if="drawn.kind === 'error'" class="g-pop g-glass r-problem" data-material="strong" role="alert">
         <GIcon name="warning" :size="16" class="r-warn" />
         <p class="r-problem-text">{{ problem }}</p>
