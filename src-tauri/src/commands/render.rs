@@ -179,6 +179,14 @@ fn find<'a>(images: &'a [EditorSource], token: &str) -> CommandResult<&'a Editor
         .ok_or_else(|| CommandError::not_found("the editor's image is no longer open"))
 }
 
+/// What the subject commands need of the editor image `token`: its colour, its pixels per point
+/// and its own history record.
+pub(super) fn editor_facts(token: &str) -> CommandResult<(ColorInfo, f64, Arc<EditorRecord>)> {
+    let images = editor();
+    let source = find(&images, token)?;
+    Ok((source.color.clone(), source.image.scale, source.record.clone()))
+}
+
 /// The image backgrounds the documents of the editor's images name (`frames.rs` serves their
 /// previews).
 pub(crate) fn editor_backgrounds() -> Vec<String> {
@@ -193,6 +201,11 @@ pub(crate) fn editor_backgrounds() -> Vec<String> {
             _ => None,
         })
         .collect()
+}
+
+/// The tokens of the images the editor holds.
+pub(super) fn editor_tokens() -> Vec<String> {
+    editor().iter().map(|s| s.image.token.clone()).collect()
 }
 
 /// Makes `source` the editor's image and keeps the one before it.
@@ -234,7 +247,7 @@ pub(crate) fn percent_decode(text: &str) -> Option<String> {
 }
 
 /// The header and the pixels of a rendered call, checked against each other.
-fn read_rendered(request: &Request<'_>) -> CommandResult<(RenderHeader, Vec<u8>)> {
+pub(super) fn read_rendered(request: &Request<'_>) -> CommandResult<(RenderHeader, Vec<u8>)> {
     let raw = request
         .headers()
         .get(RENDER_HEADER)
@@ -262,9 +275,9 @@ fn read_rendered(request: &Request<'_>) -> CommandResult<(RenderHeader, Vec<u8>)
 
 /// What a delivery needs: the pixels as a frame tagged with the source's colour, where they came
 /// from, and the app the capture was taken in.
-struct Prepared {
-    frame: Frame,
-    origin: Selection,
+pub(super) struct Prepared {
+    pub(super) frame: Frame,
+    pub(super) origin: Selection,
     front_app: Option<String>,
     /// For the editor's image: its history record and the page's document at this output.
     editor: Option<(Arc<EditorRecord>, Option<String>)>,
@@ -287,7 +300,7 @@ impl Prepared {
 /// Builds the output frame. With `close`, a capture is closed here, before the encoding, so the
 /// overlays go away at once, as they do for a copy without drawings. With `remember`, a
 /// capture's rendered area becomes the last area, as the outputs of `output::take` make it.
-fn prepare(
+pub(super) fn prepare(
     app: &AppHandle,
     header: RenderHeader,
     pixels: Vec<u8>,
@@ -323,7 +336,10 @@ fn prepare(
             let source = find(&images, token)?;
             // The editor's output has no capture; the toast shows on the main display.
             let origin = Selection { capture_id: CaptureId(0), display_id: DisplayId(0), rect: nowhere };
-            editor_record = Some((source.record.clone(), source.document.clone()));
+            // With its background removed, the image is a new one with a record of its own
+            // (`commands/subject.rs`), so the original's entry keeps its pixels.
+            let record = super::subject::record_for(token).unwrap_or_else(|| source.record.clone());
+            editor_record = Some((record, source.document.clone()));
             (source.color.clone(), ScaleFactor(source.image.scale), origin, source.front_app.clone())
         }
     };
@@ -1110,5 +1126,6 @@ pub async fn editor_image(token: String) -> CommandResult<Response> {
 /// window closes, so a 5K frame does not stay in memory.
 #[tauri::command]
 pub fn editor_close(token: String) {
+    super::subject::forget(&token);
     editor().retain(|s| s.image.token != token);
 }

@@ -18,6 +18,7 @@ pub mod record;
 pub mod render;
 pub mod send;
 pub mod settings;
+pub mod subject;
 pub mod update;
 pub mod upload;
 pub mod windows;
@@ -78,6 +79,12 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Syn
         ocr::ocr_model_download,
         ocr::ocr_model_remove,
         ocr::ocr_detect_entities,
+        // subject lifting (annotation)
+        subject::subject_find,
+        subject::subject_cut,
+        subject::subject_copy,
+        subject::subject_copy_rendered,
+        subject::subject_cancel,
         // upload
         upload::upload_providers,
         upload::upload_capture,

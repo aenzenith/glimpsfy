@@ -55,6 +55,8 @@ const ICONS: Record<string, IconDef> = {
     upload: '<path d="M7 15.5H5.75a3.25 3.25 0 0 1-.15-6.45 4.5 4.5 0 0 1 8.8 0 3.25 3.25 0 0 1-.15 6.45H13"/><path d="M10 16.75V10.5"/><path d="M7.75 12.75 10 10.5l2.25 2.25"/>',
     ocr: '<path d="M3.5 7V5.5a2 2 0 0 1 2-2H7M13 3.5h1.5a2 2 0 0 1 2 2V7M16.5 13v1.5a2 2 0 0 1-2 2H13M7 16.5H5.5a2 2 0 0 1-2-2V13"/><path d="M7 7.75h6M7 10h6M7 12.25h3.5"/>',
     pin: '<path d="M7.25 3.5h5.5"/><path d="M8.25 3.5v4.75l-2.5 3h8.5l-2.5-3V3.5"/><path d="M10 11.25v5.25"/>',
+    /* Remove background and Copy subject (design/canvas row 16): a figure lifted out of a dotted frame; only here, not in the kit */
+    subject: '<rect x="2.75" y="2.75" width="14.5" height="14.5" rx="3.25" stroke-dasharray="0.01 3.1"/><circle cx="10" cy="8.1" r="2.35" fill="currentColor" fill-opacity=".38"/><path d="M5.9 14.6c.55-2.1 2.15-3.35 4.1-3.35s3.55 1.25 4.1 3.35" fill="currentColor" fill-opacity=".38"/>',
     record: '<circle cx="10" cy="10" r="6.75"/><circle class="rec" cx="10" cy="10" r="3.6"/>',
     close: '<path d="m5.5 5.5 9 9M14.5 5.5l-9 9"/>',
     /* a capture with the plus badge of a copy drop, for dragging a capture out as a file */

@@ -36,6 +36,13 @@
 //! user closed the overlay); the call then returns [`OcrError::Cancelled`] as soon as the engine
 //! lets go.
 //!
+//! # Subjects
+//!
+//! [`find_subjects`] finds the subjects of an image apart from its background, for the editor's
+//! Remove background and the overlay's Copy subject. It shares this crate because it is one more
+//! Vision request with the same plumbing (the image handler, the cancel watcher, [`CancelToken`]);
+//! see [`Subjects`].
+//!
 //! # Network
 //!
 //! Recognition never touches the network. The only network traffic this crate may cause is the
@@ -56,6 +63,7 @@ pub mod layout;
 pub mod models;
 mod pipeline;
 pub mod prepare;
+mod subjects;
 
 pub use codes::link_for;
 #[cfg(target_os = "macos")]
@@ -67,6 +75,7 @@ pub use entities::{find_entities, Entity, EntityBox, EntityDate, EntityKind};
 pub use image::{decode_image_as, load_image, load_image_as};
 pub use pipeline::{detect_codes, recognize};
 pub use prepare::Preparation;
+pub use subjects::{find_subjects, Subjects};
 
 pub type Result<T, E = OcrError> = std::result::Result<T, E>;
 

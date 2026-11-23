@@ -19,7 +19,7 @@ export type ToolId =
   | "undo"
   | "redo";
 
-export type ActionId = "beautify" | "copy" | "send" | "save" | "upload" | "copy-text" | "pin" | "record" | "close";
+export type ActionId = "beautify" | "copy" | "send" | "save" | "upload" | "copy-text" | "copy-subject" | "pin" | "record" | "close";
 
 export type Tool = { id: ToolId; label: Key; key: string; momentary?: boolean };
 export type Action = { id: ActionId; icon: string; label: Key; key: string };
@@ -54,6 +54,8 @@ export const ACTIONS: (Action | null)[] = [
   { id: "save", icon: "save", label: "action.save", key: "⌘S" },
   { id: "upload", icon: "upload", label: "action.upload", key: "⌘U" },
   { id: "copy-text", icon: "text-recognition", label: "action.copyText", key: "⇧⌘C" },
+  // macOS 14 only (`subjectLift`); the page leaves it out elsewhere.
+  { id: "copy-subject", icon: "subject", label: "action.copySubject", key: "⌥⌘B" },
   { id: "pin", icon: "pin", label: "action.pin", key: "⌘P" },
   null,
   { id: "record", icon: "record", label: "action.record", key: "⌘R" },
@@ -62,7 +64,7 @@ export const ACTIONS: (Action | null)[] = [
 ];
 
 /** The actions that work in this build; the others say so when used. */
-export const WORKING_ACTIONS: ActionId[] = ["beautify", "copy", "send", "save", "upload", "copy-text", "pin", "record", "close"];
+export const WORKING_ACTIONS: ActionId[] = ["beautify", "copy", "send", "save", "upload", "copy-text", "copy-subject", "pin", "record", "close"];
 
 export const INKS = ["red", "orange", "yellow", "green", "cyan", "blue", "white", "black"] as const;
 

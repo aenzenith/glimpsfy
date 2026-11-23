@@ -215,7 +215,13 @@ pub async fn ocr_detect_entities(result: OcrResult, kinds: Vec<EntityKind>) -> C
 /// Stopping a job that already ended does nothing.
 #[tauri::command]
 pub fn ocr_cancel(job: String) {
-    if let Some(found) = jobs().lock().unwrap_or_else(|p| p.into_inner()).get(&job) {
+    cancel_job(&job);
+}
+
+/// Stops the job named `job`, whichever command started it (`subject_cancel` stops a subject
+/// search this way).
+pub(super) fn cancel_job(job: &str) {
+    if let Some(found) = jobs().lock().unwrap_or_else(|p| p.into_inner()).get(job) {
         found.cancel.cancel();
     }
 }
@@ -492,14 +498,14 @@ fn jobs() -> &'static Mutex<HashMap<String, Job>> {
 }
 
 /// A running job, registered while it lives so that `ocr_cancel` and a closing capture can stop
-/// it.
-struct JobGuard {
+/// it. The subject commands (`commands/subject.rs`) register theirs here too.
+pub(super) struct JobGuard {
     key: String,
-    cancel: CancelToken,
+    pub(super) cancel: CancelToken,
 }
 
 impl JobGuard {
-    fn start(app: &AppHandle, job: Option<String>, capture: Option<CaptureId>) -> JobGuard {
+    pub(super) fn start(app: &AppHandle, job: Option<String>, capture: Option<CaptureId>) -> JobGuard {
         watch_captures(app);
         static NEXT: AtomicU64 = AtomicU64::new(1);
         let key = job.unwrap_or_else(|| format!("#{}", NEXT.fetch_add(1, Ordering::SeqCst)));

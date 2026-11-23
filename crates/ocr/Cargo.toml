@@ -37,7 +37,10 @@ objc2-foundation = { workspace = true, features = ["std", "NSArray", "NSString",
 objc2-core-foundation = { workspace = true, features = ["std", "CFCGTypes", "CFData", "CFDictionary", "CFString", "CFURL"] }
 objc2-core-graphics = { workspace = true, features = ["std", "CGImage", "CGColorSpace", "CGDataProvider", "CGContext", "CGBitmapContext", "CGGeometry"] }
 objc2-image-io = { version = "0.3.2", default-features = false, features = ["std", "CGImageSource", "objc2-core-graphics"] }
-objc2-vision = { version = "0.3.2", default-features = false, features = ["std", "block2", "objc2-core-foundation", "objc2-core-graphics", "VNRequest", "VNRecognizeTextRequest", "VNDetectBarcodesRequest", "VNObservation", "VNRequestHandler", "VNTypes", "VNGeometry"] }
+# `VNGenerateForegroundInstanceMaskRequest` (macOS 14) finds the subjects that Remove background
+# lifts (`src/subjects.rs`); its masks arrive as CoreVideo pixel buffers.
+objc2-vision = { version = "0.3.2", default-features = false, features = ["std", "block2", "objc2-core-foundation", "objc2-core-graphics", "objc2-core-video", "VNRequest", "VNRecognizeTextRequest", "VNDetectBarcodesRequest", "VNGenerateForegroundInstanceMaskRequest", "VNObservation", "VNRequestHandler", "VNTypes", "VNGeometry"] }
+objc2-core-video = { version = "0.3.2", default-features = false, features = ["std", "CVBase", "CVBuffer", "CVImageBuffer", "CVPixelBuffer", "CVReturn"] }
 objc2-natural-language = { version = "0.3.2", default-features = false, features = ["std", "NLLanguage", "NLLanguageRecognizer"] }
 
 [dev-dependencies]

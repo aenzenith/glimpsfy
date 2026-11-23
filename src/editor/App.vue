@@ -15,6 +15,7 @@ import { computed, nextTick, onMounted, onUnmounted, provide, reactive, ref, sha
 
 import BeautifyPanel from "../components/BeautifyPanel.vue";
 import GIcon from "../components/GIcon.vue";
+import ProgressRing from "../components/ProgressRing.vue";
 import TipWrap from "../components/TipWrap.vue";
 import OptionsStrip from "../annotate/OptionsStrip.vue";
 import RedactionNotice from "../annotate/RedactionNotice.vue";
@@ -61,12 +62,16 @@ import {
 } from "../lib/api/render";
 import { settings_get, settings_set } from "../lib/api/settings";
 import { app_choose_file, pin_open } from "../lib/api/windows";
+import { subject_cancel, subject_cut, subject_find } from "../lib/api/subject";
 import { SETTINGS_CHANGED } from "../lib/events";
 import { language, t, type Key } from "../lib/i18n";
+import { can } from "../lib/platform";
 import type { ImageFormat, Settings } from "../lib/settings";
+import { jobName } from "../ocr/text";
 import { TOOLS, toolForKey, type ToolId } from "../overlay/tools";
 import FirstUploadDialog from "../upload/FirstUploadDialog.vue";
 import ObjectsPanel from "./ObjectsPanel.vue";
+import SubjectChip from "./SubjectChip.vue";
 import UnsavedSheet from "./UnsavedSheet.vue";
 import { GRID_ZOOM, MAX_ZOOM, MIN_ZOOM, ZOOM_MENU, clampPan, fit, fitWidth, kOf, opening, percentOf, step, zoomAt, type Room, type ZoomMode } from "./view";
 
@@ -197,6 +202,7 @@ function screen(r: { x: number; y: number; width: number; height: number }) {
 }
 const boxStyle = (r: { x: number; y: number; w: number; h: number }) => ({ left: px(r.x), top: px(r.y), width: px(r.w), height: px(r.h) });
 
+const imageBox = computed(() => (area.value ? boxStyle(screen(area.value)) : null));
 /** The lift's shadow goes round the beautified image when there is a style. */
 const liftBox = computed(() => (framed.value ? boxStyle(screen(framed.value)) : null));
 const gridStyle = computed(() => {
@@ -500,6 +506,8 @@ async function show(img: EditorImage): Promise<void> {
     const { width, height } = next.pixels;
     image.value = img;
     source.value = next;
+    original = next;
+    forgetSubjects();
     fileBytes.value = img.encoding === "file" ? buffer.byteLength : null;
     fromHistory.value = img.entryId !== null;
     unsavedNew.value = img.combinedFrom !== null;
@@ -556,7 +564,8 @@ async function openPath(path: string): Promise<void> {
 function unsavedText(): string {
   if (unsavedNew.value) return t("editor.unsaved.lostCombined");
   const n = count.value;
-  const lost = n === 0 ? t("editor.unsaved.lostCrop") : n === 1 ? t("editor.unsaved.lostOne") : t("editor.unsaved.lostOther", { n });
+  const unchanged = engine.baseDirty() ? t("editor.unsaved.lostBackground") : t("editor.unsaved.lostCrop");
+  const lost = n === 0 ? unchanged : n === 1 ? t("editor.unsaved.lostOne") : t("editor.unsaved.lostOther", { n });
   const keep = !image.value?.path ? t("editor.unsaved.keepNothing") : fromHistory.value ? t("editor.unsaved.keepHistory") : t("editor.unsaved.keepFile");
   return `${lost} ${keep}`;
 }
@@ -594,18 +603,21 @@ function rendered(): RenderedImage | null {
   return { source: { kind: "editor", token: img.token }, width: r.width, height: r.height, colorSpace: r.colorSpace, data: r.data, beautify, format: pngOnce.value ? "png" : null };
 }
 
-/** Copy, Save and Save as; resolves whether the image left. */
-async function output(kind: "copy" | "save" | "saveAs"): Promise<boolean> {
+/** Copy, Save and Save as; resolves whether the image left. `format` names the format Save as
+ * suggests instead of the settings' (Save as PNG in the subject chip). */
+async function output(kind: "copy" | "save" | "saveAs", format: ImageFormat | null = null): Promise<boolean> {
   if (busy.value) return false;
-  const r = rendered();
-  if (!r) return false;
   busy.value = true;
   try {
+    // The image without its background may still be on its way.
+    await baseChain;
+    const r = rendered();
+    if (!r) return false;
     // The history keeps the document with the entry this output makes or updates.
     if (r.source.kind === "editor") await editor_set_document(r.source.token, JSON.stringify(serializeDocument(engine.doc)));
     if (kind === "copy") await output_copy_rendered(r);
     else {
-      await (kind === "save" ? output_save_rendered(r) : output_save_as_rendered(r));
+      await (kind === "save" ? output_save_rendered(r) : output_save_as_rendered(format ? { ...r, format } : r));
       engine.markSaved();
       unsavedNew.value = false;
     }
@@ -621,10 +633,11 @@ async function output(kind: "copy" | "save" | "saveAs"): Promise<boolean> {
 /** Upload and Pin take a file: the rendered image is staged first. */
 async function staged(then: (path: string) => Promise<unknown>): Promise<void> {
   if (busy.value) return;
-  const r = rendered();
-  if (!r) return;
   busy.value = true;
   try {
+    await baseChain;
+    const r = rendered();
+    if (!r) return;
     await then(await output_stage_rendered(r));
   } catch (error) {
     say(errorText(error));
@@ -638,10 +651,11 @@ async function staged(then: (path: string) => Promise<unknown>): Promise<void> {
 const uploads = uploadFlow({
   async send(provider) {
     if (busy.value) return;
-    const r = rendered();
-    if (!r) return;
     busy.value = true;
     try {
+      await baseChain;
+      const r = rendered();
+      if (!r) return;
       await upload_capture_rendered(r, provider);
     } finally {
       busy.value = false;
@@ -664,6 +678,294 @@ function copyText(): void {
   if (!textLayerComponent) return say(t("overlay.notReady"));
   textLayerVisible.value = !textLayerVisible.value;
 }
+
+// ---------------------------------------------------------------- removing the background
+
+/** The subjects Vision found in the image: the number of the subject over each pixel (0 for the
+ * background) and a thumbnail of each. */
+type Lift = { token: string; width: number; height: number; labels: Uint8Array; count: number; thumbs: string[] };
+
+/** A thumbnail's side in pixels: the chip's 28 points on a 2× screen. */
+const THUMB = 56;
+/** The longest side of the mask the outline of a subject is drawn from. */
+const MASK = 2048;
+
+const lift = shallowRef<Lift | null>(null);
+/** The image's own pixels: the subjects are found in them and they come back with the background. */
+let original: ImageSource | null = null;
+const chip = ref<"working" | "none" | "failed" | "done" | null>(null);
+/** The subjects the image without its background keeps, by number. */
+const keep = ref<number[]>([]);
+const jpegOutput = ref(false);
+/** Vision is looking; `liftSlow` once it has taken 300 ms, when the ring and the sweep show. */
+const lifting = ref(false);
+const liftSlow = ref(false);
+let liftJob: string | null = null;
+let slowTimer = 0;
+/** Each change of the base reaches the core in turn, and every output waits for the last one, so
+ * the pixels it renders and the record the core files them under belong to the same image. */
+let baseChain: Promise<void> = Promise.resolve();
+const hoveredSubject = ref<number | null>(null);
+const haloEl = ref<HTMLCanvasElement | null>(null);
+const masks = new Map<number, HTMLCanvasElement>();
+
+const lifted = computed(() => (rev.value, engine.base !== null));
+const keyOf = (subjects: readonly number[]) => [...subjects].sort((a, b) => a - b).join(",");
+const subjectsOf = (key: string) => key.split(",").map(Number);
+
+engine.onBase = (base) => {
+  void applyBase(base);
+  hoveredSubject.value = null;
+  if (base === null) chip.value = null;
+  else if (lift.value) {
+    keep.value = subjectsOf(base);
+    chip.value = "done";
+  }
+};
+
+/** Remove background (⌥⌘B); pressed again, it brings the background back. Each is one undo step;
+ * choosing the subjects in the chip is none. */
+async function removeBackground(): Promise<void> {
+  const img = image.value;
+  if (!img || !original || lifting.value || !can("subjectLift")) return;
+  engine.finishText();
+  if (engine.base !== null) {
+    chip.value = null;
+    hoveredSubject.value = null;
+    engine.setBase(null);
+    void applyBase(null);
+    return;
+  }
+  const found = await findSubjects(img.token, original);
+  if (!found || image.value?.token !== img.token || engine.base !== null) return;
+  if (found.count === 0) {
+    chip.value = "none";
+    return;
+  }
+  keep.value = Array.from({ length: found.count }, (_, i) => i + 1);
+  const key = keyOf(keep.value);
+  engine.setBase(key);
+  chip.value = "done";
+  void applyBase(key);
+  void checkFormat();
+}
+
+async function findSubjects(token: string, own: ImageSource): Promise<Lift | null> {
+  if (lift.value?.token === token) return lift.value;
+  const job = jobName();
+  liftJob = job;
+  lifting.value = true;
+  slowTimer = window.setTimeout(() => {
+    if (liftJob !== job) return;
+    liftSlow.value = true;
+    chip.value = "working";
+  }, 300);
+  try {
+    const { width, height, data } = own.pixels;
+    const buffer = await subject_find({ token, width, height, colorSpace: own.colorSpace, data }, job);
+    if (liftJob !== job) return null;
+    const labels = new Uint8Array(buffer);
+    let count = 0;
+    for (const label of labels) if (label > count) count = label;
+    const found: Lift = { token, width, height, labels, count, thumbs: [] };
+    found.thumbs = thumbnails(found, own);
+    lift.value = found;
+    if (chip.value === "working") chip.value = null;
+    return found;
+  } catch (error) {
+    if (liftJob !== job) return null;
+    if (error instanceof ApiError && error.code === "cancelled") chip.value = null;
+    else {
+      console.warn("[glimpsfy] the subjects could not be lifted", error);
+      chip.value = "failed";
+    }
+    return null;
+  } finally {
+    if (liftJob === job) endLifting();
+  }
+}
+
+/** Esc and Cancel while Vision is looking: the image stays as it was. */
+function cancelLift(): void {
+  const job = liftJob;
+  if (!job) return;
+  endLifting();
+  chip.value = null;
+  void subject_cancel(job).catch(() => {});
+}
+
+function endLifting(): void {
+  liftJob = null;
+  lifting.value = false;
+  liftSlow.value = false;
+  clearTimeout(slowTimer);
+}
+
+/** A new image: its subjects are still to be found. */
+function forgetSubjects(): void {
+  if (liftJob) cancelLift();
+  lift.value = null;
+  chip.value = null;
+  keep.value = [];
+  hoveredSubject.value = null;
+  masks.clear();
+  baseChain = Promise.resolve();
+}
+
+/** Shows the image `key` names (the original for `null`) and tells the core which image the
+ * outputs are, so they go to the history record that belongs to it. */
+function applyBase(key: string | null): Promise<void> {
+  const token = image.value?.token;
+  const own = original;
+  const run = async () => {
+    if (!token || !own || image.value?.token !== token) return;
+    const buffer = await subject_cut(token, key === null ? null : subjectsOf(key));
+    // A newer image or a newer change of the base has the last word.
+    if (image.value?.token !== token || engine.base !== key) return;
+    if (key === null) source.value = own;
+    else {
+      const { width, height } = own.pixels;
+      const data = new Uint8ClampedArray(buffer) as Bytes;
+      if (data.length !== width * height * 4) throw new Error("the image without its background does not match the image");
+      const canvas = scratchCanvas(width, height);
+      context2d(canvas, own.colorSpace).putImageData(new ImageData(data, width, height, { colorSpace: own.colorSpace }), 0, 0);
+      source.value = { pixels: { width, height, data }, colorSpace: own.colorSpace, canvas };
+    }
+  };
+  baseChain = baseChain.then(run).catch((error) => say(errorText(error)));
+  return baseChain;
+}
+
+/** A tap on a thumbnail drops its subject or brings it back; the last one stays. */
+function toggleSubject(n: number): void {
+  const next = keep.value.includes(n) ? keep.value.filter((k) => k !== n) : [...keep.value, n];
+  if (next.length === 0) return;
+  keep.value = next.sort((a, b) => a - b);
+  const key = keyOf(next);
+  engine.replaceBase(key);
+  void applyBase(key);
+}
+
+/** Save fills the transparent areas with white when the output format is JPEG, so the chip says so. */
+async function checkFormat(): Promise<void> {
+  try {
+    jpegOutput.value = (await settings_get()).output.format === "jpeg";
+  } catch {
+    jpegOutput.value = false;
+  }
+}
+
+/** Each subject on its own, fitted into a square: averaged from four samples per pixel of the
+ * image's pixels where the subject covers them. */
+function thumbnails(found: Lift, own: ImageSource): string[] {
+  const { width, height, labels, count } = found;
+  const data = own.pixels.data;
+  const boxes = Array.from({ length: count }, () => ({ x0: width, y0: height, x1: -1, y1: -1 }));
+  for (let y = 0; y < height; y++) {
+    const row = y * width;
+    for (let x = 0; x < width; x++) {
+      const label = labels[row + x];
+      if (!label) continue;
+      const b = boxes[label - 1];
+      if (x < b.x0) b.x0 = x;
+      if (x > b.x1) b.x1 = x;
+      if (y < b.y0) b.y0 = y;
+      if (y > b.y1) b.y1 = y;
+    }
+  }
+  return boxes.map((b, i) => {
+    if (b.x1 < 0) return "";
+    const n = i + 1;
+    const bw = b.x1 - b.x0 + 1;
+    const bh = b.y1 - b.y0 + 1;
+    const k = Math.max(bw, bh) / THUMB;
+    const left = b.x0 - (THUMB * k - bw) / 2;
+    const top = b.y0 - (THUMB * k - bh) / 2;
+    const out = new Uint8ClampedArray(THUMB * THUMB * 4) as Bytes;
+    for (let ty = 0; ty < THUMB; ty++) {
+      for (let tx = 0; tx < THUMB; tx++) {
+        let r = 0, g = 0, bl = 0, a = 0;
+        for (const [fx, fy] of [[0.25, 0.25], [0.75, 0.25], [0.25, 0.75], [0.75, 0.75]]) {
+          const sx = Math.floor(left + (tx + fx) * k);
+          const sy = Math.floor(top + (ty + fy) * k);
+          if (sx < 0 || sy < 0 || sx >= width || sy >= height || labels[sy * width + sx] !== n) continue;
+          const j = (sy * width + sx) * 4;
+          const alpha = data[j + 3];
+          r += data[j] * alpha;
+          g += data[j + 1] * alpha;
+          bl += data[j + 2] * alpha;
+          a += alpha;
+        }
+        if (!a) continue;
+        const o = (ty * THUMB + tx) * 4;
+        out[o] = r / a;
+        out[o + 1] = g / a;
+        out[o + 2] = bl / a;
+        out[o + 3] = a / 4;
+      }
+    }
+    const canvas = document.createElement("canvas");
+    canvas.width = THUMB;
+    canvas.height = THUMB;
+    canvas.getContext("2d", { colorSpace: own.colorSpace })?.putImageData(new ImageData(out, THUMB, THUMB, { colorSpace: own.colorSpace }), 0, 0);
+    return canvas.toDataURL("image/png");
+  });
+}
+
+/** The white silhouette of subject `n` at no more than `MASK` pixels a side, drawn under the
+ * image so that only its rim and glow show around the subject. */
+function maskOf(n: number): HTMLCanvasElement | null {
+  const found = lift.value;
+  if (!found) return null;
+  const cached = masks.get(n);
+  if (cached) return cached;
+  const f = Math.min(1, MASK / Math.max(found.width, found.height));
+  const w = Math.max(1, Math.round(found.width * f));
+  const h = Math.max(1, Math.round(found.height * f));
+  const out = new Uint8ClampedArray(w * h * 4) as Bytes;
+  for (let y = 0; y < h; y++) {
+    const sy = Math.min(found.height - 1, Math.floor((y + 0.5) / f));
+    for (let x = 0; x < w; x++) {
+      const sx = Math.min(found.width - 1, Math.floor((x + 0.5) / f));
+      if (found.labels[sy * found.width + sx] === n) out.fill(255, (y * w + x) * 4, (y * w + x) * 4 + 4);
+    }
+  }
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  canvas.getContext("2d")?.putImageData(new ImageData(out, w, h), 0, 0);
+  masks.set(n, canvas);
+  return canvas;
+}
+
+/** Where the outline of the subject under the pointer goes: clipped to the shown part of the
+ * image, with the whole image's mask offset inside it. */
+const halo = computed(() => {
+  const n = hoveredSubject.value;
+  if (n === null || !lifted.value || !keep.value.includes(n) || !area.value || !lift.value) return null;
+  const { k } = view.value;
+  return {
+    clip: boxStyle(screen(area.value)),
+    image: { left: px(-area.value.x * k), top: px(-area.value.y * k), width: px(lift.value.width * k), height: px(lift.value.height * k) },
+  };
+});
+watch(
+  [hoveredSubject, haloEl],
+  ([n, canvas]) => {
+    if (n === null || !canvas) return;
+    const mask = maskOf(n);
+    if (!mask) return;
+    canvas.width = mask.width;
+    canvas.height = mask.height;
+    canvas.getContext("2d")?.drawImage(mask, 0, 0);
+  },
+  { flush: "post" },
+);
+
+// A tool takes the strip's place back, and the chip goes.
+watch(pick, (now) => {
+  if (now && chip.value !== null && chip.value !== "working") chip.value = null;
+});
 
 // ----------------------------------------------------------------------------- the view
 
@@ -889,6 +1191,17 @@ function onKeyDown(e: KeyboardEvent): void {
     return;
   }
   if (!source.value) return;
+  if (e.key === "Escape" && lifting.value) {
+    e.preventDefault();
+    cancelLift();
+    return;
+  }
+  // ⌥ changes the letter a key types on macOS, so the key is read by its place.
+  if (command && e.altKey && e.code === "KeyB") {
+    e.preventDefault();
+    void removeBackground();
+    return;
+  }
   if (e.key === " " && !command) {
     e.preventDefault();
     spaceHeld.value = true;
@@ -1068,6 +1381,21 @@ onUnmounted(() => {
           <GIcon name="ocr" />
         </button>
       </TipWrap>
+      <TipWrap v-if="can('subjectLift')" :tip="t('action.removeBackground')" :caps="['⌥', '⌘', 'B']" side="below">
+        <button
+          type="button"
+          class="g-btn"
+          :aria-label="t('action.removeBackground')"
+          aria-keyshortcuts="Alt+Meta+B"
+          :aria-pressed="liftSlow ? undefined : lifted"
+          :aria-busy="lifting || undefined"
+          :disabled="!source"
+          @click="removeBackground"
+        >
+          <ProgressRing v-if="liftSlow" :progress="null" :label="t('editor.subject.working')" :size="18" />
+          <GIcon v-else name="subject" />
+        </button>
+      </TipWrap>
       <TipWrap :tip="t('action.pin')" :caps="['⌘', 'P']" side="below" align="end">
         <button type="button" class="g-btn" :aria-label="t('action.pin')" :disabled="!source || busy" @click="pin"><GIcon name="pin" /></button>
       </TipWrap>
@@ -1127,10 +1455,12 @@ onUnmounted(() => {
         @dblclick="onDoubleClick"
         @wheel="onWheel"
       >
-        <div v-if="liftBox" class="e-lift" :style="liftBox" aria-hidden="true" />
+        <div v-if="liftBox" class="e-lift" :style="liftBox" :data-alpha="lifted || undefined" aria-hidden="true" />
         <!-- The beautify style's background, shadow and frame, under the surface. -->
         <canvas v-if="ringShown && source" :key="source.colorSpace" ref="ringEl" class="e-ring" aria-hidden="true" />
+        <div v-if="halo" class="e-halo" :style="halo.clip" aria-hidden="true"><canvas ref="haloEl" :style="halo.image" /></div>
         <Surface v-if="source" :engine="engine" :source="source" :view="view" :area="area" />
+        <div v-if="liftSlow && imageBox" class="e-sweep" :style="imageBox" aria-hidden="true" />
         <div v-if="gridStyle" class="e-pixgrid" :style="gridStyle" aria-hidden="true" />
 
         <template v-if="cropBox">
@@ -1190,6 +1520,21 @@ onUnmounted(() => {
             </TipWrap>
           </template>
         </div>
+
+        <SubjectChip
+          v-if="chip && source && !pick"
+          :state="chip"
+          :count="lift?.count ?? 0"
+          :keep="keep"
+          :thumbs="lift?.thumbs ?? []"
+          :jpeg="jpegOutput"
+          @toggle="toggleSubject"
+          @hover="hoveredSubject = $event"
+          @copy="output('copy')"
+          @cancel="cancelLift"
+          @hide="chip = null; hoveredSubject = null"
+          @save-png="output('saveAs', 'png')"
+        />
 
         <div v-if="!source && !loading && dropName === null" class="g-empty e-empty">
           <div class="g-empty-icon"><GIcon name="image" :size="32" /></div>
@@ -1359,6 +1704,48 @@ onUnmounted(() => {
 }
 .e-rail .g-btn[data-on] {
   color: var(--surface-iris-text);
+}
+/* Without its background the image sits on the checkerboard that stands for transparency. */
+.e-lift[data-alpha] {
+  box-shadow: 0 0 0 var(--hairline) var(--win-line);
+  background: repeating-conic-gradient(#d8d8de 0 25%, #ffffff 0 50%) 0 0 / 14px 14px;
+}
+[data-theme="dark"] .e-lift[data-alpha] {
+  background: repeating-conic-gradient(#3a3a42 0 25%, #1c1c21 0 50%) 0 0 / 14px 14px;
+}
+/* The subject under the pointer in the chip: its white silhouette lies under the image, so only
+   the rim and the glow around it show. */
+.e-halo {
+  position: absolute;
+  overflow: hidden;
+  pointer-events: none;
+}
+.e-halo > canvas {
+  position: absolute;
+  filter: drop-shadow(0 0 1.1px #fff) drop-shadow(0 0 1.1px #fff) drop-shadow(0 0 6px rgba(255, 255, 255, 0.8));
+}
+/* A light passing over the image while Vision looks. */
+.e-sweep {
+  position: absolute;
+  z-index: 4;
+  pointer-events: none;
+  background: linear-gradient(118deg, rgba(255, 255, 255, 0) 28%, rgba(255, 255, 255, 0.5) 44%, rgba(255, 255, 255, 0) 60%) no-repeat;
+  background-size: 300% 100%;
+  animation: e-sweep 1.6s ease-in-out infinite;
+}
+@keyframes e-sweep {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: 0 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .e-sweep {
+    animation: none;
+    background-position: 50% 0;
+  }
 }
 .e-pixgrid {
   position: absolute;

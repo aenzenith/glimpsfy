@@ -10,8 +10,9 @@ import type { SentToast } from "./send";
 
 export type WindowKind = "editor" | "recorder" | "popover" | "history" | "settings" | "firstrun";
 
-/** `diskFull`: a recording stopped because the disk was almost full, and it is saved at `path`. */
-export type ToastKind = "copied" | "saved" | "failed" | "textCopied" | "diskFull" | "pathCopied" | "sent";
+/** `diskFull`: a recording stopped because the disk was almost full, and it is saved at `path`.
+ * `subjectCopied`: the subjects of a selection reached the clipboard as a transparent PNG; `subjects` says how many. */
+export type ToastKind = "copied" | "saved" | "failed" | "textCopied" | "diskFull" | "pathCopied" | "sent" | "subjectCopied";
 
 /** The payload of `toast://show`. The toast page words it in the user's language. */
 export type Toast = {
@@ -41,6 +42,8 @@ export type Toast = {
   send?: SentToast | null;
   /** A `pathCopied` toast's path points into the inbox, deleted after a day (history off). */
   temporary?: boolean;
+  /** How many subjects a `subjectCopied` toast's image holds. */
+  subjects?: number | null;
 };
 
 export const window_open = (kind: WindowKind) => call<void>("window_open", { kind });

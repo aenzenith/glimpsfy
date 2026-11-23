@@ -1,5 +1,6 @@
 //! Apple's Vision framework: text with `VNRecognizeTextRequest`, codes with
-//! `VNDetectBarcodesRequest`, and the dominant language with `NLLanguageRecognizer`.
+//! `VNDetectBarcodesRequest`, the dominant language with `NLLanguageRecognizer`, and the subjects
+//! that Remove background lifts with `VNGenerateForegroundInstanceMaskRequest` ([`foreground`]).
 //!
 //! Vision reports boxes normalised to 0…1 with the origin at the bottom-left corner; every box
 //! leaves this file in pixels of the image with the origin at the top-left corner. The requests
@@ -23,11 +24,17 @@ use objc2_core_graphics::{
     kCGColorSpaceSRGB, CGBitmapInfo, CGColorRenderingIntent, CGColorSpace, CGDataProvider, CGImage, CGImageAlphaInfo,
     CGImageByteOrderInfo,
 };
+use objc2_core_video::{
+    kCVPixelFormatType_OneComponent32Float, kCVPixelFormatType_OneComponent8, kCVReturnSuccess, CVPixelBuffer,
+    CVPixelBufferGetBaseAddress, CVPixelBufferGetBytesPerRow, CVPixelBufferGetHeight, CVPixelBufferGetPixelFormatType,
+    CVPixelBufferGetWidth, CVPixelBufferLockBaseAddress, CVPixelBufferLockFlags, CVPixelBufferUnlockBaseAddress,
+};
 use objc2_foundation::{NSArray, NSDictionary, NSError, NSIndexSet, NSObjectProtocol, NSRange, NSString};
 use objc2_natural_language::NLLanguageRecognizer;
 use objc2_vision::{
-    VNBarcodeObservation, VNDetectBarcodesRequest, VNImageRequestHandler, VNRecognizeTextRequest, VNRecognizedText,
-    VNRectangleObservation, VNRequest, VNRequestProgressProviding, VNRequestTextRecognitionLevel,
+    VNBarcodeObservation, VNDetectBarcodesRequest, VNGenerateForegroundInstanceMaskRequest, VNImageRequestHandler,
+    VNRecognizeTextRequest, VNRecognizedText, VNRectangleObservation, VNRequest, VNRequestProgressProviding,
+    VNRequestTextRecognitionLevel,
 };
 
 use crate::{
@@ -302,19 +309,127 @@ fn symbology_of(name: &NSString) -> Symbology {
     }
 }
 
+// ----------------------------------------------------------------------------------- subjects
+
+/// The mask of every subject Vision's foreground request finds (people, animals and objects), in
+/// Vision's order. Each mask is one byte per pixel at the image's size, from 0 outside the
+/// subject to 255 inside it, with soft values along its edge. An image without a subject gives
+/// none.
+pub(crate) fn foreground(image: &Frame, cancel: &CancelToken) -> Result<Vec<Vec<u8>>> {
+    cancel.check()?;
+    autoreleasepool(|_| read_foreground(image, cancel))
+}
+
+fn read_foreground(image: &Frame, cancel: &CancelToken) -> Result<Vec<Vec<u8>>> {
+    let (width, height) = (image.size.width as usize, image.size.height as usize);
+    if width == 0 || height == 0 {
+        return Ok(Vec::new());
+    }
+    let cg_image = cg_image(image)?;
+    // The scaled masks are read through the handler that ran the request, so it is kept.
+    let handler = handler(&cg_image);
+    // SAFETY: a plain initialiser.
+    let request = unsafe { VNGenerateForegroundInstanceMaskRequest::new() };
+    perform_on(&handler, &request, cancel)?;
+
+    // SAFETY: reads the results of a finished request.
+    let Some(observation) = unsafe { request.results() }.and_then(|r| r.firstObject()) else {
+        return Ok(Vec::new());
+    };
+    // SAFETY: a plain property read on a finished observation.
+    let instances = unsafe { observation.allInstances() };
+    let mut masks = Vec::with_capacity(instances.count());
+    let mut index = instances.firstIndex();
+    // NSNotFound is NSIntegerMax.
+    while index != isize::MAX as usize {
+        cancel.check()?;
+        let one = NSIndexSet::indexSetWithIndex(index);
+        // Each mask is a float buffer the size of the image, so its pool is drained before the
+        // next one is made.
+        let mask = autoreleasepool(|_| {
+            // SAFETY: `handler` performed the request this observation came from, which the
+            // method requires, and `one` names an instance of the observation.
+            let buffer =
+                unsafe { observation.generateScaledMaskForImageForInstances_fromRequestHandler_error(&one, &handler) }
+                    .map_err(|error| OcrError::Engine(describe(&error)))?;
+            read_mask(&buffer, width, height)
+        })?;
+        masks.push(mask);
+        index = instances.indexGreaterThanIndex(index);
+    }
+    cancel.check()?;
+    Ok(masks)
+}
+
+/// One mask as bytes at `width` × `height`. Vision gives 32-bit floats from 0 to 1 at the
+/// image's size; a buffer of eight bits or of another size is read too, sampled to that size.
+fn read_mask(buffer: &CVPixelBuffer, width: usize, height: usize) -> Result<Vec<u8>> {
+    let format = CVPixelBufferGetPixelFormatType(buffer);
+    let float = if format == kCVPixelFormatType_OneComponent32Float {
+        true
+    } else if format == kCVPixelFormatType_OneComponent8 {
+        false
+    } else {
+        return Err(OcrError::Engine(format!("the subject mask has the pixel format {format:#x}")));
+    };
+    let flags = CVPixelBufferLockFlags::ReadOnly;
+    // SAFETY: locks a buffer Vision made for reading; it is unlocked below on every path.
+    if unsafe { CVPixelBufferLockBaseAddress(buffer, flags) } != kCVReturnSuccess {
+        return Err(OcrError::Engine("the subject mask could not be read".into()));
+    }
+    let base = CVPixelBufferGetBaseAddress(buffer).cast::<u8>().cast_const();
+    let (row, w, h) =
+        (CVPixelBufferGetBytesPerRow(buffer), CVPixelBufferGetWidth(buffer), CVPixelBufferGetHeight(buffer));
+    let depth = if float { 4 } else { 1 };
+    let result = if base.is_null() || w == 0 || h == 0 || row < w * depth {
+        Err(OcrError::Engine("the subject mask is empty".into()))
+    } else {
+        // SAFETY: a locked buffer of `h` rows of `row` bytes, each holding `w` values of
+        // `depth` bytes, stays valid until it is unlocked below.
+        let bytes = unsafe { std::slice::from_raw_parts(base, row * (h - 1) + w * depth) };
+        let mut mask = Vec::with_capacity(width * height);
+        for y in 0..height {
+            let line = &bytes[(y * h / height) * row..];
+            for x in 0..width {
+                let at = (x * w / width) * depth;
+                let value = if float {
+                    let v = f32::from_ne_bytes([line[at], line[at + 1], line[at + 2], line[at + 3]]);
+                    (v.clamp(0.0, 1.0) * 255.0).round() as u8
+                } else {
+                    line[at]
+                };
+                mask.push(value);
+            }
+        }
+        Ok(mask)
+    };
+    // SAFETY: the lock taken above.
+    unsafe { CVPixelBufferUnlockBaseAddress(buffer, flags) };
+    result
+}
+
 // ----------------------------------------------------------------------------------- plumbing
 
 /// Runs one request over one image, and cancels it when the token is cancelled.
 fn perform(image: &CGImage, request: &VNRequest, cancel: &CancelToken) -> Result<()> {
+    perform_on(&handler(image), request, cancel)
+}
+
+/// A handler for one image. A request that reads more from the handler after it ran (the subject
+/// masks) keeps the handler and runs with [`perform_on`].
+fn handler(image: &CGImage) -> Retained<VNImageRequestHandler> {
     // SAFETY: allocates a handler for an image that outlives it; the options are empty.
-    let handler = unsafe {
+    unsafe {
         VNImageRequestHandler::initWithCGImage_options(
             VNImageRequestHandler::alloc(),
             image,
             &NSDictionary::<NSString, AnyObject>::new(),
         )
-    };
+    }
+}
 
+/// Runs one request with `handler`, and cancels it when the token is cancelled.
+fn perform_on(handler: &VNImageRequestHandler, request: &VNRequest, cancel: &CancelToken) -> Result<()> {
     let finished = Arc::new(AtomicBool::new(false));
     let watcher = Watcher::start(request, cancel.clone(), finished.clone());
     let requests = NSArray::from_slice(&[request]);

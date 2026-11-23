@@ -242,6 +242,9 @@ pub enum ToastKind {
     /// Send to app: `send` says which app and how far the paste got, and `send://state` moves the
     /// same toast on to the next phase.
     Sent,
+    /// The subjects of a selection reached the clipboard as a transparent PNG (Copy subject);
+    /// `subjects` says how many.
+    SubjectCopied,
 }
 
 /// One toast; the toast page words it in the user's language from `kind` and the details.
@@ -277,6 +280,8 @@ pub struct Toast {
     pub send: Option<crate::commands::send::SentToast>,
     /// A copied path points into the inbox, whose files are deleted after a day (history off).
     pub temporary: bool,
+    /// How many subjects a `SubjectCopied` toast's image holds.
+    pub subjects: Option<u32>,
 }
 
 impl Toast {
@@ -299,6 +304,7 @@ impl Toast {
             capture_id: None,
             send: None,
             temporary: false,
+            subjects: None,
         }
     }
 }

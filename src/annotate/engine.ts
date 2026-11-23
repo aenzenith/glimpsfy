@@ -109,9 +109,9 @@ function newId(kind: string): string {
 }
 
 /** The undo and redo stack: each entry is a whole object list. */
-/** One state of the history: the drawings and the beautify style around them, so a change in the
- * beautify panel is a step like a drawing. */
-type Step = { objects: Objects; beautify: BeautifyStyle | null };
+/** One state of the history: the drawings, the image under them (`AnnotationEngine.base`) and the
+ * beautify style around it, so a change in the beautify panel is a step like a drawing. */
+type Step = { objects: Objects; base: string | null; beautify: BeautifyStyle | null };
 
 class History {
   past: Step[] = [];
@@ -135,6 +135,13 @@ class History {
       const rest = step.objects.filter((o) => o.kind !== "crop");
       return { ...step, objects: crop ? [crop, ...rest] : rest };
     };
+    this.past = this.past.map(swap);
+    this.future = this.future.map(swap);
+  }
+
+  /** Changes one base into another in every entry, for a base change that is not a step of its own. */
+  rewriteBase(from: string | null, to: string | null): void {
+    const swap = (step: Step): Step => (step.base === from ? { ...step, base: to } : step);
     this.past = this.past.map(swap);
     this.future = this.future.map(swap);
   }
@@ -165,6 +172,12 @@ export class AnnotationEngine {
   onPrefs: (prefs: AnnotatePrefs) => void = () => {};
   /** Called when a blur or pixelate is drawn and the notice was never dismissed. */
   onRedaction: () => void = () => {};
+  /** The image under the drawings, named by the surface: `null` is the image itself, any other
+   * name an image the surface made of it (Remove background). Undo and redo step through it with
+   * the drawings, so it is part of the history and not of the document. */
+  base: string | null = null;
+  /** Called when undo, redo or Esc in crop mode changes `base`, so the surface shows that image. */
+  onBase: (base: string | null) => void = () => {};
 
   private history = new History();
   private gesture: Gesture | null = null;
@@ -176,8 +189,9 @@ export class AnnotationEngine {
   /** The object list when the current gesture or text edit began. */
   private before: Objects | null = null;
   private saved: Objects;
+  private savedBase: string | null = null;
   private savedBeautify: BeautifyStyle | null;
-  private cropSession: { objects: Objects; beautify: BeautifyStyle | null; past: number } | null = null;
+  private cropSession: { objects: Objects; base: string | null; beautify: BeautifyStyle | null; past: number } | null = null;
 
   constructor(
     doc: AnnotationDocument,
@@ -244,13 +258,19 @@ export class AnnotationEngine {
     return this.history.future.length > 0;
   }
 
-  /** Whether the document differs from the last `markSaved`. */
+  /** Whether the document or the base differs from the last `markSaved`. */
   dirty(): boolean {
-    return this.doc.objects !== this.saved || this.doc.beautify !== this.savedBeautify;
+    return this.doc.objects !== this.saved || this.base !== this.savedBase || this.doc.beautify !== this.savedBeautify;
+  }
+
+  /** Whether only the base differs from the last `markSaved`. */
+  baseDirty(): boolean {
+    return this.doc.objects === this.saved && this.doc.beautify === this.savedBeautify && this.base !== this.savedBase;
   }
 
   markSaved(): void {
     this.saved = this.doc.objects;
+    this.savedBase = this.base;
     this.savedBeautify = this.doc.beautify;
     this.bump();
   }
@@ -303,15 +323,39 @@ export class AnnotationEngine {
     this.set(after);
   }
 
-  /** The history entry of `objects`. */
+  /** The history entry of `objects` over the current base. */
   private step(objects: Objects): Step {
-    return { objects, beautify: this.doc.beautify };
+    return { objects, base: this.base, beautify: this.doc.beautify };
   }
 
   /** Goes back or forward to a history entry. */
   private restore(step: Step): void {
+    if (step.base !== this.base) {
+      this.base = step.base;
+      this.onBase(step.base);
+    }
     if (step.beautify !== this.doc.beautify) this.doc = { ...this.doc, beautify: step.beautify };
     this.set(step.objects);
+  }
+
+  /** Makes `base` the image under the drawings, as one undo step (Remove background, and the
+   * same button again to bring the background back). */
+  setBase(base: string | null): void {
+    this.finishText();
+    if (base === this.base) return;
+    this.history.push(this.step(this.doc.objects));
+    this.base = base;
+    this.bump();
+  }
+
+  /** Changes the base without a step of its own: every entry that held the current base holds
+   * `base` now, so picking which subjects stay is no extra ⌘Z, and the one ⌘Z that brings the
+   * background back stays one. */
+  replaceBase(base: string | null): void {
+    if (base === this.base) return;
+    this.history.rewriteBase(this.base, base);
+    this.base = base;
+    this.bump();
   }
 
   private replace(id: string, next: AnnotationObject): Objects {
@@ -325,6 +369,8 @@ export class AnnotationEngine {
     this.doc = doc;
     this.saved = unsaved ? [] : doc.objects;
     this.savedBeautify = unsaved ? null : doc.beautify;
+    this.base = null;
+    this.savedBase = null;
     this.selectedId = null;
     this.groupIds = [];
     this.editingId = null;
@@ -356,7 +402,7 @@ export class AnnotationEngine {
     if (tool === "crop") {
       this.selectedId = null;
       this.groupIds = [];
-      this.cropSession = { objects: this.doc.objects, beautify: this.doc.beautify, past: this.history.past.length };
+      this.cropSession = { objects: this.doc.objects, base: this.base, beautify: this.doc.beautify, past: this.history.past.length };
     }
     if (tool && (tool === "blur" || tool === "pixelate") && !this.prefs.redactionNoticeSeen) this.onRedaction();
     this.bump();
@@ -415,7 +461,7 @@ export class AnnotationEngine {
     if (session) {
       this.history.past.length = Math.min(this.history.past.length, session.past);
       this.history.future = [];
-      this.restore({ objects: session.objects, beautify: session.beautify });
+      this.restore({ objects: session.objects, base: session.base, beautify: session.beautify });
     }
     this.cropSession = null;
     this.setTool(null);

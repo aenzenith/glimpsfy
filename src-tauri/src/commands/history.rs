@@ -561,6 +561,15 @@ impl EditorRecord {
         Arc::new(EditorRecord { entry: Mutex::new(entry), source, base, origin })
     }
 
+    /// A record for a new image made from this one (the image with its background removed): it
+    /// says the same about where the pixels came from, but it is no entry's image yet. It
+    /// neither revises the entry this record's outputs made or reopened, nor updates the capture
+    /// it was reopened from, so the original pixels stay in the history as they were; its first
+    /// output adds an entry of its own.
+    pub fn fork(&self, base: EditorBase) -> Arc<Self> {
+        EditorRecord::new(base, self.origin.clone(), None, None)
+    }
+
     fn base_bytes(&self) -> CommandResult<Vec<u8>> {
         match &self.base {
             EditorBase::Frame(frame) => Ok(frame.encode_png(PngEffort::Fast)?),
@@ -1403,4 +1412,32 @@ fn respond(app: &AppHandle, request: &Request<Vec<u8>>) -> Response<Cow<'static,
         builder
     };
     builder.status(status).body(Cow::Owned(body)).unwrap_or_else(|_| reply(StatusCode::INTERNAL_SERVER_ERROR))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The image with its background removed is a new image. If its record carried the entry it
+    /// was reopened from, its Save would replace that entry's file with the cut one, and the
+    /// original pixels would be gone from the history for good.
+    #[test]
+    fn a_forked_record_leaves_the_entries_it_came_from_alone() {
+        let source = EntryId("capture".into());
+        let edit = EntryId("edit".into());
+        let origin = EditorOrigin { name: Some("Product photo".into()), ..EditorOrigin::default() };
+        let original =
+            EditorRecord::new(EditorBase::Bytes(Arc::new(b"original".to_vec())), origin, Some(source), Some(edit));
+
+        let fork = original.fork(EditorBase::Bytes(Arc::new(b"cut".to_vec())));
+
+        assert_eq!(fork.source, None);
+        assert_eq!(*fork.entry.lock().unwrap(), None);
+        assert_eq!(fork.base_bytes().unwrap(), b"cut");
+        assert_eq!(fork.origin.name.as_deref(), Some("Product photo"));
+        // The record it came from still revises its own entry with its own pixels.
+        assert_eq!(original.source, Some(EntryId("capture".into())));
+        assert_eq!(*original.entry.lock().unwrap(), Some(EntryId("edit".into())));
+        assert_eq!(original.base_bytes().unwrap(), b"original");
+    }
 }

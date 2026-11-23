@@ -976,6 +976,7 @@ function shortTitle(item: Item): string {
       const n = lineCount(toast.text);
       return n === 1 ? t("toast.short.lines.one") : t("toast.short.lines.many", { n });
     }
+    if (toast.kind === "subjectCopied") return t("toast.subjectCopied");
     if (toast.kind === "pathCopied") return t("toast.short.pathCopied");
     if (toast.kind === "sent") return sentTitle(toast);
     return sentence(item);
@@ -1001,6 +1002,7 @@ function sentence(item: Item): string {
       const n = lineCount(toast.text);
       return n === 1 ? t("toast.lines.one") : t("toast.lines.many", { n });
     }
+    if (toast.kind === "subjectCopied") return t("toast.subjectCopied");
     if (toast.kind === "pathCopied") return t("toast.pathCopied");
     if (toast.kind === "sent") return sentTitle(toast);
     if (toast.kind === "diskFull") return t("toast.diskFull");
@@ -1022,6 +1024,12 @@ function savedFallback(toast: Toast): string | null {
 function lineCount(text: string | null): number {
   if (!text) return 1;
   return text.split(/\r?\n/).filter((line) => line.trim()).length || 1;
+}
+
+/** "3 subjects · transparent PNG" for Copy subject. */
+function subjectsLine(toast: Toast): string {
+  const n = toast.subjects ?? 1;
+  return n === 1 ? t("toast.subjects.one", { n }) : t("toast.subjects.other", { n });
 }
 
 /** The first words of copied text, its lines joined with a middle dot. */
@@ -1247,7 +1255,7 @@ onUnmounted(() => {
       :role="status(item) === 'warn' ? 'alert' : 'status'"
       :data-tall="tall(item) || undefined"
     >
-      <div class="g-toast-thumb">
+      <div class="g-toast-thumb" :data-alpha="item.capture?.kind === 'subjectCopied' || undefined">
         <img v-if="thumbOf(item)" :src="thumbOf(item)!" alt="" draggable="false" />
         <span v-else class="thumb-icon"><GIcon :name="placeholderIcon(item)" :size="18" /></span>
         <span v-if="status(item) === 'progress'" class="g-status" data-status="progress">
@@ -1282,6 +1290,7 @@ onUnmounted(() => {
           <div v-else-if="item.capture.kind === 'sent'" class="g-toast-body" :data-kind="tall(item) ? 'wrap' : undefined">
             {{ sentBody(item.capture) }}
           </div>
+          <div v-else-if="item.capture.kind === 'subjectCopied'" class="g-toast-body">{{ subjectsLine(item.capture) }}</div>
           <div v-else-if="item.capture.kind === 'textCopied'" class="g-toast-body" :title="item.capture.text ?? undefined">
             {{ quote(item.capture.text) }}
           </div>
@@ -1340,6 +1349,12 @@ onUnmounted(() => {
 .stack {
   position: absolute;
   width: var(--toast-w);
+}
+/* A lifted subject has no background, so its thumbnail sits on the checkerboard that stands for
+   transparency, whole rather than cropped to the frame. */
+.g-toast-thumb[data-alpha] > img {
+  object-fit: contain;
+  background: repeating-conic-gradient(#3a3a42 0 25%, #1c1c21 0 50%) 0 0 / 8px 8px;
 }
 /* A send's title names the app, which can be long; it takes a second row rather than lose the
    app's name to the ellipsis. */

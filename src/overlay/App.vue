@@ -11,6 +11,7 @@ import { computed, nextTick, onMounted, onUnmounted, provide, reactive, ref, sha
 
 import BeautifyPanel, { type PreviewSource } from "../components/BeautifyPanel.vue";
 import GIcon from "../components/GIcon.vue";
+import ProgressRing from "../components/ProgressRing.vue";
 import SizeLabel from "../components/SizeLabel.vue";
 import SizeMenu from "../components/SizeMenu.vue";
 import SendList from "../components/SendList.vue";
@@ -48,6 +49,7 @@ import { permissions_open_settings } from "../lib/api/permissions";
 import { record_setup } from "../lib/api/record";
 import { send_copy_path, send_list_targets, send_to_app, type SendTargets } from "../lib/api/send";
 import { output_save_as_rendered } from "../lib/api/render";
+import { subject_copy, subject_copy_rendered } from "../lib/api/subject";
 import { upload_capture } from "../lib/api/upload";
 import { pin_open, window_open_settings } from "../lib/api/windows";
 import { can } from "../lib/platform";
@@ -75,6 +77,7 @@ import { cssColor, drawLens, ensureContext, hex, loadFrame, pixelAt } from "./fr
 import { place, placeLoupe, type Placement, type Rect } from "./layout";
 import { ACTIONS, TOOLS, WORKING_ACTIONS, actionForChord, toolForKey, type ActionId, type ToolId } from "./tools";
 import FirstUploadDialog from "../upload/FirstUploadDialog.vue";
+import { jobName } from "../ocr/text";
 import "./overlay.css";
 import * as modes from "./modes";
 import { useOverlayBeautify } from "./beautify";
@@ -143,8 +146,17 @@ const savedSizes = ref<SavedSize[]>([]);
 /** The open send list (⌘↩, Send) with what it lists, and where it stands. */
 const sendList = shallowRef<SendTargets | null>(null);
 const sendAt = ref<Point>({ x: -9999, y: -9999 });
-/** The action bar's buttons; Send only where the core can press keys in another app. */
-const actions = computed(() => ACTIONS.filter((a) => (a?.id !== "send" || can("sendToApp")) && (a?.id !== "beautify" || beautifiable.value)));
+/** The action bar's buttons; Send only where the core can press keys in another app, Copy
+ * subject only where Vision lifts subjects (macOS 14). */
+const actions = computed(() =>
+  ACTIONS.filter(
+    (a) => (a?.id !== "send" || can("sendToApp")) && (a?.id !== "copy-subject" || can("subjectLift")) &&
+      (a?.id !== "beautify" || beautifiable.value),
+  ),
+);
+/** Copy subject has been looking for 300 ms: its button turns into a ring and a light passes
+ * over the selection. */
+const subjectSlow = ref(false);
 /** Beautify for this capture (`beautify.ts`); its panel stands beside the action bar. */
 const beautify = useOverlayBeautify(say);
 const beautifyEl = ref<InstanceType<typeof BeautifyPanel> | null>(null);
@@ -706,6 +718,7 @@ async function act(id: ActionId): Promise<void> {
   if (id === "beautify") return toggleBeautify();
   if (id === "send") return toggleSend();
   if (id === "copy-text") return toggleTextLayer();
+  if (id === "copy-subject") return copySubject();
   if (id === "record") return record();
   if (id === "upload") {
     if (frame.value && sel.value && !busy && mode.value === "sel") void uploads.start();
@@ -733,6 +746,32 @@ async function act(id: ActionId): Promise<void> {
   } catch (error) {
     say(errorText(error));
   } finally {
+    busy = false;
+  }
+}
+
+/** Copy subject (⌥⌘B): every subject in the selection goes to the clipboard as one transparent
+ * PNG and the capture closes, as it does for Copy. Vision always looks at the capture under the
+ * drawings; a selection without a subject says so and stays open. Esc closes the capture, which
+ * stops the search. */
+async function copySubject(): Promise<void> {
+  const f = frame.value;
+  const r = sel.value;
+  if (!f || !r || busy || mode.value !== "sel" || !can("subjectLift")) return;
+  busy = true;
+  const job = jobName();
+  const slow = window.setTimeout(() => (subjectSlow.value = true), 300);
+  try {
+    engine.finishText();
+    const rendered = renderedSelection(f, r);
+    const selection = { captureId: f.captureId, displayId, rect: { x: r.x, y: r.y, width: r.w, height: r.h } };
+    const done = rendered ? await subject_copy_rendered(rendered, job) : await subject_copy(selection, job);
+    if (done.subjects === 0) say(t("editor.subject.none"));
+  } catch (error) {
+    if (!(error instanceof ApiError && error.code === "cancelled")) say(errorText(error));
+  } finally {
+    clearTimeout(slow);
+    subjectSlow.value = false;
     busy = false;
   }
 }
@@ -1581,6 +1620,11 @@ function onKeyDown(e: KeyboardEvent): void {
     void copyPath();
     return;
   }
+  if ((e.metaKey || e.ctrlKey) && e.altKey && !e.shiftKey && e.code === "KeyB") {
+    e.preventDefault();
+    void act("copy-subject");
+    return;
+  }
   if (e.key === "Enter") {
     e.preventDefault();
     void act("copy");
@@ -1712,6 +1756,7 @@ onUnmounted(() => {
         :composed="drawn"
         :chrome="mode === 'sel'"
       />
+      <div v-if="subjectSlow && sel" class="o-sweep" :style="box(sel)" aria-hidden="true" />
 
       <div v-if="hovered && !hasSel" class="o-win" :style="{ ...box({ x: hovered.rect.x, y: hovered.rect.y, w: hovered.rect.width, h: hovered.rect.height }), '--o-radius': `${hovered.cornerRadius ?? 10}px` }" />
       <div v-if="chip" ref="chipEl" class="g-glass o-winchip o-float" :style="at(chipAt)">
@@ -1918,7 +1963,8 @@ onUnmounted(() => {
             :data-on="item.id === 'beautify' && beautify.on.value ? '' : undefined"
             @click="act(item.id)"
           >
-            <GIcon :name="item.icon" />
+            <ProgressRing v-if="item.id === 'copy-subject' && subjectSlow" :progress="null" :label="t('editor.subject.working')" :size="18" />
+            <GIcon v-else :name="item.icon" />
           </button>
           <span class="g-tip" role="tooltip" :data-state="allTips ? 'show' : undefined"
             >{{ item.id === "beautify" && beautify.on.value ? t("beautify.turnOff") : t(item.label) }}<kbd class="g-kbd">{{ item.key }}</kbd></span
@@ -1989,5 +2035,27 @@ onUnmounted(() => {
   inset: 0;
   z-index: 8;
   pointer-events: none;
+}
+/* A light passing over the selection while Vision looks for its subjects. */
+.o-sweep {
+  position: absolute;
+  pointer-events: none;
+  background: linear-gradient(118deg, rgba(255, 255, 255, 0) 28%, rgba(255, 255, 255, 0.5) 44%, rgba(255, 255, 255, 0) 60%) no-repeat;
+  background-size: 300% 100%;
+  animation: o-sweep 1.6s ease-in-out infinite;
+}
+@keyframes o-sweep {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: 0 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .o-sweep {
+    animation: none;
+    background-position: 50% 0;
+  }
 }
 </style>

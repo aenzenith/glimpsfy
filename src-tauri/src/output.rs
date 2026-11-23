@@ -161,6 +161,28 @@ pub fn deliver_many(
     action: OutputAction,
     report_to: Report,
 ) -> CommandResult<Vec<OutputDone>> {
+    deliver_all(app, images, action, report_to, None)
+}
+
+/// Copies the subjects lifted out of a selection (Copy subject, `commands/subject.rs`) as one
+/// transparent PNG, as [`deliver`] copies any image, with the Subject copied toast that says how
+/// many `subjects` it holds. A cut-out leaves without the capture's beautify style, which would
+/// fill the transparency that makes it one.
+pub fn deliver_subjects(app: &AppHandle, frame: Frame, origin: Origin, subjects: u32) -> CommandResult<OutputDone> {
+    let origin = Origin { beautify: None, ..origin };
+    deliver_all(app, vec![(frame, origin)], OutputAction::Copy, Report::ALL, Some(subjects))?
+        .into_iter()
+        .next()
+        .ok_or_else(|| CommandError::internal("no image was delivered"))
+}
+
+fn deliver_all(
+    app: &AppHandle,
+    images: Vec<(Frame, Origin)>,
+    action: OutputAction,
+    report_to: Report,
+    subjects: Option<u32>,
+) -> CommandResult<Vec<OutputDone>> {
     let Some(first) = images.first().map(|(_, origin)| origin.clone()) else {
         return Ok(Vec::new());
     };
@@ -178,7 +200,7 @@ pub fn deliver_many(
                 .map(|path| save_images(app, &settings.output, &images, Some(&path)))
         }
     };
-    report(app, &images, &first, result, report_to)
+    report(app, &images, &first, result, report_to, subjects)
 }
 
 /// What every image goes through before it leaves, whichever way it leaves (a delivery, or a
@@ -584,6 +606,7 @@ fn report(
     first: &Origin,
     result: CommandResult<Vec<CommandResult<Delivered>>>,
     report_to: Report,
+    subjects: Option<u32>,
 ) -> CommandResult<Vec<OutputDone>> {
     let results = match result {
         Ok(results) => results,
@@ -620,7 +643,13 @@ fn report(
         });
 
         if report_to.toast {
-            let mut toast = Toast::new(if saved { ToastKind::Saved } else { ToastKind::Copied });
+            let kind = match (saved, subjects) {
+                (true, _) => ToastKind::Saved,
+                (false, Some(_)) => ToastKind::SubjectCopied,
+                (false, None) => ToastKind::Copied,
+            };
+            let mut toast = Toast::new(kind);
+            toast.subjects = subjects;
             toast.capture_id = (origin.capture_id.0 != 0).then_some(origin.capture_id);
             toast.thumbnail = small;
             toast.width = Some(done.width);
@@ -830,18 +859,24 @@ pub(crate) fn thumbnail(frame: &Frame) -> Option<String> {
                 (tx * frame.size.width / tw, ((tx + 1) * frame.size.width / tw).max(tx * frame.size.width / tw + 1));
             // Up to 4 × 4 samples of the block are enough for a thumbnail.
             let (sx, sy) = (((x1 - x0) / 4).max(1), ((y1 - y0) / 4).max(1));
-            let (mut sum, mut n) = ([0u32; 4], 0u32);
+            // The colours are weighed by their alpha, so the colour a transparent pixel still
+            // holds (the background a lifted subject left) does not tint the edge it shares with
+            // an opaque one. For an opaque frame this is the plain average.
+            let (mut sum, mut alpha, mut n) = ([0u32; 3], 0u32, 0u32);
             for y in (y0..y1).step_by(sy as usize) {
                 for x in (x0..x1).step_by(sx as usize) {
                     if let Some(px) = frame.rgba_at(x, y) {
+                        let a = px[3] as u32;
                         for (s, v) in sum.iter_mut().zip(px) {
-                            *s += v as u32;
+                            *s += v as u32 * a;
                         }
+                        alpha += a;
                         n += 1;
                     }
                 }
             }
-            data.extend(sum.map(|s| (s / n.max(1)) as u8));
+            let rgb = sum.map(|s| s.checked_div(alpha).unwrap_or(0) as u8);
+            data.extend([rgb[0], rgb[1], rgb[2], (alpha / n.max(1)) as u8]);
         }
     }
     let color = ColorInfo { space: frame.color.space, icc_profile: frame.color.icc_profile.clone() };
