@@ -1899,7 +1899,7 @@ dependencies = [
 
 [[package]]
 name = "glimpsfy"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "ashpd",
  "auto-launch",
@@ -1947,7 +1947,7 @@ dependencies = [
 
 [[package]]
 name = "glimpsfy-annotate"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -1956,7 +1956,7 @@ dependencies = [
 
 [[package]]
 name = "glimpsfy-capture"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "ashpd",
  "async-io",
@@ -1991,7 +1991,7 @@ dependencies = [
 
 [[package]]
 name = "glimpsfy-history"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "glimpsfy-upload",
  "jpeg-encoder",
@@ -2031,7 +2031,7 @@ dependencies = [
 
 [[package]]
 name = "glimpsfy-ocr"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "block2",
  "chrono",
@@ -2062,7 +2062,7 @@ dependencies = [
 
 [[package]]
 name = "glimpsfy-record"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "block2",
  "color_quant",
@@ -2101,7 +2101,7 @@ dependencies = [
 
 [[package]]
 name = "glimpsfy-upload"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "apple-native-keyring-store",
  "chrono",
