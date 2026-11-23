@@ -165,6 +165,7 @@ const ACTIONS: RefRow[] = [
   { name: "settings.shortcuts.overlay.upload", caps: ["⌘", "U"] },
   { name: "settings.shortcuts.overlay.copyText", caps: ["⇧", "⌘", "C"] },
   { name: "settings.shortcuts.overlay.pin", caps: ["⌘", "P"] },
+  ...(can("scrollCapture") ? [{ name: "settings.shortcuts.overlay.scroll", caps: ["⌘", "↓"] } as RefRow] : []),
   { name: "settings.shortcuts.overlay.record", caps: ["⌘", "R"] },
   { name: "settings.shortcuts.overlay.close", caps: ["Esc"] },
 ];

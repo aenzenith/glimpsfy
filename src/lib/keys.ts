@@ -22,6 +22,7 @@ export const SHORTCUT_GROUPS = [
       "captureAreaDelayed",
       "repeatLastArea",
       "copyText",
+      "scrollCapture",
     ],
   },
   {

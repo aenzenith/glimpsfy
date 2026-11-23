@@ -4,6 +4,7 @@
 //!
 //! - `commands/`: the `#[tauri::command]` API, one file per area, one handler list.
 //! - `session`: the capture flow from the shortcut to the closed overlay.
+//! - `scroll`: the scrolling capture: the selection's live stream, the stitcher and auto scroll.
 //! - `capture_log`: the log of slow and failed still captures, in release builds too.
 //! - `frames`: the URI scheme that serves frozen frames to the overlays.
 //! - `windows`: the overlay pool, the toast and the ordinary windows.
@@ -29,6 +30,7 @@ mod permissions;
 mod pins;
 mod popover;
 mod recording;
+mod scroll;
 mod send;
 mod session;
 mod settings;

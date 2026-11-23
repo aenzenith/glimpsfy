@@ -25,6 +25,7 @@ const CAPTURE_ALL: &str = "capture-all-displays";
 const REPEAT_AREA: &str = "repeat-last-area";
 const CAPTURE_DELAYED: &str = "capture-area-delayed";
 const COPY_TEXT: &str = "copy-text";
+const SCROLL_CAPTURE: &str = "scroll-capture";
 const CANCEL_DELAY: &str = "cancel-delay";
 const DELAY_PREFIX: &str = "delay-";
 const HISTORY: &str = "history";
@@ -96,6 +97,10 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
     for (id, text, key) in modes {
         items.push(Box::new(item(app, id, text, key.as_deref())?));
     }
+    // Only the macOS build streams the selection and posts scroll events (`scroll.rs`).
+    if cfg!(target_os = "macos") {
+        items.push(Box::new(item(app, SCROLL_CAPTURE, word("tray.scroll"), keys.scroll_capture.as_deref())?));
+    }
     items.push(Box::new(PredefinedMenuItem::separator(app)?));
 
     if session::delay::is_running() {
@@ -150,6 +155,7 @@ pub(crate) fn on_menu(app: &AppHandle, id: &str) {
         REPEAT_AREA => Some(CaptureMode::RepeatLastArea),
         CAPTURE_DELAYED => Some(CaptureMode::AreaDelayed),
         COPY_TEXT => Some(CaptureMode::CopyText),
+        SCROLL_CAPTURE => Some(CaptureMode::ScrollCapture),
         _ => None,
     };
     if let Some(mode) = mode {

@@ -1,7 +1,8 @@
 // What the overlay does once a selection is finished, by the capture's mode and Settings ›
 // General › After a selection: stay with the bars for annotation, copy and close, save and close,
-// or copy the text in it ("Copy text from area"). A clicked window is first captured on its own,
-// so Copy and Save deliver the window with its real transparency instead of the crop.
+// copy the text in it ("Copy text from area"), or scroll through it (the scrolling capture). A
+// clicked window is first captured on its own, so Copy and Save deliver the window with its real
+// transparency instead of the crop.
 // Owner: capture (milestone 1); the page wires it in `App.vue`.
 
 import { capture_close, capture_pick_window, overlay_failed, type OverlayFrame, type PickedWindow, type Selection } from "../lib/api/capture";
@@ -9,8 +10,9 @@ import { ocr_copy_text } from "../lib/api/ocr";
 import { output_copy, output_save } from "../lib/api/output";
 
 /** `stay`: the bars show and the user goes on; `done`: the capture closed; `empty`: copy text
- * found nothing, so the selection stays for another try and the page says so. */
-export type Finish = "stay" | "done" | "empty";
+ * found nothing, so the selection stays for another try and the page says so; `scroll`: the page
+ * goes straight into the scrolling capture of the selection. */
+export type Finish = "stay" | "done" | "empty" | "scroll";
 
 /**
  * Runs the mode's action on a finished selection. `windowId` is the window the user clicked, if
@@ -53,6 +55,8 @@ export async function finish(
       await capture_close(frame.captureId);
       return "done";
     }
+    case "scroll":
+      return "scroll";
   }
 }
 

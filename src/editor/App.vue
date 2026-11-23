@@ -71,9 +71,10 @@ import { jobName } from "../ocr/text";
 import { TOOLS, toolForKey, type ToolId } from "../overlay/tools";
 import FirstUploadDialog from "../upload/FirstUploadDialog.vue";
 import ObjectsPanel from "./ObjectsPanel.vue";
+import Overview from "./Overview.vue";
 import SubjectChip from "./SubjectChip.vue";
 import UnsavedSheet from "./UnsavedSheet.vue";
-import { GRID_ZOOM, MAX_ZOOM, MIN_ZOOM, ZOOM_MENU, clampPan, fit, fitWidth, kOf, opening, percentOf, step, zoomAt, type Room, type ZoomMode } from "./view";
+import { GRID_ZOOM, MAX_ZOOM, MIN_ZOOM, TALL, ZOOM_MENU, clampPan, fit, fitWidth, kOf, opening, percentOf, step, zoomAt, type Room, type ZoomMode } from "./view";
 
 /** A handle's hit radius in screen points, as in the overlay. */
 const HANDLE_HIT = 14;
@@ -1003,6 +1004,21 @@ function openingView(): void {
   zoomMode.value = chosen.mode;
 }
 
+/** A tall image (a scrolling capture's result) that overflows the canvas shows its overview at
+ * the right edge, in the room fit width leaves there. */
+const overviewShown = computed(() => {
+  const a = area.value;
+  if (!a || !source.value || a.height <= a.width * TALL) return false;
+  return a.height * view.value.k > room.height - room.top - room.bottom;
+});
+
+/** The overview's press or drag: image row `y` comes to the middle of the canvas. */
+function panTo(y: number): void {
+  if (!framed.value) return;
+  const k = view.value.k;
+  view.value = clampPan({ k, ox: view.value.ox, oy: room.height / 2 - y * k }, framed.value, room);
+}
+
 function applyFit(mode: "fit" | "width"): void {
   if (!framed.value) return;
   view.value = mode === "fit" ? fit(framed.value, room, scale.value) : fitWidth(framed.value, room, scale.value);
@@ -1460,6 +1476,7 @@ onUnmounted(() => {
         <canvas v-if="ringShown && source" :key="source.colorSpace" ref="ringEl" class="e-ring" aria-hidden="true" />
         <div v-if="halo" class="e-halo" :style="halo.clip" aria-hidden="true"><canvas ref="haloEl" :style="halo.image" /></div>
         <Surface v-if="source" :engine="engine" :source="source" :view="view" :area="area" />
+        <Overview v-if="overviewShown && source && area" :source="source" :area="area" :view="view" :room="room" @pan="panTo" />
         <div v-if="liftSlow && imageBox" class="e-sweep" :style="imageBox" aria-hidden="true" />
         <div v-if="gridStyle" class="e-pixgrid" :style="gridStyle" aria-hidden="true" />
 

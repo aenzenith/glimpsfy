@@ -11,6 +11,7 @@
 //! - [`window`] finishes a window capture (square corners, background fill) the same way on
 //!   every platform.
 //! - [`backend`] is the trait for stills and permissions; [`stream`] is the recording side.
+//! - [`stitch`] joins the frames of a scrolling area into one tall image (scrolling capture).
 //! - [`new_backend`] returns the backend of the platform the app was built for. macOS uses
 //!   ScreenCaptureKit; the Windows and Linux backends compile and return
 //!   [`CaptureError::NotImplemented`] until their milestones.
@@ -22,6 +23,7 @@ pub mod error;
 pub mod frame;
 pub mod geometry;
 pub mod resample;
+pub mod stitch;
 pub mod stream;
 pub mod window;
 
@@ -43,5 +45,5 @@ pub use stream::{
 // The recording side of the stream contract (screen recording).
 #[cfg(target_os = "macos")]
 pub use stream::MacPixelBuffer;
-pub use stream::{host_now, open_microphone, FilterPlan, StreamPixelFormat};
+pub use stream::{cpu_frame, host_now, open_microphone, FilterPlan, StreamPixelFormat};
 pub use window::finish_window;

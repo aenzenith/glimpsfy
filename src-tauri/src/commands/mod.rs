@@ -41,6 +41,12 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Syn
         capture::capture_set_delay,
         capture::capture_delay,
         capture::capture_cancel_delay,
+        capture::capture_start_scroll,
+        capture::capture_set_autoscroll,
+        capture::capture_undo_scroll,
+        capture::capture_finish_scroll,
+        capture::capture_cancel_scroll,
+        capture::capture_cover_scroll,
         // output
         output::output_copy,
         output::output_save,

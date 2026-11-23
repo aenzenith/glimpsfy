@@ -51,7 +51,7 @@ objc2.workspace = true
 block2.workspace = true
 objc2-foundation = { workspace = true, features = ["std", "NSArray", "NSData", "NSDictionary", "NSEnumerator", "NSGeometry", "NSString", "NSValue", "NSURL", "NSLocale", "NSBundle", "NSFileManager", "NSError"] }
 objc2-core-foundation = { workspace = true, features = ["std", "CFCGTypes"] }
-objc2-core-graphics = { workspace = true, features = ["std", "CGDirectDisplay", "CGDisplayConfiguration", "CGError", "CGWindow", "CGPath", "CGImage", "CGColorSpace", "CGContext", "CGEvent", "CGEventTypes", "CGEventSource", "CGRemoteOperation", "objc2", "bitflags"] }
+objc2-core-graphics = { workspace = true, features = ["std", "CGDirectDisplay", "CGDisplayConfiguration", "CGError", "CGWindow", "CGPath", "CGImage", "CGColorSpace", "CGContext", "CGEvent", "CGEventTypes", "CGEventSource", "CGRemoteOperation", "libc", "objc2", "bitflags"] }
 objc2-app-kit = { workspace = true, features = ["std", "NSApplication", "NSResponder", "NSWindow", "NSPanel", "NSScreen", "NSView", "NSPasteboard", "NSPasteboardItem", "NSImage", "NSGraphics", "NSRunningApplication", "NSWorkspace", "NSEvent", "objc2-core-foundation", "NSStatusItem", "NSStatusBarButton", "NSButton", "NSControl", "NSDragging", "NSDraggingItem", "NSDraggingSession", "block2", "libc", "NSVisualEffectView", "NSAppearance", "NSAnimation", "NSAnimationContext", "NSBezierPath", "NSColor", "NSBitmapImageRep", "NSImageRep", "NSGraphicsContext", "objc2-core-graphics"] }
 # Start at login writes its own launch agent on macOS (app shell, `commands/settings.rs`).
 auto-launch = "0.6.0"

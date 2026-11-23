@@ -246,6 +246,22 @@ pub fn host_now() -> HostTime {
     }
 }
 
+/// The pixels of a stream's video frame in memory, for code that reads them (the scrolling
+/// capture's stitcher) instead of handing them to an encoder: a `Cpu` buffer is cloned, and the
+/// pixel buffer of a macOS `Bgra` stream is copied out. The frame's colour info carries no ICC
+/// profile and its scale is 1; the caller knows both.
+pub fn cpu_frame(frame: &VideoFrame) -> Result<Frame> {
+    match &frame.buffer {
+        VideoBuffer::Cpu(pixels) => Ok((**pixels).clone()),
+        VideoBuffer::Native(_) => {
+            #[cfg(target_os = "macos")]
+            return crate::platform::macos_stream::cpu_frame(frame);
+            #[cfg(not(target_os = "macos"))]
+            Err(CaptureError::NotImplemented("reading a native video buffer on this platform"))
+        }
+    }
+}
+
 /// Opens a microphone on its own, for a level meter or for recording beside a stream that
 /// cannot capture the microphone itself (macOS 14). Only `audio` and `stopped` of the sink are
 /// called. The stream is created stopped.

@@ -197,6 +197,9 @@ pub struct Shortcuts {
     /// before them that gave ⌥⇧⌘D or ⌥⇧⌘L to another action keeps it there.
     pub draw_on_screen: Option<String>,
     pub spotlight: Option<String>,
+    /// Selects an area and goes straight into the scrolling capture; macOS only. It comes last
+    /// in `known_mut`, so a file from before it that gave ⌥⇧⌘S to another action keeps it there.
+    pub scroll_capture: Option<String>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
@@ -224,6 +227,7 @@ impl Default for Shortcuts {
             open_history: key("Alt+Shift+CommandOrControl+H"),
             draw_on_screen: key("Alt+Shift+CommandOrControl+D"),
             spotlight: key("Alt+Shift+CommandOrControl+L"),
+            scroll_capture: if mac { key("Alt+Shift+Command+S") } else { None },
             extra: Map::new(),
         }
     }
@@ -250,9 +254,11 @@ impl Shortcuts {
         none
     }
 
-    /// The known actions by their names in the file, in the order of the shortcut table. On a
-    /// clash that no earlier holder decides, the earlier row keeps the key.
-    fn known_mut(&mut self) -> [(&'static str, &mut Option<String>); 15] {
+    /// The known actions by their names in the file, in the order of the shortcut table and then
+    /// the actions added since (drawing, the spotlight and the scrolling capture), so a newer
+    /// action's default never takes the keys an older file gave another row. On a clash that no
+    /// earlier holder decides, the earlier row keeps the key.
+    fn known_mut(&mut self) -> [(&'static str, &mut Option<String>); 16] {
         [
             ("captureArea", &mut self.capture_area),
             ("captureWindow", &mut self.capture_window),
@@ -269,6 +275,7 @@ impl Shortcuts {
             ("openHistory", &mut self.open_history),
             ("drawOnScreen", &mut self.draw_on_screen),
             ("spotlight", &mut self.spotlight),
+            ("scrollCapture", &mut self.scroll_capture),
         ]
     }
 
@@ -1325,6 +1332,14 @@ mod tests {
         assert_eq!(older.shortcuts.open_history.as_deref(), Some("Alt+Shift+CommandOrControl+D"));
         assert_eq!(older.shortcuts.draw_on_screen, None);
         assert_eq!(older.shortcuts.spotlight.as_deref(), Some("Alt+Shift+CommandOrControl+L"));
+
+        // And for the scrolling capture's ⌥⇧⌘S (macOS only), held by the history row in a file
+        // from before it.
+        fs::write(&path, br#"{ "shortcuts": { "openHistory": "Alt+Shift+CommandOrControl+S" } }"#).unwrap();
+        let older = SettingsStore::open_with(path.clone(), SecretFields::new()).get();
+        assert!(clashes_on_disk(&path).is_empty(), "the scrolling capture's default clashed with a key on disk");
+        assert_eq!(older.shortcuts.open_history.as_deref(), Some("Alt+Shift+CommandOrControl+S"));
+        assert_eq!(older.shortcuts.scroll_capture, None);
     }
 
     /// A secret typed into a provider's form never reaches `settings.json`: not when a form

@@ -20,6 +20,9 @@
 //! background is served only when a preset of Settings › Beautify, the open capture's style, an
 //! editor document or the user's own pick in a file panel names it, so a page cannot read any
 //! other file through the scheme; a missing one answers 404, which the panel shows as missing.
+//!
+//! A scrolling capture's strip loads its live preview from it as well
+//! (`glimpsfy-frame://scroll/<display>?t=<token>&v=<n>`, a BMP; `scroll.rs`).
 
 use std::borrow::Cow;
 use std::sync::Mutex;
@@ -87,6 +90,7 @@ pub fn frame_url(display: DisplayId, token: &str) -> String {
 enum Kind {
     Display,
     Background,
+    Scroll,
 }
 
 impl Kind {
@@ -94,6 +98,7 @@ impl Kind {
         match self {
             Kind::Display => "display",
             Kind::Background => "background",
+            Kind::Scroll => "scroll",
         }
     }
 }
@@ -113,15 +118,23 @@ fn parse(uri: &tauri::http::Uri) -> Option<(Kind, DisplayId, String)> {
     let (kind, id) = match uri.host() {
         Some("display") => (Kind::Display, path),
         Some("background") => (Kind::Background, path),
+        Some("scroll") => (Kind::Scroll, path),
         _ => match path.split_once('/')? {
             ("display", id) => (Kind::Display, id),
             ("background", id) => (Kind::Background, id),
+            ("scroll", id) => (Kind::Scroll, id),
             _ => return None,
         },
     };
     let id = id.parse().ok()?;
     let token = uri.query()?.split('&').find_map(|pair| pair.strip_prefix("t="))?;
     Some((kind, DisplayId(id), token.to_string()))
+}
+
+/// The address of a scrolling capture's preview: the token belongs to the scroll, and `version`
+/// changes with every new preview, so the page's `<img>` loads the new one.
+pub fn scroll_url(display: DisplayId, token: &str, version: u64) -> String {
+    format!("{}&v={version}", url(Kind::Scroll, display, token))
 }
 
 /// The files the user picked in a file panel (`app_choose_file`), which a beautify panel may show
@@ -199,6 +212,17 @@ fn serve(app: &tauri::AppHandle, request: &Request<Vec<u8>>) -> Response<Cow<'st
                 .unwrap_or_else(|_| reply(StatusCode::INTERNAL_SERVER_ERROR)),
             Err(status) => reply(status),
         };
+    }
+    if kind == Kind::Scroll {
+        let Some(bmp) = crate::scroll::preview_bmp(display, &token) else {
+            return reply(StatusCode::NOT_FOUND);
+        };
+        return Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, FrameFormat::Bmp.content_type())
+            .header(header::CACHE_CONTROL, "no-store")
+            .body(Cow::Owned(bmp))
+            .unwrap_or_else(|_| reply(StatusCode::INTERNAL_SERVER_ERROR));
     }
     let Some(session) = app.state::<AppState>().sessions.current() else {
         return reply(StatusCode::NOT_FOUND);

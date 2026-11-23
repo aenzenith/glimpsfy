@@ -40,7 +40,8 @@ use objc2_core_media::{
 };
 use objc2_core_video::{
     kCVImageBufferYCbCrMatrix_ITU_R_709_2, kCVPixelFormatType_32BGRA, kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
-    CVPixelBufferGetHeight, CVPixelBufferGetWidth,
+    CVPixelBufferGetBaseAddress, CVPixelBufferGetBytesPerRow, CVPixelBufferGetHeight, CVPixelBufferGetPixelFormatType,
+    CVPixelBufferGetWidth, CVPixelBufferLockBaseAddress, CVPixelBufferLockFlags, CVPixelBufferUnlockBaseAddress,
 };
 use objc2_foundation::{NSArray, NSDictionary, NSError, NSNumber, NSObject, NSString};
 use objc2_screen_capture_kit::{
@@ -51,8 +52,8 @@ use objc2_screen_capture_kit::{
 
 use crate::display::{DisplayId, WindowId};
 use crate::error::{CaptureError, Result};
-use crate::frame::ColorSpace;
-use crate::geometry::{LogicalRect, PhysicalSize};
+use crate::frame::{ColorInfo, ColorSpace, Frame, PixelFormat};
+use crate::geometry::{LogicalRect, PhysicalSize, ScaleFactor};
 use crate::stream::{
     AudioBuffer, AudioSource, CaptureStream, FilterPlan, HostTime, MacPixelBuffer, MicrophoneSource, NativeBuffer,
     StreamConfig, StreamPixelFormat, StreamSink, StreamTarget, VideoBuffer, VideoFrame,
@@ -188,6 +189,40 @@ fn deliver_video(ivars: &OutputIvars, sample: &CMSampleBuffer) {
         color_space: ivars.color_space,
         buffer: VideoBuffer::Native(NativeBuffer(Box::new(MacPixelBuffer(image)))),
     });
+}
+
+/// The pixels of a delivered frame of a `Bgra` stream, copied out of its pixel buffer.
+pub(crate) fn cpu_frame(frame: &VideoFrame) -> Result<Frame> {
+    let VideoBuffer::Native(native) = &frame.buffer else {
+        return Err(CaptureError::InvalidArgument("the frame is not a pixel buffer".into()));
+    };
+    let Some(MacPixelBuffer(buffer)) = native.0.downcast_ref::<MacPixelBuffer>() else {
+        return Err(CaptureError::InvalidArgument("the frame is not a pixel buffer".into()));
+    };
+    if CVPixelBufferGetPixelFormatType(buffer) != kCVPixelFormatType_32BGRA {
+        return Err(CaptureError::InvalidArgument("the stream delivers NV12, not BGRA".into()));
+    }
+    // SAFETY: the buffer is retained by the frame; a read-only lock is released below.
+    let status = unsafe { CVPixelBufferLockBaseAddress(buffer, CVPixelBufferLockFlags::ReadOnly) };
+    if status != 0 {
+        return Err(CaptureError::Backend(format!("the pixel buffer could not be locked ({status})")));
+    }
+    let (width, height) = (CVPixelBufferGetWidth(buffer), CVPixelBufferGetHeight(buffer));
+    let stride = CVPixelBufferGetBytesPerRow(buffer);
+    let base = CVPixelBufferGetBaseAddress(buffer).cast::<u8>().cast_const();
+    let row = width * 4;
+    let mut data = Vec::with_capacity(row * height);
+    if !base.is_null() && stride >= row {
+        for y in 0..height {
+            // SAFETY: the locked buffer holds `height` rows of `stride` bytes from `base`, and a
+            // BGRA row is `width × 4` of them.
+            data.extend_from_slice(unsafe { std::slice::from_raw_parts(base.add(y * stride), row) });
+        }
+    }
+    // SAFETY: the lock taken above, with the same flags.
+    unsafe { CVPixelBufferUnlockBaseAddress(buffer, CVPixelBufferLockFlags::ReadOnly) };
+    let color = ColorInfo { space: frame.color_space, icc_profile: None };
+    Frame::new(PhysicalSize::new(width as u32, height as u32), row, PixelFormat::Bgra8, color, ScaleFactor::ONE, data)
 }
 
 /// The frame's `SCStreamFrameInfoStatus`, or `None` when the buffer carries no status.

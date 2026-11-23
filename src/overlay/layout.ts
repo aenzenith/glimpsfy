@@ -91,6 +91,45 @@ export function place(
   };
 }
 
+/** Where the scrolling capture's parts go. */
+export type ScrollPlacement = {
+  /** The strip with the result beside the selection, where the action bar stood. */
+  strip: { x: number; y: number };
+  side: "right" | "left" | "inside";
+  /** The bar with the status, Auto, Done and Cancel, where the tool bar stood. */
+  bar: { x: number; y: number; w: number };
+  barSide: "below" | "above" | "inside";
+};
+
+/**
+ * The scrolling capture's strip goes where the action bar would (right of the selection, left of
+ * it near the right edge), and its bar where the tool bar would, spanning the selection and the
+ * strip beside it but never narrower than `barMin`. Both stay off the selection while there is
+ * room, since the selection lets the pointer through to the app under it.
+ */
+export function placeScroll(sel: Rect, view: Size, strip: Size, barMin: number): ScrollPlacement {
+  const { w: W, h: H } = view;
+  const right = sel.x + sel.w + G + strip.w + E <= W;
+  const left = sel.x - G - strip.w - E >= 0;
+  const side = right ? "right" : left ? "left" : "inside";
+  const sx = side === "right" ? sel.x + sel.w + G : side === "left" ? sel.x - G - strip.w : sel.x + sel.w - G - strip.w;
+  const sy = clamp(sel.y, E, H - E - strip.h);
+  const x0 = side === "left" ? sx : sel.x;
+  const x1 = side === "right" ? sx + strip.w : sel.x + sel.w;
+  const bw = Math.min(W - 2 * E, Math.max(barMin, x1 - x0));
+  const bx = clamp(x0, E, W - E - bw);
+  const below = sel.y + sel.h + G + B + E <= H;
+  const above = sel.y - G - B - E >= 0;
+  const barSide = below ? "below" : above ? "above" : "inside";
+  const by = barSide === "below" ? sel.y + sel.h + G : barSide === "above" ? sel.y - G - B : sel.y + sel.h - G - B;
+  return {
+    strip: { x: Math.round(sx), y: Math.round(sy) },
+    side,
+    bar: { x: Math.round(bx), y: Math.round(by), w: Math.round(bw) },
+    barSide,
+  };
+}
+
 /** The loupe sits 20 px off the pointer and flips to the other side near an edge. */
 export function placeLoupe(x: number, y: number, view: Size): { x: number; y: number } {
   const w = 148;

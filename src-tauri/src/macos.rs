@@ -1131,6 +1131,7 @@ pub fn drag_out(
 // panel with the camera's live preview), the click and key monitors of a take, the window numbers
 // the capture filter needs, and an exported file on the pasteboard.
 
+pub mod scroll;
 pub mod send;
 
 pub mod recording {

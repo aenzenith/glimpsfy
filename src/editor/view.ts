@@ -22,6 +22,9 @@ export type Room = { width: number; height: number; top: number; bottom: number 
 const MARGIN = 24;
 /** Fit width leaves this much on each side, for the overview of a tall capture. */
 const WIDE_MARGIN = 96;
+/** An image this many times taller than wide is a tall capture (a scrolling capture's result):
+ * it opens at fit width, and the editor shows its overview (`Overview.vue`). */
+export const TALL = 2;
 
 export const percentOf = (k: number, scale: number) => k * scale * 100;
 export const kOf = (percent: number, scale: number) => percent / 100 / scale;
@@ -47,11 +50,11 @@ export function centred(area: PixelRect, room: Room, k: number): View {
   };
 }
 
-/** How an image opens: a tall one at fit width, one smaller than the tool bar at 200 %, any other
- * at fit. */
+/** How an image opens: a tall one at fit width, top first, one smaller than the tool bar at
+ * 200 %, any other at fit. */
 export function opening(area: PixelRect, room: Room, scale: number): { view: View; mode: ZoomMode } {
   const points = { width: area.width / scale, height: area.height / scale };
-  if (area.height / area.width > 3) return { view: fitWidth(area, room, scale), mode: "width" };
+  if (area.height / area.width > TALL) return { view: fitWidth(area, room, scale), mode: "width" };
   if (points.width * 2 < 492 && points.height * 2 < room.height - room.top - room.bottom) {
     return { view: centred(area, room, kOf(200, scale)), mode: "custom" };
   }

@@ -7,6 +7,7 @@
 // display. Pixel sizes belong to frames only.
 
 import { call } from "./core";
+import type { EditorImage } from "./render";
 
 export type CaptureId = number;
 export type DisplayId = number;
@@ -54,8 +55,9 @@ export type WindowInfo = {
  * commands all take it. */
 export type Selection = { captureId: CaptureId; displayId: DisplayId; rect: LogicalRect };
 
-/** `area`, `window` and `copyText` open the overlay; `display`, `allDisplays` and
- * `repeatLastArea` capture and deliver at once; `areaDelayed` counts down, then opens it. */
+/** `area`, `window` and `copyText` open the overlay, and `scrollCapture` opens it for a scrolling
+ * capture (macOS); `display`, `allDisplays` and `repeatLastArea` capture and deliver at once;
+ * `areaDelayed` counts down, then opens it. */
 export type CaptureMode =
   | "area"
   | "window"
@@ -63,11 +65,13 @@ export type CaptureMode =
   | "allDisplays"
   | "repeatLastArea"
   | "areaDelayed"
-  | "copyText";
+  | "copyText"
+  | "scrollCapture";
 
 /** What the overlay does when a selection is finished or a window clicked: stay for annotation,
- * copy and close, save and close, or copy the text in it (`ocr_copy_text`). */
-export type AfterSelection = "annotate" | "copy" | "save" | "copyText";
+ * copy and close, save and close, or copy the text in it (`ocr_copy_text`).
+ * `scroll`: the selection becomes a scrolling capture (`capture_start_scroll`). */
+export type AfterSelection = "annotate" | "copy" | "save" | "copyText" | "scroll";
 
 /** A window the overlay can snap to, display-local and logical. */
 export type OverlayWindow = {
@@ -146,5 +150,57 @@ export const capture_cancel_delay = () => call<boolean>("capture_cancel_delay");
 export const capture_displays = () => call<Display[]>("capture_displays");
 export const capture_windows = () => call<WindowInfo[]>("capture_windows");
 
+/** The state of a scrolling capture, with `capture://scroll` and from every `capture_*_scroll`
+ * command. Sizes are physical pixels of the result. */
+export type ScrollProgress = {
+  captureId: CaptureId;
+  displayId: DisplayId;
+  width: number;
+  height: number;
+  /** Frames that brought rows in or moved the view. */
+  frames: number;
+  /** The sticky header and bottom bar in rows; `found` once a second move showed them again. */
+  header: number;
+  headerFound: boolean;
+  footer: number;
+  footerFound: boolean;
+  /** Where one piece of the result ends and the next begins, in rows. */
+  gaps: number[];
+  /** The part of the result the selection shows now: its first row and its height. */
+  view: [number, number] | null;
+  /** Which way the gap lies from what the selection shows: the user scrolls that way. */
+  gap: "above" | "below" | null;
+  /** The memory the compressed rows take. */
+  bytes: number;
+  /** The tallest result; the mode finishes by itself there. */
+  limit: number;
+  auto: boolean;
+  /** Glimpsfy may post scroll events (Accessibility). */
+  autoAllowed: boolean;
+  /** Automatic scrolling stopped by itself at the page's end. */
+  ended: boolean;
+  /** The strip's preview of the result, once there is one (`glimpsfy-frame://scroll/…`). */
+  previewUrl: string | null;
+};
+
+/** Turns the selection into a scrolling capture (macOS): the page under it can be scrolled, and
+ * the frames grow one tall image. */
+export const capture_start_scroll = (selection: Selection) => call<ScrollProgress>("capture_start_scroll", { selection });
+/** Starts or stops automatic scrolling; starting throws `permission_denied` without Accessibility
+ * and `not_found` when no window lies under the selection. */
+export const capture_set_autoscroll = (on: boolean) => call<ScrollProgress>("capture_set_autoscroll", { on });
+/** Takes back the rows of the last movement (⌘Z). */
+export const capture_undo_scroll = () => call<ScrollProgress>("capture_undo_scroll");
+/** Ends the scrolling capture: the result opens in the editor and the capture closes. */
+export const capture_finish_scroll = () => call<EditorImage>("capture_finish_scroll");
+/** Drops the result; the overlay goes back to its frozen selection. Answers whether one ran. */
+export const capture_cancel_scroll = () => call<boolean>("capture_cancel_scroll");
+/** The overlay's parts that lie over the selection (window-local points), where the pointer would
+ * otherwise go through to the app below; they keep it, so their buttons can be clicked. */
+export const capture_cover_scroll = (covers: LogicalRect[]) => call<void>("capture_cover_scroll", { covers });
+
+/** A scrolling capture's result grew, moved, lost a movement or stopped scrolling by itself.
+ * Payload: `ScrollProgress`. */
+export const CAPTURE_SCROLL = "capture://scroll";
 /** A delayed capture's countdown started, ticked or ended. Payload: `DelayState`. */
 export const CAPTURE_COUNTDOWN = "capture://countdown";

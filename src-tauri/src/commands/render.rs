@@ -836,10 +836,24 @@ pub fn editor_open_capture(
         state.sessions.get(capture_id).ok_or_else(|| CommandError::not_found(format!("capture #{}", capture_id.0)))?;
     let entry =
         session.display(display_id).ok_or_else(|| CommandError::not_found(format!("display {}", display_id.0)))?;
-    let frame = entry.frame.clone();
+    Ok(open_frame(&app, &session, display_id, entry.frame.clone(), document, None))
+}
+
+/// Opens `frame`, an image of `display_id` in capture `session`, in the editor with `document`,
+/// and closes the capture as `editor`: the frozen frame from the overlay, or the scrolling
+/// capture's result (`scroll.rs`). `name` names the image instead of the app in front.
+pub fn open_frame(
+    app: &AppHandle,
+    session: &session::CaptureSession,
+    display_id: DisplayId,
+    frame: Arc<Frame>,
+    document: String,
+    name: Option<String>,
+) -> EditorImage {
+    let capture_id = session.id;
     let taken = session.origin(display_id);
     let origin = EditorOrigin {
-        name: None,
+        name: name.clone(),
         app_name: taken.app_name,
         bundle_id: taken.bundle_id,
         window_title: taken.window_title,
@@ -849,7 +863,9 @@ pub fn editor_open_capture(
     };
     let image = EditorImage {
         token: token(),
-        name: session.front_app.clone().unwrap_or_else(|| super::history::unnamed(&app, EntryKind::Screenshot, None)),
+        name: name
+            .or_else(|| session.front_app.clone())
+            .unwrap_or_else(|| super::history::unnamed(app, EntryKind::Screenshot, None)),
         path: None,
         encoding: EditorEncoding::Rgba,
         width: Some(frame.size.width),
@@ -869,9 +885,9 @@ pub fn editor_open_capture(
         document: image.document.clone(),
         suggest: None,
     });
-    session::close(&app, capture_id, CloseReason::Editor);
-    show_editor(&app, &image);
-    Ok(image)
+    session::close(app, capture_id, CloseReason::Editor);
+    show_editor(app, &image);
+    image
 }
 
 // ------------------------------------------------------------------------------ the combine

@@ -307,6 +307,9 @@ fn after_for(mode: CaptureMode, setting: settings::AfterSelection) -> AfterSelec
     if mode == CaptureMode::CopyText {
         return AfterSelection::CopyText;
     }
+    if mode == CaptureMode::ScrollCapture {
+        return AfterSelection::Scroll;
+    }
     match setting {
         settings::AfterSelection::Annotate => AfterSelection::Annotate,
         settings::AfterSelection::CopyAndClose => AfterSelection::Copy,
@@ -375,7 +378,7 @@ pub fn start_from_menu(app: &AppHandle, mode: CaptureMode) {
 pub fn start_now(app: &AppHandle, mode: CaptureMode, at: Instant) -> CommandResult<()> {
     match mode {
         CaptureMode::Area | CaptureMode::AreaDelayed => start_overlay(app, CaptureMode::Area, at, false),
-        CaptureMode::Window | CaptureMode::CopyText => start_overlay(app, mode, at, false),
+        CaptureMode::Window | CaptureMode::CopyText | CaptureMode::ScrollCapture => start_overlay(app, mode, at, false),
         CaptureMode::Display => start_direct(app, Direct::Display, at),
         CaptureMode::AllDisplays => start_direct(app, Direct::AllDisplays, at),
         CaptureMode::RepeatLastArea => {
@@ -1074,6 +1077,8 @@ pub fn displays_changed(app: &AppHandle) {
 pub fn close(app: &AppHandle, id: CaptureId, reason: CloseReason) -> Option<Arc<CaptureSession>> {
     let state = app.state::<AppState>();
     let session = state.sessions.take(id)?;
+    // A scrolling capture of this one stops with it, its result unused.
+    crate::scroll::closed(app, id);
     windows::hide_overlays(app);
     let _ = app.emit(events::CAPTURE_CLOSED, CaptureClosed { capture_id: id, reason });
     *state.sessions.recent.lock().unwrap_or_else(|p| p.into_inner()) = Some(Recent {
@@ -1087,7 +1092,7 @@ pub fn close(app: &AppHandle, id: CaptureId, reason: CloseReason) -> Option<Arc<
     Some(session)
 }
 
-fn hide_overlay(app: &AppHandle, display: DisplayId) {
+pub(crate) fn hide_overlay(app: &AppHandle, display: DisplayId) {
     let Some(window) = app.get_webview_window(&windows::overlay_label(display)) else {
         return;
     };
@@ -1184,7 +1189,7 @@ fn pointer() -> LogicalPoint {
 }
 
 /// A token no earlier capture used, so a page never shows a stale frame.
-fn token() -> String {
+pub(crate) fn token() -> String {
     let seed = std::collections::hash_map::RandomState::new();
     format!("{:016x}", seed.hash_one(Instant::now()))
 }

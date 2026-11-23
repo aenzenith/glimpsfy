@@ -3,7 +3,10 @@
 // crosshair and the loupe, a drag selection with eight handles, moving and nudging, window
 // snapping, and the two glass bars. Copy, Save and Close work. The annotation tools draw through
 // the seam in `annotations.ts` (milestone 2): with drawings, Copy and Save send the rendered
-// selection to the core, and ⌘O hands the capture with its drawings to the editor.
+// selection to the core, and ⌘O hands the capture with its drawings to the editor. ⌘↓ turns the
+// selection into a scrolling capture (D27, mode "scroll", `ScrollMode.vue`): the frozen frame
+// and the drawings step aside, the selection lets the pointer through to the app under it, and
+// the core stitches what scrolls past; Esc brings the frozen selection back as it was.
 //
 // The page waits warm in a hidden window. On `capture://started` it fetches and draws its frame
 // while still invisible, then calls `overlay_ready`, and the core shows the window.
@@ -35,13 +38,21 @@ import {
   type RenderedImage,
 } from "../lib/api/render";
 import {
+  CAPTURE_SCROLL,
+  capture_cancel_scroll,
   capture_close,
+  capture_cover_scroll,
   capture_current,
+  capture_finish_scroll,
+  capture_set_autoscroll,
+  capture_start_scroll,
+  capture_undo_scroll,
   overlay_painted,
   overlay_ready,
   type CaptureClosed,
   type OverlayFrame,
   type OverlayWindow,
+  type ScrollProgress,
 } from "../lib/api/capture";
 import { ApiError, on, onWindow, send } from "../lib/api/core";
 import { output_copy, output_save, output_save_as } from "../lib/api/output";
@@ -81,8 +92,10 @@ import { jobName } from "../ocr/text";
 import "./overlay.css";
 import * as modes from "./modes";
 import { useOverlayBeautify } from "./beautify";
+import ScrollMode from "./ScrollMode.vue";
 
-type Mode = "idle" | "drag" | "sel" | "move" | "resize";
+/** `scroll` is the scrolling capture of the selection (⌘↓). */
+type Mode = "idle" | "drag" | "sel" | "move" | "resize" | "scroll";
 type Point = { x: number; y: number };
 
 /** The smallest selection; a smaller drag is a click. */
@@ -97,6 +110,8 @@ const LENS_SIZE = 136;
 const MOVE_WAIT_MS = 48;
 /** The selection's iris line outside its edge, in points (the kit's `.g-selection::before`). */
 const EDGE_IRIS = 1.5;
+/** How long the scrolling capture says that a wheel turned outside the selection. */
+const OUTSIDE_MS = 3500;
 const HANDLES: [number, number, "x" | "y" | null][] = [
   [0, 0, null],
   [0.5, 0, "x"],
@@ -151,7 +166,8 @@ const sendAt = ref<Point>({ x: -9999, y: -9999 });
 const actions = computed(() =>
   ACTIONS.filter(
     (a) => (a?.id !== "send" || can("sendToApp")) && (a?.id !== "copy-subject" || can("subjectLift")) &&
-      (a?.id !== "beautify" || beautifiable.value),
+      (a?.id !== "beautify" || beautifiable.value) &&
+      (a?.id !== "scroll" || can("scrollCapture")),
   ),
 );
 /** Copy subject has been looking for 300 ms: its button turns into a ring and a light passes
@@ -163,6 +179,13 @@ const beautifyEl = ref<InstanceType<typeof BeautifyPanel> | null>(null);
 const beautifyAt = ref<Point>({ x: -9999, y: -9999 });
 /** The window's own image in frame pixels, shadow included, once a click took it. */
 const pickedSize = shallowRef<{ id: number; width: number; height: number } | null>(null);
+/** The scrolling capture's state while the mode is "scroll" (`capture://scroll`). */
+const scroll = shallowRef<ScrollProgress | null>(null);
+/** A wheel turned outside the selection, where it scrolls nothing the capture sees. */
+const scrollOutside = ref(false);
+/** Auto was pressed without Accessibility: the strip asks for it. */
+const scrollAsking = ref(false);
+let outsideTimer = 0;
 
 const frameHost = ref<HTMLElement | null>(null);
 const lensHost = ref<HTMLElement | null>(null);
@@ -266,7 +289,7 @@ const RESIZE_CURSORS: Record<string, string> = {
 // The template reads only these yes-or-no answers about the selection, which change at its start
 // and end, so a drag does not render the page again; the moving parts are painted below.
 const hasSel = computed(() => sel.value !== null);
-const sizeShown = computed(() => sel.value !== null && sel.value.w > 0);
+const sizeShown = computed(() => sel.value !== null && sel.value.w > 0 && mode.value !== "scroll");
 const showLines = computed(() => mode.value === "idle" && !windowMode.value && heldElsewhere.value === null && pointer.value !== null);
 type HandleAt = { key: string; kind: "x" | "y" | null; x: number; y: number };
 /** One empty list for every state without handles, so a drag leaves the computed unchanged. */
@@ -592,8 +615,12 @@ function resetAll(): void {
   choice.value = FREE;
   fitted.value = false;
   menu.value = null;
+  scroll.value = null;
+  scrollOutside.value = false;
+  scrollAsking.value = false;
   clearTimeout(hintTimer);
   clearTimeout(noticeTimer);
+  clearTimeout(outsideTimer);
 }
 
 async function begin(next: OverlayFrame): Promise<void> {
@@ -676,6 +703,10 @@ async function finishByMode(r: Rect, windowId: number | null): Promise<void> {
       picked: (w) => (pickedSize.value = { id: w.windowId, width: w.width, height: w.height }),
     });
     if (finished === "empty") say(t("ocr.empty"));
+    if (finished === "scroll") {
+      busy = false;
+      return void startScroll();
+    }
     if (finished !== "done") void showBars();
   } catch (error) {
     say(errorText(error));
@@ -720,6 +751,7 @@ async function act(id: ActionId): Promise<void> {
   if (id === "copy-text") return toggleTextLayer();
   if (id === "copy-subject") return copySubject();
   if (id === "record") return record();
+  if (id === "scroll") return startScroll();
   if (id === "upload") {
     if (frame.value && sel.value && !busy && mode.value === "sel") void uploads.start();
     return;
@@ -1027,6 +1059,147 @@ function openAccessibility(): void {
   void permissions_open_settings("accessibility").catch((error) => console.warn("permissions_open_settings", error));
 }
 
+// -------------------------------------------------------------------- the scrolling capture
+
+/** ⌘↓: the selection becomes a scrolling capture. The frozen frame and the drawings step aside
+ * until Esc brings them back, the bars give way to the strip and its bar, and the core opens the
+ * hole that lets the wheel through to the app under the selection. */
+async function startScroll(): Promise<void> {
+  const f = frame.value;
+  const r = sel.value;
+  if (!f || !r || busy || mode.value !== "sel" || !can("scrollCapture")) return;
+  busy = true;
+  engine.finishText();
+  closeSend();
+  menu.value = null;
+  textLayerVisible.value = false;
+  try {
+    const selection = { captureId: f.captureId, displayId, rect: { x: r.x, y: r.y, width: r.w, height: r.h } };
+    const started = await capture_start_scroll(selection);
+    if (frame.value?.captureId !== f.captureId) return;
+    scroll.value = started;
+    scrollOutside.value = false;
+    scrollAsking.value = false;
+    mode.value = "scroll";
+    barsShown.value = false;
+    cursor.value = "default";
+  } catch (error) {
+    say(errorText(error));
+    void showBars();
+  } finally {
+    busy = false;
+  }
+}
+
+/** Space: Glimpsfy scrolls the page itself, or stops. Without Accessibility the strip asks. */
+async function toggleAuto(): Promise<void> {
+  const p = scroll.value;
+  if (!p || mode.value !== "scroll") return;
+  if (!p.auto && !p.autoAllowed) {
+    scrollAsking.value = true;
+    return;
+  }
+  try {
+    scroll.value = await capture_set_autoscroll(!p.auto);
+    scrollAsking.value = false;
+  } catch (error) {
+    if (error instanceof ApiError && error.code === "permission_denied") scrollAsking.value = true;
+    else if (error instanceof ApiError && error.code === "not_found") say(t("scroll.noWindow"));
+    else say(errorText(error));
+  }
+}
+
+/** ⌘Z: the last movement's rows leave the result. */
+async function undoScroll(): Promise<void> {
+  if (mode.value !== "scroll") return;
+  try {
+    scroll.value = await capture_undo_scroll();
+  } catch (error) {
+    say(errorText(error));
+  }
+}
+
+/** ↩, Done: the result opens in the editor, and the capture closes (`end` follows). */
+async function finishScroll(): Promise<void> {
+  if (mode.value !== "scroll" || busy) return;
+  if (!scroll.value?.height) return say(t("scroll.empty"));
+  busy = true;
+  try {
+    await capture_finish_scroll();
+  } catch (error) {
+    say(errorText(error));
+  } finally {
+    busy = false;
+  }
+}
+
+/** Esc, Cancel: the result is dropped. A capture opened for the scrolling capture alone closes;
+ * any other goes back to its frozen selection with its drawings and its bars. */
+async function cancelScroll(): Promise<void> {
+  const f = frame.value;
+  if (!f || mode.value !== "scroll" || busy) return;
+  busy = true;
+  try {
+    await capture_cancel_scroll();
+  } catch (error) {
+    console.warn("[glimpsfy] capture_cancel_scroll", error);
+  } finally {
+    busy = false;
+  }
+  if (frame.value?.captureId !== f.captureId || mode.value !== "scroll" || f.afterSelection === "scroll") return;
+  scroll.value = null;
+  scrollOutside.value = false;
+  scrollAsking.value = false;
+  clearTimeout(outsideTimer);
+  mode.value = "sel";
+  void showBars();
+}
+
+/** The strip, the bar or a pop that lies over the selection keeps the pointer from its hole. */
+function coverScroll(rects: Rect[]): void {
+  if (mode.value !== "scroll") return;
+  capture_cover_scroll(rects.map((r) => ({ x: r.x, y: r.y, width: r.w, height: r.h }))).catch((error) =>
+    console.warn("[glimpsfy] capture_cover_scroll", error),
+  );
+}
+
+/** The scrolling capture's keys: Space, ↩, Esc and ⌘Z; the rest do nothing while it runs. */
+function scrollKey(e: KeyboardEvent): void {
+  const command = e.metaKey || e.ctrlKey;
+  if (e.key === "Escape") {
+    e.preventDefault();
+    if (scrollAsking.value) {
+      scrollAsking.value = false;
+      return;
+    }
+    void cancelScroll();
+    return;
+  }
+  if (e.key === "Enter") {
+    e.preventDefault();
+    void finishScroll();
+    return;
+  }
+  if (e.key === " " && !command) {
+    e.preventDefault();
+    if (!e.repeat) void toggleAuto();
+    return;
+  }
+  if (command && !e.shiftKey && e.key.toLowerCase() === "z") {
+    e.preventDefault();
+    void undoScroll();
+  }
+}
+
+/** A wheel the overlay itself hears turned outside the selection, where the capture sees nothing
+ * move: the strip says where to scroll. */
+function onWheel(e: WheelEvent): void {
+  if (mode.value !== "scroll" || !sel.value || inside(sel.value, point(e))) return;
+  scrollOutside.value = true;
+  clearTimeout(outsideTimer);
+  outsideTimer = window.setTimeout(() => (scrollOutside.value = false), OUTSIDE_MS);
+}
+
 // ------------------------------------------------------------------------- the size menu
 
 /** Opens the size menu under the size label, beside the crosshair before a drag, or under the
@@ -1282,6 +1455,8 @@ function onMouseDown(e: MouseEvent): void {
   if (e.button !== 0 || !frame.value) return;
   const p = point(e);
   e.preventDefault();
+  // While the page scrolls, a press outside the selection keeps it: the bar ends the mode.
+  if (mode.value === "scroll") return;
   // A press beside the open size menu only closes it.
   if (menu.value) return closeMenu();
   // So does a press beside the send list.
@@ -1346,6 +1521,10 @@ function handleMove(e: MouseEvent): void {
   if (!frame.value) return;
   const p = point(e);
   pointer.value = p;
+  if (mode.value === "scroll") {
+    cursor.value = "default";
+    return;
+  }
   if (mode.value !== "sel") annotations.hover(null, reach.value);
 
   switch (mode.value) {
@@ -1515,6 +1694,7 @@ function onKeyDown(e: KeyboardEvent): void {
   if (e.target instanceof HTMLElement && e.target.isContentEditable) return;
   // The beautify panel's sliders and switch keep only their own keys (`BeautifyPanel.vue`).
   if (e.target instanceof HTMLInputElement && e.target.type !== "range" && e.target.type !== "checkbox") return;
+  if (mode.value === "scroll") return scrollKey(e);
   // F turns beautify on or off for this capture at any moment, during a drag too; ⇧F is free.
   if (e.key.toLowerCase() === "f" && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && beautifiable.value) {
     e.preventDefault();
@@ -1630,6 +1810,12 @@ function onKeyDown(e: KeyboardEvent): void {
     void act("copy");
     return;
   }
+  // ⌘↓ starts the scrolling capture, before the arrows move the selection.
+  if ((e.metaKey || e.ctrlKey) && e.key === "ArrowDown" && !e.shiftKey && !e.altKey) {
+    e.preventDefault();
+    if (can("scrollCapture")) void act("scroll");
+    return;
+  }
   const arrows: Record<string, Point> = { ArrowLeft: { x: -1, y: 0 }, ArrowRight: { x: 1, y: 0 }, ArrowUp: { x: 0, y: -1 }, ArrowDown: { x: 0, y: 1 } };
   const step = arrows[e.key];
   if (step) {
@@ -1719,6 +1905,15 @@ onMounted(async () => {
       cursor.value = "crosshair";
     }),
   );
+  stops.push(
+    await on<ScrollProgress>(CAPTURE_SCROLL, (next) => {
+      if (next.captureId !== frame.value?.captureId || next.displayId !== displayId || mode.value !== "scroll") return;
+      // Something moved in the selection after all.
+      if (scrollOutside.value && next.frames > (scroll.value?.frames ?? 0)) scrollOutside.value = false;
+      if (next.auto) scrollAsking.value = false;
+      scroll.value = next;
+    }),
+  );
   // A page that loaded after `capture://started` was sent (a reload) picks the capture up.
   const current = await capture_current();
   if (current) void begin(current);
@@ -1735,8 +1930,9 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="overlay" :style="{ cursor }" @mousedown="onMouseDown" @mouseleave="onMouseLeave" @dblclick="onDoubleClick">
-    <div ref="frameHost" class="frame-host" />
+  <div class="overlay" :style="{ cursor }" @mousedown="onMouseDown" @mouseleave="onMouseLeave" @dblclick="onDoubleClick" @wheel.passive="onWheel">
+    <!-- While the page scrolls, the live screen shows through where the frozen frame was. -->
+    <div ref="frameHost" class="frame-host" :style="mode === 'scroll' ? { visibility: 'hidden' } : undefined" />
 
     <template v-if="frame">
       <!-- The dim: bands top, bottom, left and right of the hole, then the corners of a rounded
@@ -1747,15 +1943,19 @@ onUnmounted(() => {
       </div>
       <!-- The drawings over the selection, in the document order of the dim and the edge. Without
            drawings it needs no area, so a drag does not render it again. -->
-      <Surface
-        v-if="hasSel && annotations.source.value"
-        :engine="engine"
-        :source="annotations.source.value"
-        :view="annotationView"
-        :area="drawn ? liveArea : null"
-        :composed="drawn"
-        :chrome="mode === 'sel'"
-      />
+      <!-- Surface has several roots, which v-show cannot hide; this wrapper hides them while the
+           page scrolls and keeps them mounted, drawings and undo included. -->
+      <div v-show="mode !== 'scroll'" style="display: contents">
+        <Surface
+          v-if="hasSel && annotations.source.value"
+          :engine="engine"
+          :source="annotations.source.value"
+          :view="annotationView"
+          :area="drawn ? liveArea : null"
+          :composed="drawn"
+          :chrome="mode === 'sel'"
+        />
+      </div>
       <div v-if="subjectSlow && sel" class="o-sweep" :style="box(sel)" aria-hidden="true" />
 
       <div v-if="hovered && !hasSel" class="o-win" :style="{ ...box({ x: hovered.rect.x, y: hovered.rect.y, w: hovered.rect.width, h: hovered.rect.height }), '--o-radius': `${hovered.cornerRadius ?? 10}px` }" />
@@ -1867,6 +2067,22 @@ onUnmounted(() => {
       <div v-if="textLayerComponent && hasSel && mode === 'sel'" class="o-textlayer">
         <component :is="textLayerComponent" leaves @leave="leave" />
       </div>
+      <!-- The scrolling capture's strip, bar and pops (⌘↓). -->
+      <ScrollMode
+        v-if="mode === 'scroll' && sel"
+        :progress="scroll"
+        :sel="sel"
+        :view="view"
+        :scale="ratio.x"
+        :outside="scrollOutside"
+        :asking="scrollAsking"
+        @auto="toggleAuto"
+        @done="finishScroll"
+        @cancel="cancelScroll"
+        @manual="scrollAsking = false"
+        @settings="openAccessibility"
+        @cover="coverScroll"
+      />
     </template>
 
     <div ref="loupeEl" v-show="frame && loupeShown" class="g-glass o-loupe o-moving" aria-hidden="true">

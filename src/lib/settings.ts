@@ -50,6 +50,8 @@ export type Shortcuts = Extra & {
   /** Drawing mode and the spotlight; registered only while a take records or pauses. */
   drawOnScreen: string | null;
   spotlight: string | null;
+  /** Selects an area and goes straight into the scrolling capture; macOS only. */
+  scrollCapture: string | null;
 };
 
 export type ImageFormat = "png" | "jpeg" | "webp";

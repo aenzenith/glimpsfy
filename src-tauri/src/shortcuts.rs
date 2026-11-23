@@ -47,6 +47,8 @@ pub enum Action {
     OpenHistory,
     DrawOnScreen,
     Spotlight,
+    /// Selects an area and goes straight into the scrolling capture (macOS).
+    ScrollCapture,
 }
 
 impl Action {
@@ -71,6 +73,9 @@ impl Action {
             Action::CaptureAreaDelayed => CaptureMode::AreaDelayed,
             Action::RepeatLastArea => CaptureMode::RepeatLastArea,
             Action::CopyText => CaptureMode::CopyText,
+            // The scrolling capture streams through ScreenCaptureKit and posts scroll events
+            // through Core Graphics, which only the macOS build has.
+            Action::ScrollCapture if cfg!(target_os = "macos") => CaptureMode::ScrollCapture,
             _ => return None,
         })
     }
@@ -186,6 +191,7 @@ pub fn apply(app: &AppHandle, shortcuts: &Shortcuts) -> Vec<ShortcutProblem> {
         (Action::OpenHistory, &shortcuts.open_history),
         (Action::DrawOnScreen, &shortcuts.draw_on_screen),
         (Action::Spotlight, &shortcuts.spotlight),
+        (Action::ScrollCapture, &shortcuts.scroll_capture),
     ];
 
     let mut problems = Vec::new();

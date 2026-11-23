@@ -1,5 +1,7 @@
 //! The system permissions Glimpsfy needs: screen recording for every capture, the microphone and
-//! the camera for recordings, and accessibility for the keystroke overlay.
+//! the camera for recordings, and accessibility for the keystroke overlay and for the automatic
+//! scrolling of a scrolling capture, whose scroll events macOS takes only from a trusted app.
+//! Without accessibility, a scrolling capture still works with the user's own scrolling.
 //!
 //! Only screen recording blocks the screenshot core. When it is missing, a capture asks the
 //! system once (`CGRequestScreenCaptureAccess`, which shows the system prompt the first time),
@@ -54,6 +56,12 @@ pub fn status(app: &AppHandle) -> Permissions {
         accessibility: platform::accessibility(),
         restart_needed: screen_recording != PermissionState::Granted && RESTART_NEEDED.load(Ordering::SeqCst),
     }
+}
+
+/// Whether the app may post input events now (automatic scrolling) or watch other apps' keys,
+/// without prompting.
+pub fn accessibility() -> PermissionState {
+    platform::accessibility()
 }
 
 /// Like `status`, and when screen recording reads as missing, asks a fresh process whether it
