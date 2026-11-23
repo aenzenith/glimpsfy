@@ -7,7 +7,10 @@
 
 import { defineAsyncComponent, type Component, type InjectionKey, type Ref } from "vue";
 
+import type { useRecognition } from "../ocr/useRecognition";
 import type { PixelRect, Pixels } from "./redact";
+
+export type Recognition = ReturnType<typeof useRecognition>;
 
 /** Screen position of the image: CSS pixels of the mount box per image pixel, and where the
  * image's origin sits in the box. */
@@ -25,6 +28,9 @@ export type TextLayerContext = {
   scale: Readonly<Ref<number>>;
   /** Whether the layer should show: Copy text (⇧⌘C) toggles it, Esc hides it. */
   visible: Ref<boolean>;
+  /** The page's one reading of the area, shared by the layer and the tools that snap to words
+   * (`useSnapWords.ts`); the page resets it for a new capture or image. */
+  recognition: Recognition;
 };
 
 export const TEXT_LAYER: InjectionKey<TextLayerContext> = Symbol("glimpsfy.textLayer");

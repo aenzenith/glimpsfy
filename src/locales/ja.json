@@ -110,6 +110,7 @@
   "annotate.step": "ステップ {n}",
   "annotate.redactionNotice": "書き出すと、ぼかしとモザイクはファイルに焼き込まれ、あとから取り消せなくなります。",
   "annotate.gotIt": "了解",
+  "annotate.snapUnavailable": "テキスト認識を使えないため、ツールは自由に描画します。",
   "annotate.upload.selection": "選択範囲",
   "annotate.upload.noProvider": "アップロード先がまだ設定されていません。いま開く「設定 › アップロード」で選んでから、もう一度アップロードしてください。",
   "annotate.upload.fix": "{problem} 修正できるように「設定 › アップロード」を開きます。",

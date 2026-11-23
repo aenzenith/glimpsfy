@@ -110,6 +110,7 @@
   "annotate.step": "Schritt {n}",
   "annotate.redactionNotice": "Beim Exportieren werden Weichzeichnen und Verpixeln fest in die Datei eingerechnet und lassen sich danach nicht mehr rückgängig machen.",
   "annotate.gotIt": "Verstanden",
+  "annotate.snapUnavailable": "Die Texterkennung ist nicht verfügbar, daher zeichnet das Werkzeug frei.",
   "annotate.upload.selection": "Auswahl",
   "annotate.upload.noProvider": "Es ist noch kein Upload-Host eingerichtet. Wähle einen unter Einstellungen › Upload, die sich jetzt öffnen, und lade danach erneut hoch.",
   "annotate.upload.fix": "{problem} Einstellungen › Upload öffnet sich jetzt, damit du das beheben kannst.",

@@ -16,6 +16,7 @@ import type { AnnotationDocument, AnnotationObject, BeautifyStyle, Color, Point,
 import { textSize } from "./draw";
 import { boxTo, clamp, contains, frameOf, handlesOf, hits, moved, rectFrom, resized, snapAngle, type Handle } from "./geometry";
 import type { AnnotatePrefs, ToolId, ToolOptions } from "./prefs";
+import { endWord, range, shapesFor, snaps, wordAt, type SnapShape, type SnapWord } from "./snap";
 import {
   BLUR_LEVELS,
   CELL_LEVELS,
@@ -26,6 +27,7 @@ import {
   INKS,
   STEP_BASE,
   STEP_SIZES,
+  SNAP_REACH,
   STROKE_WIDTHS,
   TEXT_PAD,
   TEXT_SIZES,
@@ -66,8 +68,34 @@ export type PressResult = "handle" | "object" | "draw" | "text" | "none";
 
 export type Modifiers = { shift?: boolean; alt?: boolean };
 
+type DrawGesture = {
+  kind: "draw";
+  tool: ToolId;
+  start: Point;
+  id: string;
+  travelled: number;
+  /** The object as the pointer draws it freely. */
+  drawn: AnnotationObject;
+  /** Whether the tool snaps to words (`snap.ts`). */
+  snaps: boolean;
+  /** The word the press landed on; while there is one and ⌥ is up, the drag covers words. */
+  anchor: SnapWord | null;
+  /** The objects the drag shows now: `id` alone, or one per covered run, the first being `id`. */
+  shown: string[];
+  /** The ids of the runs after the first, kept from move to move. */
+  pieces: string[];
+  /** Whether the drag shows covered words rather than the free object. */
+  snapped: boolean;
+  /** What the drag shows: the last word covered, or the free object; a move that changes neither
+   * redraws nothing. */
+  showing: SnapWord | AnnotationObject | null;
+  last: Point;
+  /** ⌥ is held: the drawing stays free. */
+  free: boolean;
+};
+
 type Gesture =
-  | { kind: "draw"; tool: ToolId; start: Point; id: string; travelled: number }
+  | DrawGesture
   | { kind: "move"; id: string; start: Point; origin: AnnotationObject }
   | { kind: "handle"; id: string; handle: string; origin: AnnotationObject }
   /** The whole group follows the pointer; `id` is the member that was pressed. */
@@ -140,6 +168,11 @@ export class AnnotationEngine {
 
   private history = new History();
   private gesture: Gesture | null = null;
+  /** The recognised words of the image in image pixels, which the snapping tools cover; `null`
+   * while the text is still being read, could not be read, or holds no word. They belong to the
+   * image, not the document, so the surface replaces them (`setWords`) and clears them for a new
+   * image. */
+  private words: readonly SnapWord[] | null = null;
   /** The object list when the current gesture or text edit began. */
   private before: Objects | null = null;
   private saved: Objects;
@@ -660,6 +693,65 @@ export class AnnotationEngine {
     return { x: clamp(p.x, 0, this.doc.image.width), y: clamp(p.y, 0, this.doc.image.height) };
   }
 
+  // ------------------------------------------------------------------------- the words
+
+  /** The words a drag of the highlighter, blur, pixelate or spotlight covers, or `null`. Words
+   * that arrive during such a drag try its press again, so a drag that began before the reading
+   * ended snaps the moment they come; a drawing that was let go stays as it is. */
+  setWords(words: readonly SnapWord[] | null): void {
+    this.words = words?.length ? words : null;
+    const g = this.gesture;
+    if (g?.kind !== "draw" || !g.snaps) return;
+    g.anchor = this.wordUnder(g.start);
+    g.showing = null;
+    if (g.travelled > 0) this.showDraft(g);
+  }
+
+  /** ⌥ went down or up during a drag: the drawing turns free, or covers words again. */
+  setFree(free: boolean): void {
+    const g = this.gesture;
+    if (g?.kind !== "draw" || !g.snaps || g.free === free) return;
+    g.free = free;
+    if (g.travelled > 0) this.showDraft(g);
+  }
+
+  /** The part of the image the words are cut to: the crop (the overlay's selection), or all of it. */
+  private snapArea(): Rect {
+    return this.crop() ?? { x: 0, y: 0, width: this.doc.image.width, height: this.doc.image.height };
+  }
+
+  /** The word a press at `p` starts on; none outside the area. */
+  private wordUnder(p: Point): SnapWord | null {
+    if (!this.words || !contains(this.snapArea(), p)) return null;
+    return wordAt(this.words, p, SNAP_REACH * this.scale);
+  }
+
+  /** Shows what a drag of a snapping tool draws now: one object per run of the words from the
+   * pressed one to the one under the pointer, or the free object. All of them stay one gesture,
+   * so the drag is one undo step. */
+  private showDraft(g: DrawGesture): void {
+    const end = g.anchor && !g.free && this.words ? endWord(this.words, g.last) : null;
+    const showing = end ?? g.drawn;
+    if (showing === g.showing) return;
+    g.showing = showing;
+    let objects: AnnotationObject[] = [g.drawn];
+    if (end && g.anchor && this.words) {
+      const shapes = shapesFor(g.tool, range(this.words, g.anchor, end), this.scale, this.snapArea());
+      objects = shapes.map((shape, i) => this.shaped(g.drawn, shape, i === 0 ? g.id : (g.pieces[i - 1] ??= newId(g.drawn.kind))));
+    }
+    const gone = new Set(g.shown);
+    g.shown = objects.map((o) => o.id);
+    g.snapped = end !== null;
+    this.set([...this.doc.objects.filter((o) => !gone.has(o.id)), ...objects]);
+  }
+
+  /** The free object reshaped to a snapped run. */
+  private shaped(object: AnnotationObject, shape: SnapShape, id: string): AnnotationObject {
+    if (shape.kind === "bar" && object.kind === "highlighter") return { ...object, id, points: [shape.from, shape.to], width: shape.width };
+    if (shape.kind === "box" && (object.kind === "blur" || object.kind === "pixelate" || object.kind === "spotlight")) return { ...object, id, rect: shape.rect };
+    return { ...object, id };
+  }
+
   /** The topmost object under `p` that can be selected. */
   objectAt(p: Point, reach: number, interior: boolean): AnnotationObject | null {
     const list = this.doc.objects;
@@ -678,9 +770,11 @@ export class AnnotationEngine {
   }
 
   /** What a press at `p` would do, for the surface's cursor. `over` is a press that only draws
-   * (⌘ held), so it ignores objects and handles. */
-  cursorAt(p: Point, reach: number, over = false): string | null {
-    if (over) return this.tool === "text" ? "text" : this.tool ? "crosshair" : null;
+   * (⌘ held), so it ignores objects and handles. `free` is ⌥ held, when a snapping tool draws
+   * freely; otherwise such a tool shows the text cursor over a word, where its drag covers words. */
+  cursorAt(p: Point, reach: number, over = false, free = false): string | null {
+    const onWord = () => !free && snaps(this.tool) && this.wordUnder(p) !== null;
+    if (over) return this.tool === "text" || onWord() ? "text" : this.tool ? "crosshair" : null;
     const handle = this.handleAt(p, reach);
     if (handle) return handle.kind === "point" ? "crosshair" : handle.id === "0,0" || handle.id === "1,1" ? "nwse-resize" : handle.id === "1,0" || handle.id === "0,1" ? "nesw-resize" : handle.kind === "x" ? "ns-resize" : "ew-resize";
     if (this.tool === "crop" && !this.options.cropDrawsInside) {
@@ -688,7 +782,7 @@ export class AnnotationEngine {
       return crop && contains(crop, p) ? "move" : "crosshair";
     }
     if (this.objectAt(p, reach, this.tool === null)) return "move";
-    if (this.tool === "text") return "text";
+    if (this.tool === "text" || onWord()) return "text";
     return this.tool ? "crosshair" : null;
   }
 
@@ -702,8 +796,9 @@ export class AnnotationEngine {
   }
 
   /** A press at `p` in image pixels. With `over` (⌘ held) the press only draws: it starts a new
-   * object with the active tool even on top of another, and never picks one up. */
-  pointerDown(p: Point, reach: number, over = false): PressResult {
+   * object with the active tool even on top of another, and never picks one up. With `free` (⌥
+   * held) a snapping tool draws freely even when the press is on a word. */
+  pointerDown(p: Point, reach: number, over = false, free = false): PressResult {
     if (this.editingId) {
       this.finishText();
     }
@@ -756,7 +851,24 @@ export class AnnotationEngine {
       this.bump();
       return "text";
     }
-    this.gesture = { kind: "draw", tool: this.tool, start: at, id: object.id, travelled: 0 };
+    const snapping = snaps(this.tool);
+    this.gesture = {
+      kind: "draw",
+      tool: this.tool,
+      start: at,
+      id: object.id,
+      travelled: 0,
+      drawn: object,
+      snaps: snapping,
+      // Only a press on a word snaps; one beside the text draws as it always did.
+      anchor: snapping ? this.wordUnder(at) : null,
+      shown: [object.id],
+      pieces: [],
+      snapped: false,
+      showing: object,
+      last: at,
+      free,
+    };
     return "draw";
   }
 
@@ -769,6 +881,7 @@ export class AnnotationEngine {
   pointerMove(p: Point, mods: Modifiers = {}): void {
     const g = this.gesture;
     if (!g) return;
+    if (g.kind === "draw") return this.drawTo(g, p, mods);
     const object = this.get(g.id);
     if (!object) return;
     if (g.kind === "group") {
@@ -798,10 +911,17 @@ export class AnnotationEngine {
         to = snapAngle(g.handle === "from" ? g.origin.to : g.origin.from, p);
       }
       this.set(this.replace(g.id, resized(g.origin, g.handle, to, ratio, textSize)));
-      return;
     }
+  }
+
+  /** A drawing gesture's move: the free object follows the pointer, and a snapping tool shows it
+   * or the words it covers. */
+  private drawTo(g: DrawGesture, p: Point, mods: Modifiers): void {
     const at = this.clampToImage(p);
     g.travelled = Math.max(g.travelled, Math.hypot(at.x - g.start.x, at.y - g.start.y));
+    g.last = at;
+    g.free = mods.alt === true;
+    const object = g.drawn;
     let next: AnnotationObject = object;
     switch (object.kind) {
       case "arrow":
@@ -812,8 +932,7 @@ export class AnnotationEngine {
       case "highlighter": {
         const last = object.points[object.points.length - 1];
         // Points closer than a point apart add weight and no shape.
-        if (Math.hypot(at.x - last.x, at.y - last.y) < this.scale) return;
-        next = { ...object, points: [...object.points, at] };
+        if (Math.hypot(at.x - last.x, at.y - last.y) >= this.scale) next = { ...object, points: [...object.points, at] };
         break;
       }
       case "step":
@@ -832,7 +951,9 @@ export class AnnotationEngine {
       default:
         break;
     }
-    this.set(this.replace(g.id, next));
+    g.drawn = next;
+    if (g.snaps) this.showDraft(g);
+    else if (next !== object) this.set(this.replace(g.id, next));
   }
 
   pointerUp(): void {
@@ -843,7 +964,15 @@ export class AnnotationEngine {
     const before = this.before;
     this.before = null;
     if (!before) return;
-    if (g.kind === "draw" && object) {
+    if (g.kind === "draw" && g.snapped) {
+      // Covered words are kept once the pointer moved, as a free drawing is; a click without a
+      // drag covers nothing.
+      if (g.travelled < 3 * this.scale || g.shown.length === 0) {
+        this.set(before);
+        return;
+      }
+      if ((g.tool === "blur" || g.tool === "pixelate") && !this.prefs.redactionNoticeSeen) this.onRedaction();
+    } else if (g.kind === "draw" && object) {
       // A click without a drag draws nothing, except a step marker, which a click places, and a
       // pen dot.
       const min = 3 * this.scale;

@@ -3,13 +3,17 @@
 // (six for the highlighter) and three widths, the text sizes and the background, or the tool's
 // levels and ratios. The page supplies the container around them: the overlay's `g-strip`, the
 // editor's options strip. A choice is
-// remembered for the tool and, when an object of that tool is selected, applied to it.
+// remembered for the tool and, when an object of that tool is selected, applied to it. A tool that
+// snaps to words ends with a warning when the text could not be read, which says why it draws
+// freely.
 import { computed } from "vue";
 
 import GIcon from "../components/GIcon.vue";
+import TipWrap from "../components/TipWrap.vue";
 import { t, type Key } from "../lib/i18n";
 import type { AnnotationEngine } from "./engine";
 import type { ToolId, ToolOptions } from "./prefs";
+import { snaps } from "./snap";
 import { CROP_RATIOS, HIGHLIGHTER_INKS, HIGHLIGHTER_WIDTHS, INKS, STEP_SIZES, STROKE_WIDTHS, TEXT_SIZES } from "./style";
 
 const props = defineProps<{
@@ -18,6 +22,8 @@ const props = defineProps<{
   /** Levels and ratios as one segmented control, as the overlay shows them; the editor shows
    * them as separate options. */
   segmented?: boolean;
+  /** The text could not be read (`useSnapWords`), so the snapping tools draw freely. */
+  snapProblem?: boolean;
 }>();
 
 const current = computed<ToolOptions>(() => (props.engine.rev.value, props.engine.current(props.tool)));
@@ -149,11 +155,23 @@ function choose(change: Partial<ToolOptions>): void {
       {{ ratioLabel(r) }}
     </button>
   </div>
+  <template v-if="snapProblem && snaps(tool)">
+    <span class="g-divider" role="separator" />
+    <!-- The overlay's strip hangs under its tool bar, so its tip opens downwards. -->
+    <TipWrap :tip="t('annotate.snapUnavailable')" :side="segmented ? 'below' : undefined" align="end">
+      <button type="button" class="g-btn a-warn" data-size="small" :aria-label="t('annotate.snapUnavailable')" @mousedown.prevent>
+        <GIcon name="warning" :size="16" />
+      </button>
+    </TipWrap>
+  </template>
 </template>
 
 <style scoped>
 /* Separate options sit straight in the strip; the group only names them for assistive tech. */
 .a-group {
   display: contents;
+}
+.a-warn {
+  color: var(--tone-warn);
 }
 </style>

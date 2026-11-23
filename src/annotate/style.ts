@@ -106,6 +106,16 @@ export const DIM_ALPHA: Record<SpotlightDim, number> = { light: 0.48 * 0.6, medi
 /** The corner radius of a spotlight region (`--radius-key`). */
 export const SPOTLIGHT_RADIUS = 5;
 
+// The room the tools that snap to words (`snap.ts`) leave around the words, in points (DESIGN.md
+// "Annotations"): the highlighter's bar is the line's height plus 1 pt above and below and reaches
+// 2 pt past the words, a blur or pixelate covers the words with 3 pt to spare, and a spotlight
+// opens 6 pt around them.
+export const SNAP_BAR = { side: 2, line: 1, radius: 2 } as const;
+export const SNAP_REDACT_PAD = 3;
+export const SNAP_SPOT_PAD = 6;
+/** How far a press may miss a word and still start on it. */
+export const SNAP_REACH = 2;
+
 // -------------------------------------------------------------------------- drawing
 
 /** The rectangle's corner radius. */

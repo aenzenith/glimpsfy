@@ -110,6 +110,7 @@
   "annotate.step": "Adım {n}",
   "annotate.redactionNotice": "Dışa aktardığında bulanıklaştırma ve pikselleştirme dosyaya işlenir ve artık geri alınamaz.",
   "annotate.gotIt": "Anladım",
+  "annotate.snapUnavailable": "Metin tanıma kullanılamadığı için araç serbest çizer.",
   "annotate.upload.selection": "Seçim",
   "annotate.upload.noProvider": "Henüz bir yükleme sunucusu ayarlanmadı. Şimdi açılan Ayarlar › Yükleme bölümünden birini seç ve yeniden yükle.",
   "annotate.upload.fix": "{problem} Düzeltebilmen için Ayarlar › Yükleme şimdi açılıyor.",

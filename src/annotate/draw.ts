@@ -13,6 +13,7 @@ import {
   RECT_RADIUS,
   SHADOW,
   SHADOW_STRONG,
+  SNAP_BAR,
   SPOTLIGHT_RADIUS,
   STEP_RING,
   TEXT_PAD,
@@ -227,6 +228,15 @@ export function drawObject(ctx: Ctx, object: AnnotationObject, scale: number): v
       // readable; flat ends make the stroke look like a marker's.
       ctx.globalCompositeOperation = "multiply";
       ctx.globalAlpha = HIGHLIGHTER_ALPHA;
+      if (object.points.length === 2 && object.points[0].y === object.points[1].y) {
+        // Two points on one level are a bar snapped to words (`snap.ts`): a box as tall as the
+        // stroke, with small corners where a marker's flat ends would look cut off.
+        const [a, b] = object.points;
+        roundRect(ctx, { x: Math.min(a.x, b.x), y: a.y - object.width / 2, width: Math.abs(b.x - a.x), height: object.width }, SNAP_BAR.radius * scale);
+        ctx.fillStyle = cssOf(object.color);
+        ctx.fill();
+        break;
+      }
       ctx.lineCap = "butt";
       smoothPath(ctx, object.points);
       ctx.strokeStyle = cssOf(object.color);

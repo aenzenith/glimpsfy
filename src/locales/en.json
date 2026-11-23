@@ -110,6 +110,7 @@
   "annotate.step": "Step {n}",
   "annotate.redactionNotice": "Once you export, blur and pixelate are flattened into the file and can no longer be undone.",
   "annotate.gotIt": "Got it",
+  "annotate.snapUnavailable": "Text recognition is unavailable, so the tool draws freely.",
   "annotate.upload.selection": "Selection",
   "annotate.upload.noProvider": "No upload host is set up yet. Choose one in Settings › Upload, which opens now, and then upload again.",
   "annotate.upload.fix": "{problem} Settings › Upload opens now so you can fix it.",

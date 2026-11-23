@@ -1,6 +1,7 @@
-// Pure helpers of the text layer: where a recognised box sits on screen, and which text a
-// selection of words stands for. The layer (`TextLayer.vue`) and the composable
-// (`useRecognition.ts`) use them; they touch no DOM and no bridge.
+// Pure helpers of the text layer: where a recognised box sits on screen, how a line's words fall
+// into runs, and which text a selection of words stands for. The layer (`TextLayer.vue`), the
+// composable (`useRecognition.ts`) and the word snapping of the annotation tools
+// (`src/annotate/snap.ts`) use them; they touch no DOM and no bridge.
 
 import type { Bounds, OcrLine, OcrResult } from "../lib/api/ocr";
 
@@ -17,6 +18,20 @@ export function placer(rect: Rect, imageSize: { width: number; height: number })
     width: b.width * kx + 2 * pad,
     height: b.height * ky + 2 * pad,
   });
+}
+
+/** The words of a line in runs, as indices into `line.words`: a gap wider than 1.2 times the
+ * line's height (a table's cell gap, a sidebar's value) starts a new run. The text layer outlines
+ * each run on its own, and the annotation tools that snap to words draw one shape per run. */
+export function lineRuns(line: OcrLine): number[][] {
+  const runs: number[][] = [];
+  line.words.forEach((word, i) => {
+    const run = runs[runs.length - 1];
+    const before = run ? line.words[run[run.length - 1]].bounds : null;
+    if (before && word.bounds.x - (before.x + before.width) <= line.bounds.height * 1.2) run.push(i);
+    else runs.push([i]);
+  });
+  return runs;
 }
 
 /** Where each word of each line starts and ends in `result.text`, or `null` for a word that the

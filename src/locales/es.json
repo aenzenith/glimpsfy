@@ -110,6 +110,7 @@
   "annotate.step": "Paso {n}",
   "annotate.redactionNotice": "Al exportar, el desenfoque y la pixelación se integran en el archivo y ya no se pueden deshacer.",
   "annotate.gotIt": "Entendido",
+  "annotate.snapUnavailable": "El reconocimiento de texto no está disponible, así que la herramienta dibuja a mano alzada.",
   "annotate.upload.selection": "Selección",
   "annotate.upload.noProvider": "Aún no hay ningún servidor de subida configurado. Elige uno en Ajustes › Subida, que se abre ahora, y vuelve a subir.",
   "annotate.upload.fix": "{problem} Ajustes › Subida se abre ahora para que puedas corregirlo.",

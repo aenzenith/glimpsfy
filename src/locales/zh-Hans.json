@@ -110,6 +110,7 @@
   "annotate.step": "步骤 {n}",
   "annotate.redactionNotice": "导出后，模糊和马赛克会合并到文件中，无法再撤销。",
   "annotate.gotIt": "知道了",
+  "annotate.snapUnavailable": "无法识别文字，因此工具会自由绘制。",
   "annotate.upload.selection": "所选区域",
   "annotate.upload.noProvider": "还没有设置上传服务。请在“设置 › 上传”中选择一个（现在会为你打开），然后再上传一次。",
   "annotate.upload.fix": "{problem} 现在会打开“设置 › 上传”，方便你修正。",

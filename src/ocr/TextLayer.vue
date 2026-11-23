@@ -9,7 +9,9 @@
 // Props, all optional:
 // - `result`: a recognition to show. Without it, the layer reads on its own: it takes the pixels
 //   of the surrounding text layer context (`TEXT_LAYER` in src/annotate/textLayer.ts), with every
-//   blur and pixelation already flattened in, whenever it becomes visible or its area changes.
+//   blur and pixelation already flattened in, the moment it becomes visible and whenever its area
+//   changes. It reads through the context's `recognition`, which the snapping annotation tools
+//   share, so an area they have read is not read twice.
 // - `codes`: the QR codes and barcodes of `result`, for their chips.
 // - `imageSize`: the size in pixels of the image the boxes refer to; `result.imageSize` by default.
 // - `rect`: where that image shows, in CSS pixels of the layer's box; by default the context's
@@ -28,7 +30,7 @@ import { ocr_copy, type CodeResult, type OcrResult } from "../lib/api/ocr";
 import { app_open_url } from "../lib/api/windows";
 import { language, t } from "../lib/i18n";
 import EntityMenu from "./EntityMenu.vue";
-import { languageName, lineCount, placer, textOf, wordOffsets, type Rect, type WordRange } from "./text";
+import { languageName, lineCount, lineRuns, placer, textOf, wordOffsets, type Rect, type WordRange } from "./text";
 import { useEntities } from "./useEntities";
 import { useRecognition } from "./useRecognition";
 
@@ -49,7 +51,9 @@ const props = withDefaults(
 const emit = defineEmits<{ hide: []; leave: [run: () => Promise<void>] }>();
 
 const context = inject(TEXT_LAYER, null);
-const recognition = useRecognition();
+// The page's reading, which the annotation tools that snap to words share; one of its own without
+// a page around it.
+const recognition = context ? context.recognition : useRecognition();
 
 /** The invisible words are drawn in this font, and measured in it to fit their boxes. */
 const FONT = '-apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif';
@@ -75,18 +79,25 @@ const place = computed(() => (rect.value && size.value ? placer(rect.value, size
 // ------------------------------------------------------------------------- reading on its own
 
 let pending = 0;
+let wasShown = false;
 watch(
   [shown, () => context?.area.value, own],
   ([visible]) => {
     clearTimeout(pending);
-    if (!own.value) return;
-    if (!visible) return recognition.cancel();
-    // A selection that is still being adjusted settles first.
-    pending = window.setTimeout(() => {
+    const appeared = visible && !wasShown;
+    wasShown = visible;
+    // Hidden, the layer leaves the shared reading alone: a snapping tool may be waiting for it.
+    if (!own.value || !visible) return;
+    const read = () => {
       const pixels = context?.pixels();
       if (!pixels || !context) return;
       void recognition.run({ ...pixels, colorSpace: context.colorSpace.value === "display-p3" ? "display-p3" : "srgb" });
-    }, 120);
+    };
+    // The shared result may come from before a blur was drawn: run at once, so it is dropped
+    // before the layer renders it (the same pixels keep it). A selection that is still being
+    // adjusted settles first.
+    if (appeared) read();
+    else pending = window.setTimeout(read, 120);
   },
   { immediate: true, deep: true },
 );
@@ -95,23 +106,12 @@ watch(
 
 const css = (r: Rect) => ({ left: `${r.x}px`, top: `${r.y}px`, width: `${r.width}px`, height: `${r.height}px` });
 
-/** The words of a line in runs: a gap wider than the line is tall (a table's cell gap, a
- * sidebar's value) starts a new run, and each run gets its own outline. */
+/** The words of a line in runs (`lineRuns`, the rule the snapping tools use too); each run gets
+ * its own outline. */
 const runs = computed(() => {
   const p = place.value;
   if (!p || !current.value) return [];
-  return current.value.lines.map((line) => {
-    const lineBox = p(line.bounds);
-    const boxes = line.words.map((word) => p(word.bounds));
-    const groups: number[][] = [];
-    boxes.forEach((box, i) => {
-      const last = groups[groups.length - 1];
-      const before = last ? boxes[last[last.length - 1]] : null;
-      if (before && box.x - (before.x + before.width) <= lineBox.height * 1.2) last.push(i);
-      else groups.push([i]);
-    });
-    return { lineBox, boxes, groups };
-  });
+  return current.value.lines.map((line) => ({ lineBox: p(line.bounds), boxes: line.words.map((word) => p(word.bounds)), groups: lineRuns(line) }));
 });
 
 const outlines = computed(() =>

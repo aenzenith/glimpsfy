@@ -23,7 +23,8 @@ import { context2d, exportArea, redactedPixels, renderExport, scratchCanvas, typ
 import { AnnotationEngine, TOOL_OF } from "../annotate/engine";
 import { defaultPrefs, flushPrefs, loadPrefs, savePrefs, type ToolId as AnnotateTool } from "../annotate/prefs";
 import type { Bytes, PixelRect } from "../annotate/redact";
-import { TEXT_LAYER, textLayerComponent, type View } from "../annotate/textLayer";
+import { TEXT_LAYER, textLayerComponent, type TextLayerContext, type View } from "../annotate/textLayer";
+import { useSnapWords } from "../annotate/useSnapWords";
 import { thumbnailOfPixels, uploadFlow } from "../annotate/upload";
 import {
   IMAGE_FALLBACK,
@@ -40,6 +41,7 @@ import {
   withNewPreset,
   withPresetStyle,
 } from "../annotate/beautify";
+import { useRecognition } from "../ocr/useRecognition";
 import { CURRENT_VERSION, parseDocument, serializeDocument, writeBeautify, type AnnotationDocument, type BeautifyStyle } from "../lib/annotate";
 import { ApiError, on, onWindow } from "../lib/api/core";
 import {
@@ -198,15 +200,20 @@ const cropBox = computed(() => {
   const c = engine.crop();
   return cropMode.value && c ? { screen: screen(c), width: Math.round(c.width), height: Math.round(c.height) } : null;
 });
-// The text recognition layer reads the image through this (src/annotate/textLayer.ts).
-provide(TEXT_LAYER, {
+// The text recognition layer reads the image through this (src/annotate/textLayer.ts), and the
+// tools that snap to words share its reading.
+const textLayer: TextLayerContext = {
   area,
   view,
   pixels: () => (source.value && area.value ? redactedPixels(source.value, engine.doc, area.value) : null),
   colorSpace: computed(() => source.value?.colorSpace ?? "srgb"),
   scale,
   visible: textLayerVisible,
-});
+  recognition: useRecognition(),
+};
+provide(TEXT_LAYER, textLayer);
+const snapWords = useSnapWords(engine, textLayer, computed(() => source.value !== null));
+const snapProblem = snapWords.problem;
 
 // ------------------------------------------------------------------------------ beautify
 //
@@ -493,6 +500,7 @@ async function show(img: EditorImage): Promise<void> {
     // history is already what its entry holds.
     engine.load(documentFor(img, width, height), img.document !== null && img.entryId === null);
     textLayerVisible.value = false;
+    snapWords.reset();
     noticeShown.value = false;
     if (previous) void editor_close(previous.token).catch(() => {});
     await nextTick();
@@ -740,8 +748,8 @@ function onPointerDown(e: PointerEvent): void {
     return;
   }
   if (e.button !== 0) return;
-  // With ⌘ held a press only draws, even on top of another object.
-  const result = engine.pointerDown(toImage(local(e)), reach(), e.metaKey);
+  // With ⌘ held a press only draws, even on top of another object; with ⌥ it draws freely.
+  const result = engine.pointerDown(toImage(local(e)), reach(), e.metaKey, e.altKey);
   if (result === "handle" || result === "object" || result === "draw") target.setPointerCapture(e.pointerId);
   // A press that starts a text leaves the focus to its field.
   if (result !== "text") e.preventDefault();
@@ -759,16 +767,17 @@ function onPointerMove(e: PointerEvent): void {
     return;
   }
   lastPoint = p;
-  aim(p, e.metaKey);
+  aim(p, e.metaKey, e.altKey);
   updateReadout(p);
 }
 
 /** The pointer's last place in image pixels, so ⌘ going down or up can change the cursor. */
 let lastPoint: { x: number; y: number } | null = null;
 
-/** The cursor and the hover frame at `p`; `over` is ⌘ held, when a press only draws. */
-function aim(p: { x: number; y: number }, over: boolean): void {
-  cursor.value = spaceHeld.value ? "grab" : (engine.cursorAt(p, reach(), over) ?? "default");
+/** The cursor and the hover frame at `p`; `over` is ⌘ held, when a press only draws, and `free`
+ * is ⌥ held, when a snapping tool shows no text cursor. */
+function aim(p: { x: number; y: number }, over: boolean, free = false): void {
+  cursor.value = spaceHeld.value ? "grab" : (engine.cursorAt(p, reach(), over, free) ?? "default");
   // With Space held a press pans and with ⌘ it only draws, so nothing is about to be picked up.
   engine.hover(spaceHeld.value || over ? null : p, reach());
 }
@@ -875,7 +884,13 @@ function onKeyDown(e: KeyboardEvent): void {
     return;
   }
   if (e.key === "Meta") {
-    if (lastPoint && !pan && !engine.busy()) aim(lastPoint, true);
+    if (lastPoint && !pan && !engine.busy()) aim(lastPoint, true, e.altKey);
+    return;
+  }
+  // ⌥ frees a snapping tool's drawing from the words, during a drag too.
+  if (e.key === "Alt") {
+    if (engine.busy()) engine.setFree(true);
+    else if (lastPoint && !pan) aim(lastPoint, e.metaKey, true);
     return;
   }
   if (cropMode.value && (e.key === "Enter" || e.key === "Escape") && !engine.busy()) {
@@ -929,7 +944,11 @@ function onKeyDown(e: KeyboardEvent): void {
 }
 
 function onKeyUp(e: KeyboardEvent): void {
-  if (e.key === "Meta" && lastPoint && !pan && !engine.busy()) aim(lastPoint, false);
+  if (e.key === "Meta" && lastPoint && !pan && !engine.busy()) aim(lastPoint, false, e.altKey);
+  if (e.key === "Alt") {
+    if (engine.busy()) engine.setFree(false);
+    else if (lastPoint && !pan) aim(lastPoint, e.metaKey, false);
+  }
   if (e.key === " ") {
     spaceHeld.value = false;
     if (!pan) cursor.value = "default";
@@ -1145,7 +1164,7 @@ onUnmounted(() => {
             <span class="e-options-name">{{ t(`tool.${pick.tool}` as Key) }}</span>
           </span>
           <span class="g-divider" role="separator" />
-          <OptionsStrip :engine="engine" :tool="pick.tool" />
+          <OptionsStrip :engine="engine" :tool="pick.tool" :snap-problem="snapProblem" />
           <template v-if="pick.object">
             <span class="g-divider" role="separator" />
             <TipWrap :tip="t('annotate.bringForward')" :caps="['⌘', ']']">

@@ -16,7 +16,9 @@ import OptionsStrip from "../annotate/OptionsStrip.vue";
 import RedactionNotice from "../annotate/RedactionNotice.vue";
 import Surface from "../annotate/Surface.vue";
 import type { ToolId as AnnotateTool } from "../annotate/prefs";
-import { TEXT_LAYER, textLayerComponent } from "../annotate/textLayer";
+import { TEXT_LAYER, textLayerComponent, type TextLayerContext } from "../annotate/textLayer";
+import { useSnapWords } from "../annotate/useSnapWords";
+import { useRecognition } from "../ocr/useRecognition";
 import { thumbnail, thumbnailOfPixels, uploadFlow } from "../annotate/upload";
 import { clamped, edgeMedian, useBackgroundImage } from "../annotate/beautify";
 import { writeBeautify, type BeautifyStyle } from "../lib/annotate";
@@ -259,16 +261,22 @@ const noticeAt = computed(() => {
   return { x: clamp(p.strip.x, 8, view.w - 412), y: p.strip.y + 44 };
 });
 
-// The text recognition layer reads the selection through this (src/annotate/textLayer.ts).
+// The text recognition layer reads the selection through this (src/annotate/textLayer.ts), and the
+// tools that snap to words share its reading.
 const textLayerVisible = ref(false);
-provide(TEXT_LAYER, {
+const textLayer: TextLayerContext = {
   area: liveArea,
   view: annotationView,
   pixels: () => (liveArea.value ? annotations.pixels(liveArea.value) : null),
   colorSpace: computed(() => frame.value?.colorSpace ?? "srgb"),
   scale: computed(() => ratio.value.x),
   visible: textLayerVisible,
-});
+  recognition: useRecognition(),
+};
+provide(TEXT_LAYER, textLayer);
+// The selection is read once it is drawn, not while it is dragged or moved.
+const snapWords = useSnapWords(engine, textLayer, computed(() => mode.value === "sel"));
+const snapProblem = snapWords.problem;
 
 // --------------------------------------------------------------------- per-frame painting
 //
@@ -513,6 +521,7 @@ function resetAll(): void {
   tool.value = null;
   annotations.setTool(null);
   textLayerVisible.value = false;
+  snapWords.reset();
   uploads.cancel();
   pendingMove = null;
   pointer.value = null;
@@ -1062,8 +1071,10 @@ function onMouseDown(e: MouseEvent): void {
     // With ⌘ held a press only draws: inside the selection the tool starts a new object even on
     // top of another one or on a handle, and no object is picked up.
     const over = e.metaKey;
+    // ⌥ held draws freely; the tips it opened close once a drawing starts.
+    const free = e.altKey;
     if (over && engine.tool && inside(sel.value, p)) {
-      annotations.press(fp, reach.value, true, true);
+      if (annotations.press(fp, reach.value, true, true, free) === "draw") allTips.value = false;
       return;
     }
     // The selected object's handles come before the selection's, wherever they are.
@@ -1078,7 +1089,9 @@ function onMouseDown(e: MouseEvent): void {
     if (inside(sel.value, p)) {
       // With a tool, a press draws; without one, it picks an object, and on empty ground it
       // moves the selection.
-      if (annotations.press(fp, reach.value, true, over) !== "none") return;
+      const pressed = annotations.press(fp, reach.value, true, over, free);
+      if (pressed === "draw") allTips.value = false;
+      if (pressed !== "none") return;
       mode.value = "move";
       grab = { offset: { x: p.x - sel.value.x, y: p.y - sel.value.y }, origin: { ...sel.value }, handle: null };
       barsShown.value = false;
@@ -1156,25 +1169,26 @@ function handleMove(e: MouseEvent): void {
         annotations.move(toFrame(p), { shift: e.shiftKey, alt: e.altKey });
         break;
       }
-      aim(p, e.metaKey);
+      aim(p, e.metaKey, e.altKey);
       break;
   }
 }
 
 /** The cursor and the hover frame for the pointer at `p` over the selection; `over` is ⌘ held,
- * when a press only draws. Also called when ⌘ goes down or up without the pointer moving. */
-function aim(p: Point, over: boolean): void {
+ * when a press only draws, and `free` is ⌥ held, when a snapping tool shows no text cursor. Also
+ * called when ⌘ or ⌥ goes down or up without the pointer moving. */
+function aim(p: Point, over: boolean, free = false): void {
   if (!sel.value) return;
   const fp = toFrame(p);
   const within = inside(sel.value, p);
   if (over && engine.tool && within) {
-    cursor.value = annotations.cursorAt(fp, reach.value, true) ?? "crosshair";
+    cursor.value = annotations.cursorAt(fp, reach.value, true, free) ?? "crosshair";
     annotations.hover(null, reach.value);
     return;
   }
   const objectHandle = !over && engine.handleAt(fp, reach.value);
   const handle = handleAt(sel.value, p);
-  const drawing = within ? annotations.cursorAt(fp, reach.value, over) : null;
+  const drawing = within ? annotations.cursorAt(fp, reach.value, over, free) : null;
   cursor.value = objectHandle ? (drawing ?? "move") : handle ? RESIZE_CURSORS[handle.join(",")] : within ? (drawing ?? "move") : "crosshair";
   // Framed only where a press picks the object up: inside the selection, off its handles.
   annotations.hover(within && !handle && !over ? fp : null, reach.value);
@@ -1199,7 +1213,8 @@ watch(
     if (!annotations.busy()) void layoutBars();
   },
 );
-watch(stripTool, () => void layoutBars());
+// The strip's warning (`snapProblem`) makes it wider.
+watch([stripTool, snapProblem], () => void layoutBars());
 
 function onMouseUp(e: MouseEvent): void {
   flushMove();
@@ -1302,11 +1317,16 @@ function onKeyDown(e: KeyboardEvent): void {
     return;
   }
   if (e.key === "Alt" && mode.value === "sel") {
-    allTips.value = true;
+    // During a drag ⌥ only frees the drawing from the words; the tips would cover it.
+    if (annotations.busy()) annotations.setFree(true);
+    else {
+      allTips.value = true;
+      if (pointer.value) aim(pointer.value, e.metaKey, true);
+    }
     return;
   }
   if (e.key === "Meta" && mode.value === "sel" && pointer.value && !annotations.busy()) {
-    aim(pointer.value, true);
+    aim(pointer.value, true, e.altKey);
     return;
   }
   if (mode.value !== "sel" || !sel.value) return;
@@ -1376,8 +1396,12 @@ function onKeyDown(e: KeyboardEvent): void {
 
 function onKeyUp(e: KeyboardEvent): void {
   flushMove();
-  if (e.key === "Alt") allTips.value = false;
-  if (e.key === "Meta" && mode.value === "sel" && pointer.value && !annotations.busy()) aim(pointer.value, false);
+  if (e.key === "Alt") {
+    allTips.value = false;
+    if (mode.value === "sel" && annotations.busy()) annotations.setFree(false);
+    else if (mode.value === "sel" && pointer.value) aim(pointer.value, e.metaKey, false);
+  }
+  if (e.key === "Meta" && mode.value === "sel" && pointer.value && !annotations.busy()) aim(pointer.value, false, e.altKey);
 }
 
 function onResize(): void {
@@ -1601,7 +1625,7 @@ onUnmounted(() => {
       :style="at(placement?.strip ?? { x: -9999, y: -9999 })"
       @mousedown.stop
     >
-      <OptionsStrip :engine="engine" :tool="stripTool" segmented />
+      <OptionsStrip :engine="engine" :tool="stripTool" segmented :snap-problem="snapProblem" />
     </div>
     <RedactionNotice
       v-if="annotations.noticeShown.value && !engine.prefs.redactionNoticeSeen && noticeAt && barsShown && mode === 'sel'"
