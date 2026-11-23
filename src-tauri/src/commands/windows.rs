@@ -150,16 +150,78 @@ pub fn app_copy_text(app: AppHandle, text: String) -> CommandResult<()> {
     }
 }
 
-/// Opens a web page in the default browser. Only `http` and `https` addresses open, so a provider
-/// description or a pasted link cannot start another app.
+/// Opens a link with the app the system picks for it: a web page in the default browser, a
+/// `mailto:` address in the mail app and a `tel:` number in the phone app (FaceTime on macOS). No
+/// other scheme opens (`openable_url`), so a provider description, a pasted link or a recognised
+/// text cannot start anything else.
 #[tauri::command]
 pub fn app_open_url(app: AppHandle, url: String) -> CommandResult<()> {
     use tauri_plugin_opener::OpenerExt;
-    let lower = url.trim().to_ascii_lowercase();
-    if !(lower.starts_with("https://") || lower.starts_with("http://")) {
-        return Err(CommandError::invalid("only http and https links open in the browser"));
+    let url = openable_url(&url).ok_or_else(|| CommandError::invalid("only http, https, mailto and tel links open"))?;
+    app.opener().open_url(url, None::<&str>).map_err(|e| CommandError::internal(e.to_string()))
+}
+
+/// Whether an app on this computer opens `url`, for the schemes `app_open_url` takes only; the
+/// text layer greys an action out and says why before the click instead of failing after it.
+#[tauri::command]
+pub fn app_can_open_url(url: String) -> bool {
+    let Some(url) = openable_url(&url) else { return false };
+    #[cfg(target_os = "macos")]
+    {
+        crate::macos::can_open_url(&url)
     }
-    app.opener().open_url(url.trim(), None::<&str>).map_err(|e| CommandError::internal(e.to_string()))
+    #[cfg(not(target_os = "macos"))]
+    {
+        crate::desktop::can_open_url(&url)
+    }
+}
+
+/// Adds an event to the user's calendar without a permission: the core writes it as a new `.ics`
+/// file into `<cache>/events/` and opens it with the system's calendar app (`calendar.rs`).
+#[tauri::command]
+pub async fn app_add_to_calendar(app: AppHandle, event: crate::calendar::CalendarEvent) -> CommandResult<()> {
+    tauri::async_runtime::spawn_blocking(move || crate::calendar::add(&app, &event).map(|_| ()))
+        .await
+        .map_err(|e| CommandError::internal(e.to_string()))?
+}
+
+/// The address `app_open_url` hands to the system, without the spaces around it, or `None` when
+/// it must not open. `http` and `https` take any address; `mailto:` takes one plain address with
+/// no query, since `?attach=` or `?bcc=` would let a picture on screen write the mail;
+/// `tel:` takes `+`, digits and the separators `-().` only. Any other scheme (`javascript:`,
+/// `file:`, `smb:`, `facetime:`, an app's own) and any control character or inner space answer
+/// `None`.
+pub fn openable_url(url: &str) -> Option<String> {
+    let url = url.trim();
+    if url.chars().any(|c| c.is_control() || c.is_whitespace()) {
+        return None;
+    }
+    let (scheme, rest) = url.split_once(':')?;
+    let ok = match scheme.to_ascii_lowercase().as_str() {
+        "http" | "https" => rest.strip_prefix("//").is_some_and(|host| !host.is_empty() && !host.starts_with('/')),
+        "mailto" => mail_address(rest),
+        "tel" => {
+            let number = rest.strip_prefix('+').unwrap_or(rest);
+            number.chars().filter(char::is_ascii_digit).count() >= 3
+                && number.chars().all(|c| c.is_ascii_digit() || "-().".contains(c))
+        }
+        _ => false,
+    };
+    ok.then(|| url.to_string())
+}
+
+/// One plain address: ASCII letters, digits and `._+-` before the `@`, and a domain of letters,
+/// digits and hyphens with a last label of two or more letters.
+fn mail_address(text: &str) -> bool {
+    let Some((local, domain)) = text.split_once('@') else { return false };
+    let labels: Vec<&str> = domain.split('.').collect();
+    !local.is_empty()
+        && !local.starts_with('.')
+        && !local.ends_with('.')
+        && local.chars().all(|c| c.is_ascii_alphanumeric() || "._+-".contains(c))
+        && labels.len() >= 2
+        && labels.iter().all(|l| !l.is_empty() && l.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'))
+        && labels.last().is_some_and(|tld| tld.len() >= 2 && tld.chars().all(|c| c.is_ascii_alphabetic()))
 }
 
 /// A pane of System Settings that is not a permission's.
@@ -388,4 +450,56 @@ pub fn pin_close(app: AppHandle, window: WebviewWindow) -> CommandResult<()> {
 #[tauri::command]
 pub fn pin_close_all(app: AppHandle) {
     pins::close_all(&app);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::openable_url;
+
+    #[test]
+    fn only_web_mail_and_phone_links_open() {
+        let opens = [
+            ("https://example.com/a?b=1#c", "https://example.com/a?b=1#c"),
+            ("  http://lokantadeniz.com/menu  ", "http://lokantadeniz.com/menu"),
+            ("HTTPS://Example.com", "HTTPS://Example.com"),
+            ("mailto:ayse.kaya@ornekfirma.com.tr", "mailto:ayse.kaya@ornekfirma.com.tr"),
+            ("tel:+905324182764", "tel:+905324182764"),
+            ("tel:(0212)555-01.47", "tel:(0212)555-01.47"),
+        ];
+        for (url, expected) in opens {
+            assert_eq!(openable_url(url).as_deref(), Some(expected), "{url:?} should open");
+        }
+        let refused = [
+            "javascript:alert(1)",
+            "JavaScript:alert(1)",
+            "jAvAsCrIpT:alert(document.cookie)",
+            " javascript:alert(1)",
+            "file:///etc/passwd",
+            "FILE:///Users",
+            "data:text/html,<script>alert(1)</script>",
+            "vbscript:msgbox(1)",
+            "smb://evil.example/share",
+            "facetime:+905324182764",
+            "x-apple.systempreferences:com.apple.Keyboard-Settings.extension",
+            "https://example.com/\u{0}",
+            "https://example.com/a\nb",
+            "https://exa mple.com",
+            "https:///etc/passwd",
+            "https:",
+            "mailto:a@b.co?attach=/etc/passwd",
+            "mailto:a@b.co?bcc=c@d.co",
+            "mailto:a@b.co,c@d.co",
+            "mailto:a@b.co%3Fattach=x",
+            "mailto:",
+            "mailto:not-an-address",
+            "tel:+90abc",
+            "tel:12345;phone-context=evil",
+            "tel:+",
+            "tel:1",
+            "",
+        ];
+        for url in refused {
+            assert_eq!(openable_url(url), None, "{url:?} must not open");
+        }
+    }
 }

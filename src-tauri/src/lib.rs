@@ -12,6 +12,7 @@
 //! - `macos`: AppKit glue (panels, levels, pasteboard, display changes).
 //! - `trace`, `dev`: latency marks and the dev-only measurement switches.
 
+mod calendar;
 mod capture_log;
 pub mod commands;
 mod dev;

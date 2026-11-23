@@ -27,7 +27,9 @@ import GIcon from "../components/GIcon.vue";
 import { ocr_copy, type CodeResult, type OcrResult } from "../lib/api/ocr";
 import { app_open_url } from "../lib/api/windows";
 import { language, t } from "../lib/i18n";
+import EntityMenu from "./EntityMenu.vue";
 import { languageName, lineCount, placer, textOf, wordOffsets, type Rect, type WordRange } from "./text";
+import { useEntities } from "./useEntities";
 import { useRecognition } from "./useRecognition";
 
 const props = withDefaults(
@@ -38,10 +40,13 @@ const props = withDefaults(
     rect?: Rect | null;
     visible?: boolean | null;
     displayId?: number | null;
+    /** An action that brings another app forward leaves the page: the layer emits `leave` with
+     * it and the page closes or hands off its capture before running it. */
+    leaves?: boolean;
   }>(),
-  { result: null, codes: null, imageSize: null, rect: null, visible: null, displayId: null },
+  { result: null, codes: null, imageSize: null, rect: null, visible: null, displayId: null, leaves: false },
 );
-const emit = defineEmits<{ hide: [] }>();
+const emit = defineEmits<{ hide: []; leave: [run: () => Promise<void>] }>();
 
 const context = inject(TEXT_LAYER, null);
 const recognition = useRecognition();
@@ -256,14 +261,29 @@ function onCopy(e: ClipboardEvent): void {
   e.clipboardData.setData("text/plain", text);
 }
 
-/** ⌘C, ⇧⌘C and ⌘A belong to the layer while it shows, before the page's own shortcuts see them. */
+// ---------------------------------------------------------------------------- text actions
+
+const actions = useEntities({
+  result: current,
+  shown,
+  place,
+  area: rect,
+  root,
+  copy,
+  leave: () => (props.leaves ? (run) => emit("leave", run) : null),
+});
+
+/** ⌘C, ⇧⌘C and ⌘A belong to the layer while it shows, before the page's own shortcuts see them;
+ * the found pieces' keys come first. */
 function onKeyDown(e: KeyboardEvent): void {
-  if (!shown.value || !current.value || e.altKey || !(e.metaKey || e.ctrlKey)) return;
-  const key = e.key.toLowerCase();
+  if (!shown.value || !current.value) return;
   const take = () => {
     e.preventDefault();
     e.stopImmediatePropagation();
   };
+  if (actions.onKey(e)) return take();
+  if (e.altKey || !(e.metaKey || e.ctrlKey)) return;
+  const key = e.key.toLowerCase();
   if (key === "c" && !e.shiftKey) {
     const text = selectionText();
     if (!text) return;
@@ -396,6 +416,8 @@ async function openLink(url: string): Promise<void> {
       <span class="ocr-caret" data-end="start" :style="css(carets.start)" />
       <span class="ocr-caret" data-end="end" :style="css(carets.end)" />
     </template>
+    <span v-for="(box, i) in actions.tints.value" :key="`h${i}`" class="ocr-hi" :style="css(box)" />
+    <span v-for="(box, i) in actions.underlines.value" :key="`u${i}`" class="ocr-u" :style="css(box)" />
 
     <div
       ref="textEl"
@@ -403,7 +425,10 @@ async function openLink(url: string): Promise<void> {
       role="document"
       :aria-label="t('ocr.layer')"
       :style="css(rect)"
-      @pointerdown.stop
+      :data-hover="actions.hovering.value || undefined"
+      @pointerdown.stop="actions.press"
+      @pointerup="actions.release"
+      @pointermove="actions.move"
       @mousedown.stop
       @click.stop
       @dblclick.stop
@@ -450,6 +475,13 @@ async function openLink(url: string): Promise<void> {
         <GIcon name="copy" :size="16" />{{ t("ocr.code.copy") }}
       </button>
     </div>
+
+    <EntityMenu
+      v-if="actions.menu.value"
+      v-bind="actions.menu.value"
+      @run="actions.run"
+      @hover="(row) => (actions.active.value = row)"
+    />
   </div>
 </template>
 
@@ -508,6 +540,24 @@ async function openLink(url: string): Promise<void> {
   cursor: text;
   -webkit-user-select: text;
   user-select: text;
+}
+.ocr-text[data-hover] {
+  cursor: pointer;
+}
+/* A found piece: a 2 px iris line under it, and a tint while the keyboard or its menu is on it. */
+.ocr-u {
+  position: absolute;
+  z-index: 2;
+  border-radius: 1px;
+  background: var(--iris);
+  box-shadow: 0 0 0 1px var(--selection-inner);
+}
+.ocr-hi {
+  position: absolute;
+  z-index: 2;
+  border-radius: 3px;
+  background: var(--iris-soft);
+  box-shadow: 0 0 0 1.25px var(--ocr-line);
 }
 /* The words stay invisible over the pixels; the highlight is drawn by .ocr-sel instead. */
 .ocr-word {

@@ -1655,6 +1655,7 @@ name = "glimpsfy-ocr"
 version = "0.3.1"
 dependencies = [
  "block2",
+ "chrono",
  "glimpsfy-capture",
  "objc2",
  "objc2-core-foundation",
@@ -1664,6 +1665,7 @@ dependencies = [
  "objc2-natural-language",
  "objc2-vision",
  "png",
+ "regex-lite",
  "serde",
  "serde_json",
  "sha2 0.10.9",

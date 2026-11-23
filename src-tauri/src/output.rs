@@ -46,7 +46,7 @@ use crate::settings::{HistoryRetention, ImageFormat, Output, RetinaScale};
 use crate::windows::{Toast, ToastKind};
 use crate::{events, session, trace, windows, AppState};
 
-pub use naming::{file_stem, file_stem_titled, save_unique, save_unique_titled, Naming};
+pub use naming::{file_stem, file_stem_titled, save_named, save_unique, save_unique_titled, Naming};
 pub(crate) use platform::bring_forward;
 
 /// The toast's thumbnail fits in this many pixels (2× its 64 × 44 point slot).

@@ -31,7 +31,8 @@ use glimpsfy_capture::{
 };
 use glimpsfy_ocr::models::{self, ModelInfo, ModelStore, Progress};
 use glimpsfy_ocr::{
-    CancelToken, CodeResult, EngineId, LanguageInfo, LanguageTag, OcrEngine, OcrError, OcrRequest, OcrResult,
+    CancelToken, CodeResult, EngineId, Entity, EntityKind, LanguageInfo, LanguageTag, OcrEngine, OcrError, OcrRequest,
+    OcrResult,
 };
 use serde::{Deserialize, Serialize};
 use tauri::ipc::{InvokeBody, Request};
@@ -200,6 +201,14 @@ pub async fn ocr_detect_codes(
 pub async fn ocr_detect_codes_pixels(app: AppHandle, request: Request<'_>) -> CommandResult<Vec<CodeResult>> {
     let (header, frame) = read_pixels(&request)?;
     off_main(move || detect(&app, Arc::new(frame), header.job, header.capture_id)).await
+}
+
+/// Finds the phone numbers, email addresses, links and dates of `kinds` in a recognised text,
+/// for the underlined pieces of the text layer (`glimpsfy_ocr::entities`). It reads the text
+/// only; no request leaves the machine. A date without a year is read against the local clock.
+#[tauri::command]
+pub async fn ocr_detect_entities(result: OcrResult, kinds: Vec<EntityKind>) -> CommandResult<Vec<Entity>> {
+    off_main(move || Ok(glimpsfy_ocr::find_entities(&result, &kinds, chrono::Local::now().naive_local()))).await
 }
 
 /// Stops a recognition, a code search or a model download that was started with this job name.

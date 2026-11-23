@@ -813,6 +813,17 @@ pub fn frontmost_pid() -> Option<i32> {
     Some(front.processIdentifier()).filter(|pid| *pid > 0)
 }
 
+/// Whether an app on this Mac opens `url`, as Launch Services would pick it for a click. Callable
+/// from any thread; it only reads the handler table.
+pub fn can_open_url(url: &str) -> bool {
+    objc2::rc::autoreleasepool(|_| {
+        let Some(url) = objc2_foundation::NSURL::URLWithString(&NSString::from_str(url)) else {
+            return false;
+        };
+        objc2_app_kit::NSWorkspace::sharedWorkspace().URLForApplicationToOpenURL(&url).is_some()
+    })
+}
+
 /// Puts an ordinary window in the middle of the visible area of the screen that holds `at` (a
 /// global top-left point), or of the screen under the pointer without one. With
 /// `only_if_elsewhere`, a window whose middle already lies on that screen stays where the user

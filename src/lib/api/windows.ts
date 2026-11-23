@@ -72,8 +72,23 @@ export const app_log = (level: "error" | "warn", message: string) => call<void>(
 
 /** Puts text on the clipboard (a link, Markdown, recognised text). */
 export const app_copy_text = (text: string) => call<void>("app_copy_text", { text });
-/** Opens an http or https page in the browser; any other address fails with `invalid_argument`. */
+/** Opens an http or https page in the browser, a `mailto:` address in the mail app or a `tel:` number in
+ * the phone app. Any other scheme, a `mailto:` with a query and a `tel:` with letters fail with
+ * `invalid_argument`. */
 export const app_open_url = (url: string) => call<void>("app_open_url", { url });
+/** Whether an app on this computer opens `url` (only the schemes `app_open_url` takes). */
+export const app_can_open_url = (url: string) => call<boolean>("app_can_open_url", { url });
+
+/** An event for `app_add_to_calendar`: local times without a zone ("2026-11-27T14:30:00"). */
+export type CalendarEvent = {
+  title: string;
+  start: string;
+  /** The end of a timed event, or the last day of an all-day event over several days. */
+  end: string | null;
+  allDay: boolean;
+};
+/** Writes the event as an `.ics` file and opens it with the system's calendar app; no permission is asked. */
+export const app_add_to_calendar = (event: CalendarEvent) => call<void>("app_add_to_calendar", { event });
 
 export type SystemPane = "keyboardShortcuts" | "loginItems";
 export const app_open_system_settings = (pane: SystemPane) => call<void>("app_open_system_settings", { pane });

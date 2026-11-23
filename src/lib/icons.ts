@@ -85,6 +85,10 @@ const ICONS: Record<string, IconDef> = {
     cloud: '<path d="M5.75 14.75a3.25 3.25 0 0 1-.15-6.45 4.5 4.5 0 0 1 8.8 0 3.25 3.25 0 0 1-.15 6.45Z"/>',
     link: '<path d="m8.25 11.75 3.5-3.5"/><path d="m9.4 6.1 1.1-1.1a3.18 3.18 0 0 1 4.5 4.5l-1.1 1.1"/><path d="m10.6 13.9-1.1 1.1a3.18 3.18 0 0 1-4.5-4.5l1.1-1.1"/>',
     'external-link': '<path d="M11.25 3.75h5v5"/><path d="m16 4-6.5 6.5"/><path d="M14.5 11.5v3a2 2 0 0 1-2 2h-7a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3"/>',
+    /* the text actions (design/canvas row 08): the kit has no phone, envelope or calendar yet */
+    phone: '<path d="M7.2 3.5H5.5a1.75 1.75 0 0 0-1.74 1.92c.62 5.85 4.97 10.2 10.82 10.82a1.75 1.75 0 0 0 1.92-1.74V12.8a1.25 1.25 0 0 0-.93-1.21l-2.06-.55a1.25 1.25 0 0 0-1.27.39l-.8.93a8.3 8.3 0 0 1-3.8-3.8l.93-.8a1.25 1.25 0 0 0 .39-1.27l-.55-2.06A1.25 1.25 0 0 0 7.2 3.5Z"/>',
+    mail: '<rect x="3" y="4.75" width="14" height="10.5" rx="2.25"/><path d="m3.75 6.25 6.25 4.75 6.25-4.75"/>',
+    calendar: '<rect x="3.5" y="4.5" width="13" height="12" rx="2.25"/><path d="M3.5 8.5h13M7 3v3M13 3v3"/><path d="M7 12h.01M10 12h.01M13 12h.01" stroke-width="2.2"/>',
     key: '<circle cx="7" cy="13" r="3.25"/><path d="m9.35 10.65 6.9-6.9M13.75 6.25l2 2M11.75 8.25l1.5 1.5"/>',
     lock: '<rect x="4.5" y="8.75" width="11" height="8" rx="2"/><path d="M7 8.75V6.5a3 3 0 0 1 6 0v2.25"/>',
     unlock: '<rect x="4.5" y="8.75" width="11" height="8" rx="2"/><path d="M7 8.75V6.5a3 3 0 0 1 5.82-1.03"/>',

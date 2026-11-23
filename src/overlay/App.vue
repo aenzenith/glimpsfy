@@ -956,11 +956,12 @@ const uploads = uploadFlow({
 });
 const uploadAsk = uploads.asking;
 
-/** Opens the capture in the editor with its drawings (⌘O); the overlay closes. */
-async function handOff(): Promise<void> {
+/** Opens the capture in the editor with its drawings (⌘O); the overlay closes. Answers whether
+ * the editor took it. */
+async function handOff(): Promise<boolean> {
   const f = frame.value;
   const r = sel.value;
-  if (!f || !r || busy || mode.value !== "sel") return;
+  if (!f || !r || busy || mode.value !== "sel") return false;
   busy = true;
   try {
     engine.finishText();
@@ -971,10 +972,33 @@ async function handOff(): Promise<void> {
     else delete doc.beautify;
     await beautify.settled();
     await editor_open_capture(f.captureId, displayId, JSON.stringify(doc));
+    return true;
   } catch (error) {
     say(errorText(error));
+    return false;
   } finally {
     busy = false;
+  }
+}
+
+/** A text action that brings another app forward (A3) leaves the capture first: the drawings go
+ * to the editor, and a capture without them closes. Copying never comes here. */
+async function leave(run: () => Promise<void>): Promise<void> {
+  const f = frame.value;
+  if (!f) return;
+  if (annotations.hasDrawings()) {
+    if (!(await handOff())) return;
+  } else {
+    try {
+      await capture_close(f.captureId);
+    } catch (error) {
+      return say(errorText(error));
+    }
+  }
+  try {
+    await run();
+  } catch (error) {
+    console.warn("[glimpsfy] text action", error);
   }
 }
 
@@ -1512,7 +1536,7 @@ onUnmounted(() => {
       <!-- Mount point of the text recognition layer (src/ocr/TextLayer.vue); its context comes
            from `provide(TEXT_LAYER)` above. -->
       <div v-if="textLayerComponent && hasSel && mode === 'sel'" class="o-textlayer">
-        <component :is="textLayerComponent" />
+        <component :is="textLayerComponent" leaves @leave="leave" />
       </div>
     </template>
 

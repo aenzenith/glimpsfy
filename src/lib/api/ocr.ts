@@ -78,6 +78,35 @@ export type CodeResult = {
   url: string | null;
 };
 
+/** What a piece of recognised text is. The last five are smart redaction's (D28). */
+export type EntityKind = "phone" | "email" | "link" | "date" | "card" | "iban" | "apiKey" | "token" | "urlPassword";
+
+/** The part of one line a piece covers, in pixels of the recognised image. */
+export type EntityBox = { line: number; bounds: Bounds };
+
+/** When a found date takes place, in local time without a zone ("2026-11-27T14:30:00"). */
+export type EntityDate = {
+  /** Midnight of the day for an all-day date. */
+  start: string;
+  /** The end of a timed date (an hour after the start when the text names none), or the last day of
+   * an all-day date over several days; `null` for an all-day date of one day. */
+  end: string | null;
+  allDay: boolean;
+  /** The text names no end, so the event was given one hour. */
+  endAssumed: boolean;
+};
+
+/** A piece of recognised text the layer underlines, in reading order. */
+export type Entity = {
+  kind: EntityKind;
+  /** The piece as the text spells it. */
+  text: string;
+  /** What an action uses: a number as + and digits, an address, a link with its scheme, a date's text. */
+  value: string;
+  boxes: EntityBox[];
+  date: EntityDate | null;
+};
+
 export type CopyTextResult = {
   /** An empty text means nothing was recognised, and the clipboard was left as it was. */
   text: string;
@@ -161,6 +190,11 @@ export function ocr_detect_codes(source: OcrSource | Selection, job: string | nu
 /** Finds QR codes and barcodes in pixels from the page. */
 export function ocr_detect_codes_pixels(pixels: OcrPixels, job: string | null = null): Promise<CodeResult[]> {
   return withPixels("ocr_detect_codes_pixels", pixels, job);
+}
+
+/** Finds the phone numbers, email addresses, links and dates of `kinds` in a recognised text, on the machine. */
+export function ocr_detect_entities(result: OcrResult, kinds: EntityKind[]): Promise<Entity[]> {
+  return call("ocr_detect_entities", { result, kinds });
 }
 
 /** Stops the recognition, code search or model download started under `job`. */

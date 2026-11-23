@@ -540,7 +540,8 @@ fn stage(app: &AppHandle, header: RenderHeader, pixels: Vec<u8>, for_upload: boo
 }
 
 /// Deletes the files in `folder` older than `age`; a file that cannot be read or deleted stays.
-fn prune(folder: &Path, age: std::time::Duration) {
+/// The editor's renders and the calendar's event files (`calendar.rs`) are pruned with it.
+pub(crate) fn prune(folder: &Path, age: std::time::Duration) {
     let Ok(entries) = std::fs::read_dir(folder) else {
         return;
     };

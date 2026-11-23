@@ -50,6 +50,7 @@ use serde::{Deserialize, Serialize};
 
 mod codes;
 mod engines;
+pub mod entities;
 mod image;
 pub mod layout;
 pub mod models;
@@ -62,6 +63,7 @@ pub use engines::vision::VisionEngine;
 #[cfg(target_os = "windows")]
 pub use engines::WindowsOcrEngine;
 pub use engines::{available_engines, default_engine, engine, ppocr::PpOcrEngine, ready_engines};
+pub use entities::{find_entities, Entity, EntityBox, EntityDate, EntityKind};
 pub use image::load_image;
 pub use pipeline::{detect_codes, recognize};
 pub use prepare::Preparation;
