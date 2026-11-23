@@ -70,6 +70,21 @@ impl Trash for NoTrash {
     }
 }
 
+/// The rows that carry a frame's number `n` in binary: eight blocks of 80 pixels from the left,
+/// dark for 0 and bright for 1, so a decoded frame says which one it was.
+const INDEX_ROWS: std::ops::Range<usize> = 296..352;
+
+/// Whether the pixel at `row`, `col` of frame `n` is bright, or `None` outside the index rows.
+fn index_bit(n: u64, row: usize, col: usize) -> Option<bool> {
+    INDEX_ROWS.contains(&row).then_some((n >> (col / 80)) & 1 == 1)
+}
+
+/// The number a decoded RGBA frame of the recording's size carries.
+fn index_of(rgba: &[u8]) -> u64 {
+    let row = (INDEX_ROWS.start + INDEX_ROWS.end) / 2;
+    (0..8).map(|bit| ((rgba[(row * W + bit * 80 + 40) * 4 + 1] > 128) as u64) << bit).sum()
+}
+
 /// An NV12 frame with a bright square that moves with `n`, so the encoder has motion to code.
 fn frame(n: u64) -> CFRetained<CVPixelBuffer> {
     let mut out: *mut CVPixelBuffer = std::ptr::null_mut();
@@ -95,13 +110,19 @@ fn frame(n: u64) -> CFRetained<CVPixelBuffer> {
         for row in 0..H {
             for col in 0..W {
                 let inside = col >= sx && col < sx + 80 && (100..180).contains(&row);
-                *y.add(row * y_stride + col) = if inside { 235 } else { 16 + (col * 64 / W) as u8 };
+                *y.add(row * y_stride + col) = match index_bit(n, row, col) {
+                    Some(true) => 235,
+                    Some(false) => 16,
+                    None if inside => 235,
+                    None => 16 + (col * 64 / W) as u8,
+                };
             }
         }
         for row in 0..H / 2 {
             for col in 0..W / 2 {
+                let tinted = col > W / 4 && !INDEX_ROWS.contains(&(row * 2));
                 *uv.add(row * uv_stride + col * 2) = 128;
-                *uv.add(row * uv_stride + col * 2 + 1) = if col > W / 4 { 160 } else { 128 };
+                *uv.add(row * uv_stride + col * 2 + 1) = if tinted { 160 } else { 128 };
             }
         }
         CVPixelBufferUnlockBaseAddress(&buffer, CVPixelBufferLockFlags(0));
@@ -276,7 +297,14 @@ fn take(rig: &Rig) -> PathBuf {
 }
 
 fn options(format: ExportFormat, trim: Option<TrimRange>) -> ExportOptions {
-    ExportOptions { format, trim, destination: None, audio: ExportAudio::default(), purpose: ExportPurpose::Save }
+    ExportOptions {
+        format,
+        trim,
+        destination: None,
+        audio: ExportAudio::default(),
+        purpose: ExportPurpose::Save,
+        cuts: Vec::new(),
+    }
 }
 
 /// Exports never replace a file, and a cancelled export leaves nothing under the final name or
@@ -374,4 +402,121 @@ fn exports_never_replace_and_cancel_cleanly() {
         std::fs::read_dir(&out).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
     left.sort();
     assert_eq!(left, vec!["clip 2.mp4", "clip.gif", "clip.mp4", "half.mp4"]);
+}
+
+/// The number and the time of every frame `path` shows, decoded at the recording's size.
+fn shown_frames(path: &Path) -> Vec<(u64, u64)> {
+    let info = platform::inspect(path).unwrap();
+    let whole = TrimRange { start_ms: 0, end_ms: info.duration_ms + 1 };
+    let mut frames = Vec::new();
+    platform::decode_video(path, whole, info.size, &AtomicBool::new(false), &mut |rgba, at| {
+        frames.push((index_of(rgba), at));
+        Ok(())
+    })
+    .unwrap();
+    frames
+}
+
+/// Cuts take two parts out of a take (given unsorted and overlapping), and the name the export
+/// wants is taken. The file goes to another name and the one there stays as it was; it holds
+/// every frame shown in the kept parts exactly once, in order and at its place in the file, none
+/// from inside the cuts; its picture and its sound last as long as the kept parts. A cancelled
+/// cut export leaves no file and no working file behind.
+#[test]
+fn a_cut_export_keeps_each_kept_frame_once() {
+    if no_encoder_here() {
+        return;
+    }
+    let rig = rig();
+    let source = take(&rig);
+    let id = RecordingId("source".into());
+    let out = rig.dir.path().join("cut");
+    std::fs::create_dir(&out).unwrap();
+    let wanted = out.join("talk.mp4");
+    std::fs::write(&wanted, b"keep me").unwrap();
+    let mp4 = ExportFormat::Mp4 { resolution: Resolution::Native, quality: Mp4Quality::High };
+    let mut cut = options(mp4, None);
+    cut.cuts = vec![
+        TrimRange { start_ms: 3_400, end_ms: 4_000 },
+        TrimRange { start_ms: 1_200, end_ms: 2_000 },
+        TrimRange { start_ms: 3_800, end_ms: 4_300 },
+    ];
+    let never = AtomicBool::new(false);
+    let started = std::time::Instant::now();
+    let result = export::export(&id, &source, &cut, &wanted, &never, &mut |_| {}).unwrap();
+    println!("cut export: {:?} in {:?}, {} bytes", result.kept, started.elapsed(), result.file_bytes);
+    let numbers = |frames: &[(u64, u64)]| frames.iter().map(|(n, _)| *n).collect::<Vec<_>>();
+    assert_eq!(std::fs::read(&wanted).unwrap(), b"keep me", "the existing file was replaced");
+    assert_eq!(result.path, out.join("talk 2.mp4"));
+    assert!(result.reencoded);
+    assert_eq!(result.kept.len(), 3, "{:?}", result.kept);
+    let kept_ms: u64 = result.kept.iter().map(|k| k.end_ms - k.start_ms).sum();
+    assert_eq!(result.duration_ms, kept_ms);
+
+    // What the kept parts show: in each, the frame on screen at its start (which may come from
+    // before it), then every frame after its start, placed where the part lies in the file.
+    let source_frames = shown_frames(&source);
+    assert!(
+        source_frames.len() > 100 && source_frames.windows(2).all(|w| w[1].0 > w[0].0 && w[1].1 > w[0].1),
+        "the take's frames do not say their numbers: {:?}",
+        numbers(&source_frames)
+    );
+    let mut expected = Vec::new();
+    let mut output_ms = 0;
+    for part in &result.kept {
+        let (start, end) = (part.start_ms * 1_000_000, part.end_ms * 1_000_000);
+        let base = output_ms * 1_000_000;
+        if let Some(&(n, _)) = source_frames.iter().rev().find(|(_, at)| *at <= start) {
+            expected.push((n, base));
+        }
+        let after_start = source_frames.iter().filter(|(_, at)| *at > start && *at < end);
+        expected.extend(after_start.map(|&(n, at)| (n, base + at - start)));
+        output_ms += part.end_ms - part.start_ms;
+    }
+    let mut got = shown_frames(&result.path);
+    // The writer shows the last picture once more just before the end, so it lasts until then.
+    if got.len() == expected.len() + 1 && got[got.len() - 1].0 == got[got.len() - 2].0 {
+        got.pop();
+    }
+    println!("cut export: {} of the take's {} frames", got.len(), source_frames.len());
+    assert_eq!(numbers(&got), numbers(&expected), "the exported frames are not the kept ones");
+    for (&(n, at), &(_, wanted_at)) in got.iter().zip(&expected) {
+        assert!(at.abs_diff(wanted_at) <= 5_000_000, "frame {n} is at {at} ns instead of {wanted_at} ns");
+    }
+    // None of them is a frame that was only on screen inside a cut.
+    for &(n, _) in &got {
+        let i = source_frames.iter().position(|(m, _)| *m == n).unwrap();
+        let shown_from = source_frames[i].1;
+        let shown_until = source_frames.get(i + 1).map_or(u64::MAX, |f| f.1);
+        assert!(
+            result.kept.iter().any(|k| shown_from < k.end_ms * 1_000_000 && shown_until > k.start_ms * 1_000_000),
+            "frame {n} is only on screen inside a cut"
+        );
+    }
+
+    let info = platform::inspect(&result.path).unwrap();
+    assert!(info.duration_ms.abs_diff(kept_ms) <= FRAME_NS / 1_000_000 + 1, "{} ms, not {kept_ms}", info.duration_ms);
+    assert_eq!(info.audio.len(), 1, "the export keeps one audio track");
+    let mut sound_frames = 0u64;
+    let whole = TrimRange { start_ms: 0, end_ms: info.duration_ms + 1_000 };
+    platform::decode_audio(&result.path, 0, whole, &never, &mut |samples, _| {
+        sound_frames += samples.len() as u64 / 2;
+        Ok(())
+    })
+    .unwrap();
+    assert!(sound_frames.abs_diff(kept_ms * 48) <= 1024, "{sound_frames} audio frames for {kept_ms} ms");
+
+    // Cancelled part of the way through: no file, no working file.
+    let cancel = AtomicBool::new(false);
+    let mut stop = |p: Progress| {
+        if p.fraction > 0.3 {
+            cancel.store(true, Ordering::SeqCst);
+        }
+    };
+    let err = export::export(&id, &source, &cut, &out.join("cancelled.mp4"), &cancel, &mut stop).unwrap_err();
+    assert!(matches!(err, RecordError::Cancelled), "{err:?}");
+    let mut left: Vec<String> =
+        std::fs::read_dir(&out).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+    left.sort();
+    assert_eq!(left, vec!["talk 2.mp4", "talk.mp4"]);
 }

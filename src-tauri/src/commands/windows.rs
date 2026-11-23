@@ -52,7 +52,9 @@ impl WindowKind {
     pub fn size(self) -> (f64, f64) {
         match self {
             WindowKind::Editor => (1120.0, 760.0),
-            WindowKind::Recorder => (1120.0, 720.0),
+            // The text panel of cut-by-text (340 pt) sits beside the video; below 1280 pt wide the
+            // window closes it, so the video keeps its room.
+            WindowKind::Recorder => (1280.0, 760.0),
             WindowKind::Popover => (340.0, 520.0),
             WindowKind::History => (1040.0, 700.0),
             WindowKind::Settings => (760.0, 640.0),

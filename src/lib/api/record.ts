@@ -140,6 +140,9 @@ export type ExportOptions = {
   /** Which audio sources the MP4 keeps; a GIF has no sound. */
   audio: { microphone: boolean; system: boolean };
   purpose: ExportPurpose;
+  /** The parts cut from the text (source milliseconds, sorted and apart, inside `trim`), which
+   * the file skips; the recording itself never changes. A file with cuts is named "… (trimmed)". */
+  cuts: TrimRange[];
 };
 
 export type ExportResult = {
@@ -152,6 +155,8 @@ export type ExportResult = {
   reencoded: boolean;
   /** The part that was really exported: a pass-through trim starts at a keyframe. */
   trim: TrimRange;
+  /** The source ranges the file holds, in order, once the cuts were skipped. */
+  kept: TrimRange[];
 };
 
 export type ExportProgress = {

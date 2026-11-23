@@ -23,6 +23,9 @@ glimpsfy-ocr.workspace = true
 glimpsfy-upload.workspace = true
 glimpsfy-history.workspace = true
 glimpsfy-annotate.workspace = true
+# Cut-by-text: speech to text on the machine and the speech model (`recording/transcript.rs`).
+glimpsfy-speech.workspace = true
+glimpsfy-models.workspace = true
 
 tauri = { version = "2", features = ["image-png", "macos-private-api", "tray-icon"] }
 tauri-plugin-global-shortcut = "2.4.0"

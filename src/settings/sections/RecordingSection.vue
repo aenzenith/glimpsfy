@@ -1,19 +1,33 @@
 <script setup lang="ts">
 // Settings › Recording: the video, the audio sources, what the recording shows (clicks, keys,
 // webcam), the recordings folder and the GIF export defaults. Options that depend on a switch sit
-// indented under it and grey out with it.
-import { computed, onMounted, ref } from "vue";
+// indented under it and grey out with it. The click ring, the key caps and the webcam show only
+// where the platform can draw them (`inputOverlays`, `cameraBubble`). The speech model the trim
+// window cuts by text with is listed here too, as the PP-OCR models are under Text recognition: a
+// download that this section or the trim window started shows its progress, and only the one this
+// section started can be cancelled from here.
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 
 import FormRow from "../../components/FormRow.vue";
 import SectionHead from "../../components/SectionHead.vue";
 import SegmentedControl from "../../components/SegmentedControl.vue";
 import SelectControl from "../../components/SelectControl.vue";
 import SwitchControl from "../../components/SwitchControl.vue";
+import { ApiError, on } from "../../lib/api/core";
 import { record_devices, type Device, type RecordingDevices } from "../../lib/api/record";
 import { t } from "../../lib/i18n";
+import {
+  TRANSCRIPT_MODEL_PROGRESS,
+  transcript_cancel,
+  transcript_model,
+  transcript_model_download,
+  transcript_model_remove,
+  type SpeechModelInfo,
+  type SpeechModelProgress,
+} from "../../lib/api/transcript";
 import type { Corner, KeysPosition, RecordingResolution, RingColor, Settings, Size2, Size3, VideoCodec, WebcamShape } from "../../lib/settings";
 import { update } from "../store";
-import { describeError, isNotImplemented, uid } from "../text";
+import { describeError, formatBytes, isNotImplemented, uid } from "../text";
 import FolderRow from "./FolderRow.vue";
 
 const props = defineProps<{ settings: Settings }>();
@@ -124,6 +138,106 @@ const gifWidths = computed(() => {
   if (saved !== null && !widths.includes(saved)) widths.push(saved);
   // 0 stands for the original width, which the settings keep as `null`.
   return [...widths.sort((a, b) => a - b).map((n) => ({ value: n, label: t("settings.common.px", { n }) })), { value: 0, label: t("settings.recording.original") }];
+});
+
+// ------------------------------------------------------------------------------ speech model
+const speech = ref<SpeechModelInfo | null>(null);
+const speechState = ref<"loading" | "ready" | "unavailable" | "failed">("loading");
+const speechProblem = ref<string | null>(null);
+/** The download under way: this section's own (with the job that cancels it) or the trim
+ * window's (`job: null`). */
+const speechJob = ref<{ job: string | null; received: number; total: number } | null>(null);
+let stopSpeech: (() => void) | null = null;
+let foreignTimer = 0;
+
+async function loadSpeech(): Promise<void> {
+  try {
+    speech.value = await transcript_model();
+    speechState.value = "ready";
+  } catch (error) {
+    speechState.value = isNotImplemented(error) ? "unavailable" : "failed";
+    speechProblem.value = isNotImplemented(error) ? null : describeError(error);
+  }
+}
+
+async function downloadSpeech(): Promise<void> {
+  const model = speech.value;
+  if (!model || speechJob.value) return;
+  const job = `speech-model-${Date.now()}`;
+  speechJob.value = { job, received: 0, total: model.bytes };
+  speechProblem.value = null;
+  try {
+    speech.value = await transcript_model_download(job);
+  } catch (error) {
+    if (!(error instanceof ApiError && error.code === "cancelled")) speechProblem.value = describeError(error);
+  } finally {
+    speechJob.value = null;
+    await loadSpeech();
+  }
+}
+
+function cancelSpeech(): void {
+  const job = speechJob.value?.job;
+  if (job) void transcript_cancel(job).catch((error) => (speechProblem.value = describeError(error)));
+}
+
+async function removeSpeech(): Promise<void> {
+  speechProblem.value = null;
+  try {
+    await transcript_model_remove();
+  } catch (error) {
+    speechProblem.value = describeError(error);
+  }
+  await loadSpeech();
+}
+
+/** A download the trim window started shows here as well; once it ends or stops reporting, the
+ * model is read again. */
+function speechProgress(p: SpeechModelProgress): void {
+  const j = speechJob.value;
+  if (j) Object.assign(j, { received: p.received, total: p.total });
+  else speechJob.value = { job: null, received: p.received, total: p.total };
+  if (speechJob.value?.job) return;
+  window.clearTimeout(foreignTimer);
+  foreignTimer = window.setTimeout(
+    () => {
+      if (speechJob.value?.job) return;
+      speechJob.value = null;
+      void loadSpeech();
+    },
+    p.total > 0 && p.received >= p.total ? 800 : 10000,
+  );
+}
+
+const speechMeta = computed(() => {
+  const model = speech.value;
+  if (!model) return "";
+  const j = speechJob.value;
+  const size =
+    j && j.total > 0
+      ? t("settings.recording.speechModelProgress", { p: Math.round((j.received / j.total) * 100), size: formatBytes(j.total) })
+      : formatBytes(model.bytes);
+  return [size, model.folder].filter(Boolean).join(" · ");
+});
+
+const speechHelp = computed(() => {
+  if (speechState.value === "loading") return t("settings.recording.speechModelLoading");
+  if (speechState.value === "unavailable") return t("settings.recording.speechModelMissing");
+  return speechProblem.value;
+});
+
+onMounted(async () => {
+  void loadSpeech();
+  try {
+    stopSpeech = await on<SpeechModelProgress>(TRANSCRIPT_MODEL_PROGRESS, speechProgress);
+  } catch (error) {
+    console.warn("Settings cannot hear the speech model's download.", error);
+  }
+});
+
+onBeforeUnmount(() => {
+  stopSpeech?.();
+  window.clearTimeout(foreignTimer);
 });
 
 // ------------------------------------------------------------------------------ ring swatches
@@ -255,5 +369,28 @@ function swatchKey(event: KeyboardEvent): void {
     <FormRow :label="t('settings.recording.gifWidth')" :for="ids.gifWidth">
       <SelectControl :id="ids.gifWidth" :model-value="r.gifWidth ?? 0" :options="gifWidths" @update:model-value="(v) => update((s) => (s.recording.gifWidth = v || null))" />
     </FormRow>
+  </div>
+
+  <SectionHead :title="t('settings.recording.speechModelHead')" :desc="tp('settings.recording.speechModelDesc')" />
+  <div class="g-group">
+    <FormRow
+      v-if="speechState !== 'ready' || !speech"
+      :label="t('settings.recording.speechModelHead')"
+      :help="speechHelp"
+      :tone="speechState === 'loading' ? null : speechState === 'failed' ? 'danger' : 'warn'"
+    />
+    <template v-else>
+      <FormRow v-if="speechProblem" :help="speechProblem" tone="danger" />
+      <FormRow :label="speech.title" :help="speechMeta">
+        <span v-if="speech.installed" class="g-badge" data-tone="ok">{{ t("settings.recording.speechModelInstalled") }}</span>
+        <button v-if="speech.installed" type="button" class="g-button" :disabled="!!speechJob" @click="removeSpeech">
+          {{ t("settings.recording.speechModelRemove") }}
+        </button>
+        <button v-else-if="speechJob" type="button" class="g-button" :disabled="!speechJob.job" @click="cancelSpeech">
+          {{ t("settings.common.cancel") }}
+        </button>
+        <button v-else type="button" class="g-button" @click="downloadSpeech">{{ t("settings.recording.speechModelDownload") }}</button>
+      </FormRow>
+    </template>
   </div>
 </template>

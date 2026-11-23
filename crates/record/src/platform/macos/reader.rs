@@ -1,5 +1,6 @@
 //! Reading recordings back with `AVAssetReader`: what a file holds, its frames for the GIF
-//! export and the trim timeline, its waveform, and the MP4 export (pass-through or re-encoded).
+//! export and the trim timeline, its waveform, the MP4 export (pass-through or re-encoded), and
+//! the decoded pictures and sound an export with cuts (and the speech recognizer) reads.
 //!
 //! The synchronous `AVAsset` accessors are deprecated in favour of async loaders, but they still
 //! load on first use; every caller here already runs on a worker thread, so blocking is fine.
@@ -12,7 +13,10 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use block2::RcBlock;
-use glimpsfy_capture::{ColorInfo, Frame, PhysicalSize, PixelFormat, ScaleFactor};
+use glimpsfy_capture::{
+    ColorInfo, ColorSpace, Frame, HostTime, MacPixelBuffer, NativeBuffer, PhysicalSize, PixelFormat, ScaleFactor,
+    StreamPixelFormat, VideoBuffer, VideoFrame,
+};
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::Message;
@@ -365,6 +369,156 @@ pub fn waveform(source: &Path, bins: usize) -> Result<Vec<f32>> {
         }
         Ok(peaks.into_iter().map(|p| p.min(1.0)).collect())
     }
+}
+
+/// Decodes audio track `track` within `span` to 48 kHz stereo float (the reader converts the
+/// rate and the channels), buffer by buffer, each with its position from the span's start.
+pub fn decode_audio(
+    source: &Path,
+    track: usize,
+    span: TrimRange,
+    cancel: &AtomicBool,
+    each: &mut dyn FnMut(&[f32], u64) -> Result<()>,
+) -> Result<()> {
+    let asset = open(source)?;
+    let Some(track) = asset.audio.get(track) else {
+        return Err(RecordError::Encoder(format!("{} has no audio track {track}", source.display())));
+    };
+    // SAFETY: reading the loaded duration.
+    let duration = unsafe { nanos(asset.asset.duration()) };
+    let start = span.start_ms.saturating_mul(1_000_000);
+    let end = span.end_ms.saturating_mul(1_000_000).min(duration);
+    if end <= start {
+        return Ok(());
+    }
+    let mut placed = crate::audio::SpanAudio::new(start, end);
+    // SAFETY: a decoding reader over one audio track within the span; buffers are only read.
+    unsafe {
+        let reader =
+            AVAssetReader::assetReaderWithAsset_error(&asset.asset).map_err(|e| RecordError::Encoder(describe(&e)))?;
+        let output =
+            AVAssetReaderTrackOutput::assetReaderTrackOutputWithTrack_outputSettings(track, Some(&pcm_settings()));
+        reader.addOutput(&output);
+        reader.setTimeRange(range(start, end));
+        if !reader.startReading() {
+            return Err(reader_error(&reader));
+        }
+        while let Some(sample) = output.copyNextSampleBuffer() {
+            if cancel.load(Ordering::SeqCst) {
+                reader.cancelReading();
+                return Err(RecordError::Cancelled);
+            }
+            let samples = samples_of(&sample);
+            if let Some((position, body)) = placed.place(nanos(sample.presentation_time_stamp()), &samples) {
+                if let Err(e) = each(body, position) {
+                    reader.cancelReading();
+                    return Err(e);
+                }
+            }
+            if placed.done() {
+                reader.cancelReading();
+                return Ok(());
+            }
+        }
+        if reader.status() == AVAssetReaderStatus::Failed {
+            return Err(reader_error(&reader));
+        }
+    }
+    Ok(())
+}
+
+/// The decoded picture of a sample as a frame the take writer takes without a copy.
+fn native_frame(sample: &CMSampleBuffer, at: u64) -> Option<VideoFrame> {
+    // SAFETY: reading the image buffer of a decoded sample and its size; the buffer is retained
+    // by the frame and only read from here on.
+    unsafe {
+        let image = sample.image_buffer()?;
+        let size =
+            PhysicalSize { width: CVPixelBufferGetWidth(&image) as u32, height: CVPixelBufferGetHeight(&image) as u32 };
+        Some(VideoFrame {
+            timestamp: HostTime(at),
+            size,
+            format: StreamPixelFormat::Nv12,
+            color_space: ColorSpace::Srgb,
+            buffer: VideoBuffer::Native(NativeBuffer(Box::new(MacPixelBuffer(image)))),
+        })
+    }
+}
+
+/// Decodes the frames shown within `span` as the decoder's own NV12 pixel buffers at the file's
+/// size, which the take writer scales to its own size; `_size` is the size the other platforms
+/// scale to. The frame on screen at the span's start goes out at time 0 when it comes from
+/// before the span, as in `decode_video`.
+pub fn decode_frames(
+    source: &Path,
+    span: TrimRange,
+    _size: PhysicalSize,
+    cancel: &AtomicBool,
+    each: &mut dyn FnMut(VideoFrame, u64) -> Result<()>,
+) -> Result<()> {
+    let asset = open(source)?;
+    let start = span.start_ms * 1_000_000;
+    let end = (span.end_ms * 1_000_000).max(start + 1_000_000);
+    let from = keyframe_before(&asset, start)?.unwrap_or(0);
+    // SAFETY: a decoding reader over the video track from the keyframe; buffers are only read.
+    unsafe {
+        let reader =
+            AVAssetReader::assetReaderWithAsset_error(&asset.asset).map_err(|e| RecordError::Encoder(describe(&e)))?;
+        let output = AVAssetReaderTrackOutput::assetReaderTrackOutputWithTrack_outputSettings(
+            &asset.video,
+            Some(&pixel_settings(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange)),
+        );
+        output.setAlwaysCopiesSampleData(false);
+        reader.addOutput(&output);
+        reader.setTimeRange(range(from, end));
+        if !reader.startReading() {
+            return Err(reader_error(&reader));
+        }
+        // The sample before the start is held, not its frame: most of them are passed over.
+        let mut held: Option<Retained<CMSampleBuffer>> = None;
+        let mut emit = |sample: &CMSampleBuffer, at: u64| -> Result<()> {
+            match native_frame(sample, at) {
+                Some(frame) => each(frame, at),
+                None => Ok(()),
+            }
+        };
+        while let Some(sample) = output.copyNextSampleBuffer() {
+            if cancel.load(Ordering::SeqCst) {
+                reader.cancelReading();
+                return Err(RecordError::Cancelled);
+            }
+            if sample.num_samples() == 0 || sample.image_buffer().is_none() {
+                continue;
+            }
+            let at = nanos(sample.presentation_time_stamp());
+            if at >= end {
+                break;
+            }
+            if at < start {
+                held = Some(sample);
+                continue;
+            }
+            if let Some(first) = held.take() {
+                if at > start {
+                    if let Err(e) = emit(&first, 0) {
+                        reader.cancelReading();
+                        return Err(e);
+                    }
+                }
+            }
+            if let Err(e) = emit(&sample, at - start) {
+                reader.cancelReading();
+                return Err(e);
+            }
+        }
+        if reader.status() == AVAssetReaderStatus::Failed {
+            return Err(reader_error(&reader));
+        }
+        if let Some(first) = held {
+            emit(&first, 0)?;
+        }
+    }
+    Ok(())
 }
 
 fn is_keyframe(sample: &CMSampleBuffer) -> bool {

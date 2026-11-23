@@ -133,6 +133,13 @@ export type Recording = Extra & {
   gifWidth: number | null;
   /** Whether drawings on a take fade 3 s after the last stroke; the Presentation card sets it. */
   inkFades: boolean;
+  /** The language the trim window reads a recording's speech in: a model code ("tr", "en") or
+   * "auto" to detect it. The Text panel's language pop-up sets it. */
+  transcriptLanguage: string;
+  /** A silence at least this long counts as long for "Shorten": 500, 1000 or 2000. */
+  silenceThresholdMs: number;
+  /** Whether "Shorten" leaves 0.3 s of a long silence (true) or cuts it whole (false). */
+  silenceShorten: boolean;
 };
 
 export type OcrEngineChoice = "system" | "ppOcr";

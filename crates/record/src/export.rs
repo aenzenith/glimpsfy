@@ -10,19 +10,32 @@
 //! or before the asked start; [`ExportResult::trim`] says where it really starts. Any other
 //! resolution or quality re-encodes the video to H.264 and cuts exactly. Audio always passes
 //! through: the export keeps the one track that matches the audio switches.
+//!
+//! With cuts ([`ExportOptions::cuts`]) the file holds the parts between them end to end
+//! ([`crate::cuts`]), and the MP4 is always encoded again: each kept part is decoded (its frames
+//! and the kept audio track, on two threads) and handed in time order to the take writer in its
+//! offline mode, which drops nothing, with its sound faded in and out at every join. A GIF with
+//! cuts leaves the cut parts out the same way.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Instant;
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
 
-use glimpsfy_capture::PhysicalSize;
+use glimpsfy_capture::{ColorSpace, PhysicalSize, VideoFrame};
 
+use crate::audio::{self, CHANNELS};
+use crate::cuts::{self, Span};
 use crate::files;
 use crate::gif::{GifEncoder, Picture};
+use crate::session::{self, TakeWriter, WriterSpec};
 use crate::{
     ExportAudio, ExportFormat, ExportOptions, ExportResult, MediaInfo, Mp4Quality, RecordError, RecordingId,
-    Resolution, Result, TrackKind, TrimRange,
+    Resolution, Result, TrackKind, TrimRange, VideoCodec,
 };
+
+/// How long an export waits for an encoder that takes nothing before it gives up.
+const STALL: Duration = Duration::from_secs(30);
 
 /// How an MP4 export writes its video and which audio track it keeps.
 #[derive(Clone, Debug, PartialEq)]
@@ -93,6 +106,19 @@ fn half(n: u32) -> u32 {
     (2 * ((n as f64 / 4.0).round() as u32)).max(2)
 }
 
+/// The size and bit rate a re-encode of a file described by `info` gets.
+fn reencode_for(info: &MediaInfo, resolution: Resolution, quality: Mp4Quality) -> Reencode {
+    let size = match resolution {
+        Resolution::Native => PhysicalSize { width: even(info.size.width), height: even(info.size.height) },
+        Resolution::Half => PhysicalSize { width: half(info.size.width), height: half(info.size.height) },
+    };
+    // A screen recording has a variable frame rate (a still screen sends no frames), so its
+    // nominal rate says little; the bit rate is set for at least 30 frames per second.
+    let fps = info.fps.round().max(30.0);
+    let bits = size.width as f64 * size.height as f64 * fps * bits_per_pixel(quality);
+    Reencode { size, bits_per_second: bits.clamp(250_000.0, 80_000_000.0) as u32 }
+}
+
 /// The MP4 plan for `options` on a file described by `info`.
 pub fn mp4_plan(info: &MediaInfo, options: &ExportOptions, resolution: Resolution, quality: Mp4Quality) -> Mp4Plan {
     let trim = clamp_trim(options.trim, info.duration_ms);
@@ -100,15 +126,7 @@ pub fn mp4_plan(info: &MediaInfo, options: &ExportOptions, resolution: Resolutio
     let reencode = if resolution == Resolution::Native && quality == Mp4Quality::High {
         None
     } else {
-        let size = match resolution {
-            Resolution::Native => PhysicalSize { width: even(info.size.width), height: even(info.size.height) },
-            Resolution::Half => PhysicalSize { width: half(info.size.width), height: half(info.size.height) },
-        };
-        // A screen recording has a variable frame rate (a still screen sends no frames), so its
-        // nominal rate says little; the bit rate is set for at least 30 frames per second.
-        let fps = info.fps.round().max(30.0);
-        let bits = size.width as f64 * size.height as f64 * fps * bits_per_pixel(quality);
-        Some(Reencode { size, bits_per_second: bits.clamp(250_000.0, 80_000_000.0) as u32 })
+        Some(reencode_for(info, resolution, quality))
     };
     Mp4Plan { trim, reencode, audio_track }
 }
@@ -150,7 +168,7 @@ pub fn export(
     };
     report(0.0);
     let outcome = write(&info, source, options, &part, cancel, &mut report);
-    let (trim, reencoded, size) = match outcome {
+    let Written { trim, reencoded, size, kept } = match outcome {
         Ok(done) if !cancel.load(Ordering::SeqCst) => done,
         Ok(_) => {
             let _ = std::fs::remove_file(&part);
@@ -173,12 +191,22 @@ pub fn export(
     Ok(ExportResult {
         recording_id: id.clone(),
         path,
-        duration_ms: trim.end_ms - trim.start_ms,
+        duration_ms: kept.iter().map(|k| k.end_ms - k.start_ms).sum(),
         size,
         file_bytes,
         reencoded,
         trim,
+        kept,
     })
+}
+
+/// What `write` wrote: the trim really exported, whether the video was encoded again, the
+/// picture's size, and the parts of the recording the file holds.
+struct Written {
+    trim: TrimRange,
+    reencoded: bool,
+    size: PhysicalSize,
+    kept: Vec<TrimRange>,
 }
 
 fn write(
@@ -188,20 +216,244 @@ fn write(
     part: &Path,
     cancel: &AtomicBool,
     report: &mut dyn FnMut(f64),
-) -> Result<(TrimRange, bool, PhysicalSize)> {
+) -> Result<Written> {
+    let trim = clamp_trim(options.trim, info.duration_ms);
+    let spans = cuts::kept_spans(trim, &options.cuts);
+    if spans.is_empty() {
+        return Err(RecordError::InvalidConfig("the cuts leave nothing of the recording to export".into()));
+    }
+    let has_cuts = spans.len() != 1 || spans[0].source != trim;
+    let kept = |spans: &[Span]| -> Vec<TrimRange> { spans.iter().map(|s| s.source).collect() };
     match &options.format {
         ExportFormat::Mp4 { resolution, quality } => {
             let plan = mp4_plan(info, options, *resolution, *quality);
+            if has_cuts {
+                // A pass-through cannot join parts that start between keyframes, so an export
+                // with cuts is always encoded again, at the plan's rate or else at "high".
+                let rate = plan.reencode.unwrap_or_else(|| reencode_for(info, Resolution::Native, Mp4Quality::High));
+                let spans = match plan.audio_track {
+                    Some(track) => cuts::snapped(trim, &spans, &mut |edge, lo, hi| {
+                        cuts::quietest(source, track, edge, lo, hi, cancel)
+                    })?,
+                    None => spans,
+                };
+                write_cut_mp4(info, source, part, &spans, rate, plan.audio_track, cancel, report)?;
+                return Ok(Written { trim, reencoded: true, size: rate.size, kept: kept(&spans) });
+            }
             let size = plan.reencode.map(|r| r.size).unwrap_or(info.size);
             let trim = crate::platform::write_mp4(source, part, &plan, cancel, report)?;
-            Ok((trim, plan.reencode.is_some(), size))
+            Ok(Written { trim, reencoded: plan.reencode.is_some(), size, kept: vec![trim] })
         }
         ExportFormat::Gif { fps, width, loop_forever } => {
-            let trim = clamp_trim(options.trim, info.duration_ms);
             let size = gif_size(info.size, *width);
-            write_gif(source, part, trim, (*fps).clamp(1, 50), size, *loop_forever, cancel, report)?;
-            Ok((trim, true, size))
+            write_gif(source, part, &spans, (*fps).clamp(1, 50), size, *loop_forever, cancel, report)?;
+            Ok(Written { trim, reencoded: true, size, kept: kept(&spans) })
         }
+    }
+}
+
+/// The MP4 of the kept parts `spans`, encoded again at `rate` through the take writer in its
+/// offline mode, with audio track `audio_track` (decoded and encoded again) as its one track.
+#[allow(clippy::too_many_arguments)]
+fn write_cut_mp4(
+    info: &MediaInfo,
+    source: &Path,
+    part: &Path,
+    spans: &[Span],
+    rate: Reencode,
+    audio_track: Option<usize>,
+    cancel: &AtomicBool,
+    report: &mut dyn FnMut(f64),
+) -> Result<()> {
+    let total_ms: u64 = spans.iter().map(Span::len_ms).sum();
+    let kind = audio_track.and_then(|i| info.audio.get(i).copied());
+    let spec = WriterSpec {
+        path: part.to_path_buf(),
+        size: rate.size,
+        // The nominal rate of a variable-rate recording is low; the writer keys and paces for
+        // at least 30 frames per second, as the bit rate does.
+        fps: (info.fps.round() as u32).max(30),
+        codec: session::codec_for(VideoCodec::H264, rate.size),
+        color_space: ColorSpace::Srgb,
+        audio: kind.into_iter().collect(),
+        fragment_interval_ms: session::FRAGMENT_INTERVAL_MS,
+        bits_per_second: Some(rate.bits_per_second),
+        offline: true,
+    };
+    // On a failure or a cancel the writer is dropped here, which closes its file, and `export`
+    // removes it.
+    let mut writer = crate::platform::create_writer(&spec)?;
+    let track = kind.and(audio_track);
+    for (i, span) in spans.iter().enumerate() {
+        let joins = (i > 0, i + 1 < spans.len());
+        let mut progress = |done_ms: u64| report(done_ms as f64 / total_ms.max(1) as f64);
+        feed(&mut *writer, source, span, track, joins, rate.size, cancel, &mut progress)?;
+    }
+    if cancel.load(Ordering::SeqCst) {
+        return Err(RecordError::Cancelled);
+    }
+    // The last picture lasts until the end; within the file, each part's last picture lasts
+    // until the next part's first.
+    writer.finish(total_ms * 1_000_000)
+}
+
+/// Writes one kept part: its frames and its sound are decoded on two threads and handed to the
+/// writer in time order, a sound buffer before a frame only when it ends by the frame's time. So
+/// no writer is ever more than a buffer of sound ahead of its pictures, and a writer that repeats
+/// the last picture on a still screen (Windows, Linux) repeats it before the next frame comes.
+/// `fades` says whether a join comes before the part and after it.
+#[allow(clippy::too_many_arguments)]
+fn feed(
+    writer: &mut dyn TakeWriter,
+    source: &Path,
+    span: &Span,
+    track: Option<usize>,
+    fades: (bool, bool),
+    size: PhysicalSize,
+    cancel: &AtomicBool,
+    progress: &mut dyn FnMut(u64),
+) -> Result<()> {
+    std::thread::scope(|scope| {
+        let (video_tx, video_rx) = mpsc::sync_channel::<(VideoFrame, u64)>(4);
+        let video = scope.spawn(move || {
+            crate::platform::decode_frames(source, span.source, size, cancel, &mut |frame, at| {
+                video_tx.send((frame, at)).map_err(|_| RecordError::Cancelled)
+            })
+        });
+        let (sound_tx, sound_rx) = mpsc::sync_channel::<(Vec<f32>, u64)>(16);
+        let sound = track.map(|track| {
+            scope.spawn(move || {
+                crate::platform::decode_audio(source, track, span.source, cancel, &mut |samples, at| {
+                    sound_tx.send((samples.to_vec(), at)).map_err(|_| RecordError::Cancelled)
+                })
+            })
+        });
+        let written = interleave(writer, span, track.is_some(), fades, &video_rx, &sound_rx, cancel, progress);
+        // A decoder still running stops at its next send.
+        drop(video_rx);
+        drop(sound_rx);
+        let failed = |what: &str| RecordError::Encoder(format!("the {what} decoder stopped"));
+        let video = video.join().unwrap_or_else(|_| Err(failed("video")));
+        let sound = sound.map_or(Ok(()), |h| h.join().unwrap_or_else(|_| Err(failed("audio"))));
+        written?;
+        video?;
+        sound
+    })
+}
+
+/// The merge of `feed`: frames and sound buffers of `span` from the decoders, into the writer.
+#[allow(clippy::too_many_arguments)]
+fn interleave(
+    writer: &mut dyn TakeWriter,
+    span: &Span,
+    with_sound: bool,
+    (fade_in, fade_out): (bool, bool),
+    video: &mpsc::Receiver<(VideoFrame, u64)>,
+    sound: &mpsc::Receiver<(Vec<f32>, u64)>,
+    cancel: &AtomicBool,
+    progress: &mut dyn FnMut(u64),
+) -> Result<()> {
+    let base_ns = span.output_start_ms * 1_000_000;
+    let mut track = SpanSound {
+        base: audio::frames_at(base_ns),
+        length: audio::frames_at(span.len_ms() * 1_000_000),
+        ramp: 0,
+        fade_in,
+        fade_out,
+        written: 0,
+    };
+    track.ramp = audio::frames_at(cuts::RAMP_MS * 1_000_000).min(track.length / 2);
+    let mut next_frame = video.recv().ok();
+    let mut next_sound = sound.recv().ok();
+    loop {
+        if cancel.load(Ordering::SeqCst) {
+            return Err(RecordError::Cancelled);
+        }
+        let frame_first = match (&next_frame, &next_sound) {
+            (None, None) => break,
+            (Some(_), None) => true,
+            (None, Some(_)) => false,
+            (Some((_, at)), Some((samples, position))) => {
+                *at < audio::ns_at(position + (samples.len() / CHANNELS) as u64)
+            }
+        };
+        if frame_first {
+            if let Some((frame, at)) = next_frame.take() {
+                append_frame(writer, &frame, base_ns + at, cancel)?;
+                progress(span.output_start_ms + at / 1_000_000);
+            }
+            next_frame = video.recv().ok();
+        } else {
+            if let Some((mut samples, position)) = next_sound.take() {
+                track.write(writer, position, &mut samples)?;
+            }
+            next_sound = sound.recv().ok();
+        }
+    }
+    if with_sound {
+        // The part's sound lasts as long as the part, with silence where the track has none.
+        track.write(writer, track.length, &mut [])?;
+    }
+    Ok(())
+}
+
+/// Hands `frame` to the writer at `at_ns`, waiting while its encoder is busy (the writer says
+/// so by refusing the frame): an export drops no frame.
+fn append_frame(writer: &mut dyn TakeWriter, frame: &VideoFrame, at_ns: u64, cancel: &AtomicBool) -> Result<()> {
+    let deadline = Instant::now() + STALL;
+    while !writer.append_video(frame, at_ns)? {
+        if cancel.load(Ordering::SeqCst) {
+            return Err(RecordError::Cancelled);
+        }
+        if Instant::now() >= deadline {
+            return Err(RecordError::Encoder("the encoder stopped taking frames".into()));
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    Ok(())
+}
+
+/// The sound of one kept part on its way to the writer's one audio track, contiguous from the
+/// part's start in the file (`base`) for `length` frames, faded over `ramp` frames at a join.
+struct SpanSound {
+    base: u64,
+    length: u64,
+    ramp: u64,
+    fade_in: bool,
+    fade_out: bool,
+    /// The frames of the part written so far.
+    written: u64,
+}
+
+impl SpanSound {
+    /// Writes `samples` (stereo) at `position` from the part's start, after silence for any gap
+    /// before it and without what overlaps the sound already written or passes the part's end.
+    fn write(&mut self, writer: &mut dyn TakeWriter, position: u64, samples: &mut [f32]) -> Result<()> {
+        let position = position.min(self.length);
+        while self.written < position {
+            let gap = (position - self.written).min(audio::RATE as u64 / 10);
+            self.put(writer, &mut vec![0.0; gap as usize * CHANNELS])?;
+        }
+        let frames = (samples.len() / CHANNELS) as u64;
+        let skip = (self.written - position).min(frames);
+        let take = (frames - skip).min(self.length - self.written);
+        let body = &mut samples[skip as usize * CHANNELS..(skip + take) as usize * CHANNELS];
+        self.put(writer, body)
+    }
+
+    fn put(&mut self, writer: &mut dyn TakeWriter, samples: &mut [f32]) -> Result<()> {
+        if samples.is_empty() {
+            return Ok(());
+        }
+        for (i, frame) in samples.chunks_exact_mut(CHANNELS).enumerate() {
+            let gain = cuts::ramp_gain(self.written + i as u64, self.length, self.ramp, self.fade_in, self.fade_out);
+            if gain < 1.0 {
+                frame.iter_mut().for_each(|s| *s *= gain);
+            }
+        }
+        writer.append_audio(0, self.base + self.written, samples)?;
+        self.written += (samples.len() / CHANNELS) as u64;
+        Ok(())
     }
 }
 
@@ -209,7 +461,7 @@ fn write(
 fn write_gif(
     source: &Path,
     part: &Path,
-    trim: TrimRange,
+    spans: &[Span],
     fps: u32,
     size: PhysicalSize,
     loop_forever: bool,
@@ -218,23 +470,28 @@ fn write_gif(
 ) -> Result<()> {
     let file = std::fs::OpenOptions::new().write(true).create_new(true).open(part)?;
     let mut gif = GifEncoder::new(std::io::BufWriter::new(file), size.width, size.height, loop_forever)?;
-    let length_ns = (trim.end_ms - trim.start_ms) * 1_000_000;
+    let length_ns = spans.iter().map(Span::len_ms).sum::<u64>() * 1_000_000;
     let step = 1_000_000_000 / fps as u64;
     let mut next = 0u64;
-    crate::platform::decode_video(source, trim, size, cancel, &mut |rgba: &[u8], at_ns: u64| {
-        // A frame a little early still counts for its tick: decoded times wobble by a few
-        // microseconds around the frame grid.
-        const SLACK: u64 = 2_000_000;
-        if at_ns + SLACK < next {
-            return Ok(());
-        }
-        gif.push(Picture { rgba }, at_ns)?;
-        while next <= at_ns + SLACK {
-            next += step;
-        }
-        report(at_ns as f64 / length_ns.max(1) as f64);
-        Ok(())
-    })?;
+    // Each kept part is decoded on its own and placed after the ones before it.
+    for span in spans {
+        let base = span.output_start_ms * 1_000_000;
+        crate::platform::decode_video(source, span.source, size, cancel, &mut |rgba: &[u8], at: u64| {
+            let at_ns = base + at;
+            // A frame a little early still counts for its tick: decoded times wobble by a few
+            // microseconds around the frame grid.
+            const SLACK: u64 = 2_000_000;
+            if at_ns + SLACK < next {
+                return Ok(());
+            }
+            gif.push(Picture { rgba }, at_ns)?;
+            while next <= at_ns + SLACK {
+                next += step;
+            }
+            report(at_ns as f64 / length_ns.max(1) as f64);
+            Ok(())
+        })?;
+    }
     if cancel.load(Ordering::SeqCst) {
         return Err(RecordError::Cancelled);
     }

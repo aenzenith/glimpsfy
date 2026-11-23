@@ -136,6 +136,9 @@ pub fn run() {
             // running would be cut at its last fragment and miss the history, so it ends first.
             // A restart cannot be held; Tauri ignores `prevent_exit` for it.
             if let tauri::RunEvent::ExitRequested { code, api, .. } = &event {
+                // A transcription is cancelled first, a restart included: its model has to leave
+                // the GPU before the process ends.
+                recording::transcript::end_for_exit(app);
                 if *code != Some(tauri::RESTART_EXIT_CODE) && recording::hold_exit(app) {
                     api.prevent_exit();
                 }

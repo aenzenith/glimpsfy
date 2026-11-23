@@ -6,54 +6,65 @@
 //! [`MODELS`] is the only list of download URLs in the app. Every URL pins a commit of its
 //! repository, so the bytes behind it cannot change, and every file carries its SHA-256 and its
 //! size. A change to the table is reviewed like code: the new hash is taken from a download of the
-//! file, compared with the hash the host publishes (Hugging Face shows the SHA-256 of every large
-//! file), and the model's licence is checked (both repositories below are Apache-2.0).
+//! file and compared with the hash the host publishes (Hugging Face shows the SHA-256 of every
+//! large file and the git blob id of every small one), and the model's licence is checked (every
+//! repository below is PaddlePaddle's own and Apache-2.0).
 //!
 //! # Rules this module keeps
 //!
 //! - Nothing is downloaded unless the user asks: [`ModelStore::download`] is the only function
 //!   that fetches, and only the model download command (a button in Settings) calls it.
-//! - [`download::fetch`] is the only code in the OCR area that opens a connection. It accepts the
-//!   URLs in the table and redirects to [`ALLOWED_HOSTS`] over HTTPS, and nothing else.
-//! - A file streams into `<name>.part` while it is hashed, and is renamed into place only when its
-//!   hash and size match the table. A mismatch deletes it.
-//! - Before an engine loads a model, [`ModelStore::verified`] hashes the files again; a file that
-//!   changed on disk is deleted, and the model counts as not downloaded.
+//! - Fetching, hashing into `<name>.part`, verifying before a load and reading verified bytes are
+//!   `glimpsfy-models`', which holds the one connection of every model area and takes this table
+//!   as [`reviewed`]: it accepts the URLs in the table and redirects to [`ALLOWED_HOSTS`] over
+//!   HTTPS, and nothing else.
+//! - An engine never hands a path to its runtime. It takes a file's bytes from
+//!   [`VerifiedModel::bytes`], which checks the hash of exactly the bytes it returns, so no file
+//!   can be swapped between the check and the load.
 
-use std::fs::{self, File};
-use std::io::{self, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
+use glimpsfy_models::{ModelError, Reviewed};
 use serde::Serialize;
-use sha2::{Digest, Sha256};
 
 use crate::{CancelToken, LanguageTag, OcrError, Result};
 
-mod download;
-
 /// One file of a model, as the reviewed table names it.
-#[derive(Debug, PartialEq, Eq)]
-pub struct ModelFile {
-    /// The file's name inside the model's folder.
-    pub name: &'static str,
-    /// Where it is downloaded from: an `https` URL that pins a commit.
-    pub url: &'static str,
-    /// The SHA-256 of the file's bytes, in lower-case hex.
-    pub sha256: &'static str,
-    pub bytes: u64,
-}
+pub use glimpsfy_models::ModelFile;
 
-/// One downloadable model: the files PP-OCR needs to read one script.
-#[derive(Debug, PartialEq, Eq)]
+/// One downloadable model: the files PP-OCR needs to read one group of scripts. Every model has
+/// the same three files: `det.onnx` (text detection), `rec.onnx` (text recognition) and `rec.yml`
+/// (the recognition model's configuration, which holds its dictionary).
+#[derive(Debug, PartialEq)]
 pub struct ModelSpec {
     pub id: &'static str,
     /// The model's name in Settings; it is a product name and is not translated.
     pub title: &'static str,
     /// The languages the recognition model reads, as BCP 47 tags.
     pub languages: &'static [&'static str],
+    /// How the detection model's answer becomes boxes.
+    pub detector: Detector,
     pub files: &'static [ModelFile],
 }
+
+/// The post-processing values a detection model was published with (`PostProcess` in its
+/// `inference.yml`). They belong to the model, so they are reviewed with it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Detector {
+    /// A pixel is text when the model's probability for it is above this (`thresh`).
+    pub threshold: f32,
+    /// A region is a text box when its mean probability reaches this (`box_thresh`).
+    pub box_threshold: f32,
+    /// How far a region grows into a box, as a share of its area over its perimeter
+    /// (`unclip_ratio`).
+    pub unclip_ratio: f32,
+}
+
+/// The file names every model has; see [`ModelSpec`].
+pub const DETECTION_FILE: &str = "det.onnx";
+pub const RECOGNITION_FILE: &str = "rec.onnx";
+pub const DICTIONARY_FILE: &str = "rec.yml";
 
 /// The hosts a download may reach. `huggingface.co` serves the URLs in [`MODELS`] and answers with
 /// a redirect to its content network, whose host names change by region and all end in `.hf.co`.
@@ -61,42 +72,108 @@ pub const ALLOWED_HOSTS: &[&str] = &["huggingface.co"];
 /// Host name endings a redirect may lead to; see [`ALLOWED_HOSTS`].
 pub const ALLOWED_HOST_SUFFIXES: &[&str] = &[".hf.co"];
 
-/// The reviewed table of models. Reviewed on 2026-11-16: every hash below was computed from a
-/// download of the pinned URL and matched the SHA-256 that Hugging Face publishes for the file.
-pub const MODELS: &[ModelSpec] = &[ModelSpec {
-    id: "ppocr-latin",
-    title: "PP-OCR Latin",
-    // The languages PaddleOCR lists for its PP-OCRv5 Latin recognition model.
-    languages: &[
-        "en", "tr", "de", "fr", "es", "it", "pt", "nl", "pl", "cs", "sk", "hr", "bs", "sr-Latn", "sl", "da", "no",
-        "sv", "is", "et", "lt", "hu", "sq", "cy", "ga", "id", "ms", "af", "sw", "tl", "uz", "oc", "mi", "la",
-    ],
-    files: &[
-        // PP-OCRv4 mobile text detection as RapidOCR converted it to ONNX; it finds the text
-        // lines of every script.
-        ModelFile {
-            name: "det.onnx",
-            url: "https://huggingface.co/SWHL/RapidOCR/resolve/1cfba2e90fc938db55889873735088de210cc173/PP-OCRv4/ch_PP-OCRv4_det_infer.onnx",
-            sha256: "d2a7720d45a54257208b1e13e36a8479894cb74155a5efe29462512d42f49da9",
-            bytes: 4_745_517,
-        },
-        // PP-OCRv5 mobile Latin recognition (latin_PP-OCRv5_mobile_rec), which reads Turkish
-        // letters such as ğ, ı, İ and ş.
-        ModelFile {
-            name: "rec.onnx",
-            url: "https://huggingface.co/monkt/paddleocr-onnx/resolve/7b02d0a30a07ba2b92ad1ff5a8941ae2c633de65/languages/latin/rec.onnx",
-            sha256: "614ffc2d6d3902d360fad7f1b0dd455ee45e877069d14c4e51a99dc4ef144409",
-            bytes: 7_862_832,
-        },
-        // The recognition model's alphabet, one character per line.
-        ModelFile {
-            name: "dict.txt",
-            url: "https://huggingface.co/monkt/paddleocr-onnx/resolve/7b02d0a30a07ba2b92ad1ff5a8941ae2c633de65/languages/latin/dict.txt",
-            sha256: "3c0a8a79b612653c25f765271714f71281e4e955962c153e272b7b8c1d2b13ff",
-            bytes: 1_634,
-        },
-    ],
-}];
+/// The reviewed table of models. Reviewed on 2026-11-22: every hash below was computed from a
+/// download of the pinned URL and matched what Hugging Face publishes for the file (the SHA-256
+/// of the `.onnx` files, the git blob id of the `.yml` files).
+///
+/// Every model pairs PP-OCRv6 small text detection, the tier PaddleOCR names for desktops, which
+/// finds the lines of every script, with the recognition model of one group of scripts. The
+/// first model is the one offered when no language asks for another. Each model lists English
+/// too, because its dictionary holds the Latin alphabet and screens mix English into every
+/// language.
+pub const MODELS: &[ModelSpec] = &[
+    // PP-OCRv5's Latin recognition reads Turkish (ç, ğ, ı, İ, ö, ş, ü) correctly where PP-OCRv6's
+    // general model confuses ı, i, İ and Ğ; on the sample set it reads 99.76 % of the characters,
+    // Vision 99.45 %. The languages are those of its model card, and every letter of each is in
+    // its dictionary.
+    ModelSpec {
+        id: "ppocr-latin",
+        title: "PP-OCRv5 Latin",
+        languages: &[
+            "en", "tr", "de", "fr", "es", "it", "pt", "nl", "pl", "cs", "sk", "hr", "bs", "sr-Latn", "sl", "da", "no",
+            "sv", "is", "et", "lt", "hu", "sq", "cy", "ga", "id", "ms", "af", "sw", "tl", "uz", "oc", "mi", "la",
+        ],
+        detector: V6_SMALL_DETECTOR,
+        files: &[
+            V6_SMALL_DETECTION,
+            // PP-OCRv5 mobile Latin recognition (latin_PP-OCRv5_mobile_rec).
+            ModelFile {
+                name: RECOGNITION_FILE,
+                url: "https://huggingface.co/PaddlePaddle/latin_PP-OCRv5_mobile_rec_onnx/resolve/89d3a50e2c27e2e7cceeab0e944c25c807d5db4f/inference.onnx",
+                sha256: "7888113072263cb471b93f66dd5e2ad70548dc526fa1ace760d0d973dd121498",
+                bytes: 8_042_023,
+            },
+            // The recognition model's configuration; its `character_dict` is the dictionary.
+            ModelFile {
+                name: DICTIONARY_FILE,
+                url: "https://huggingface.co/PaddlePaddle/latin_PP-OCRv5_mobile_rec_onnx/resolve/89d3a50e2c27e2e7cceeab0e944c25c807d5db4f/inference.yml",
+                sha256: "0bbe984570f597af3638e50bdf2e8276f3ab26a61966096538b3b0d1849f5c84",
+                bytes: 6_817,
+            },
+        ],
+    },
+    // PaddleOCR's current general model reads Chinese and Japanese with one dictionary of 18,708
+    // characters.
+    ModelSpec {
+        id: "ppocr-v6",
+        title: "PP-OCRv6",
+        languages: &["ja", "zh-Hans", "zh-Hant", "en"],
+        detector: V6_SMALL_DETECTOR,
+        files: &[
+            V6_SMALL_DETECTION,
+            // PP-OCRv6 small recognition.
+            ModelFile {
+                name: RECOGNITION_FILE,
+                url: "https://huggingface.co/PaddlePaddle/PP-OCRv6_small_rec_onnx/resolve/b8f84f0b80c529de40b4fbb3544b84fa7233a513/inference.onnx",
+                sha256: "5435fd747c9e0efe15a96d0b378d5bd157e9492ed8fd80edf08f30d02fa24634",
+                bytes: 21_159_378,
+            },
+            // The recognition model's configuration; its `character_dict` is the dictionary.
+            ModelFile {
+                name: DICTIONARY_FILE,
+                url: "https://huggingface.co/PaddlePaddle/PP-OCRv6_small_rec_onnx/resolve/b8f84f0b80c529de40b4fbb3544b84fa7233a513/inference.yml",
+                sha256: "ab078671bb49f06228eadccd34f1bb501e157f7a047095ffb943ba81512c77d1",
+                bytes: 150_579,
+            },
+        ],
+    },
+    // PP-OCRv6 has no Cyrillic in its dictionary, so Russian keeps a PP-OCRv5 model. Its
+    // dictionary holds the Russian, Ukrainian, Belarusian and Bulgarian alphabets.
+    ModelSpec {
+        id: "ppocr-cyrillic",
+        title: "PP-OCRv5 Cyrillic",
+        languages: &["ru", "uk", "be", "bg", "en"],
+        detector: V6_SMALL_DETECTOR,
+        files: &[
+            V6_SMALL_DETECTION,
+            // PP-OCRv5 mobile East Slavic recognition (eslav_PP-OCRv5_mobile_rec).
+            ModelFile {
+                name: RECOGNITION_FILE,
+                url: "https://huggingface.co/PaddlePaddle/eslav_PP-OCRv5_mobile_rec_onnx/resolve/9a32171fc5718746875e1a261818884517975013/inference.onnx",
+                sha256: "b3018ef2b09a0250b6e0c8e871c927098363e5fd4df890cc68e8358eb0aaf1bd",
+                bytes: 7_887_627,
+            },
+            // The recognition model's configuration; its `character_dict` is the dictionary.
+            ModelFile {
+                name: DICTIONARY_FILE,
+                url: "https://huggingface.co/PaddlePaddle/eslav_PP-OCRv5_mobile_rec_onnx/resolve/9a32171fc5718746875e1a261818884517975013/inference.yml",
+                sha256: "025039bac23eb4a308efcefa4d58eab3af440767815c6ba6938468bf6353ee5a",
+                bytes: 4_538,
+            },
+        ],
+    },
+];
+
+/// PP-OCRv6 small text detection, which every model shares.
+const V6_SMALL_DETECTION: ModelFile = ModelFile {
+    name: DETECTION_FILE,
+    url: "https://huggingface.co/PaddlePaddle/PP-OCRv6_small_det_onnx/resolve/28fe5895c24fd108c19eb3e8479f4ab385fbfc62/inference.onnx",
+    sha256: "d73e0058b7a8086bbd57f3d10b8bcd4ff95363f67e06e2762b5e814fe9c9410e",
+    bytes: 9_880_512,
+};
+
+/// The post-processing values PP-OCRv6 small detection was published with.
+const V6_SMALL_DETECTOR: Detector = Detector { threshold: 0.2, box_threshold: 0.45, unclip_ratio: 1.4 };
 
 /// The model in the table with this id.
 pub fn spec(id: &str) -> Result<&'static ModelSpec> {
@@ -138,6 +215,19 @@ impl VerifiedModel {
     pub fn path(&self, name: &str) -> PathBuf {
         self.dir.join(name)
     }
+
+    /// The bytes of one of the model's files, for an engine to load. The hash is checked on the
+    /// very bytes that are returned, so what the engine loads is what the table names even when
+    /// the file was replaced after [`ModelStore::verified`] ran. A mismatch deletes the file.
+    pub fn bytes(&self, name: &str) -> Result<Vec<u8>> {
+        let file = self
+            .spec
+            .files
+            .iter()
+            .find(|f| f.name == name)
+            .ok_or_else(|| OcrError::ModelMissing(self.spec.id.to_string()))?;
+        Ok(glimpsfy_models::read_verified(&self.dir, self.spec.id, file)?)
+    }
 }
 
 /// The folder that holds the downloaded models, one subfolder per model id. The app passes
@@ -178,11 +268,7 @@ impl ModelStore {
         MODELS
             .iter()
             .map(|spec| {
-                let dir = self.dir(spec);
-                let installed = spec
-                    .files
-                    .iter()
-                    .all(|f| fs::metadata(dir.join(f.name)).is_ok_and(|m| m.is_file() && m.len() == f.bytes));
+                let installed = glimpsfy_models::installed(&self.dir(spec), spec.files);
                 ModelInfo {
                     id: spec.id.to_string(),
                     title: spec.title.to_string(),
@@ -195,67 +281,32 @@ impl ModelStore {
     }
 
     /// Downloads the model's files from the reviewed table into its folder, reporting progress.
-    /// Files already on disk with the right hash are kept. Blocks; the user starts it, and
-    /// `cancel` stops it.
-    pub fn download(&self, id: &str, progress: &mut dyn FnMut(Progress), cancel: &CancelToken) -> Result<()> {
-        self.download_with(id, &download::fetch, progress, cancel)
-    }
-
-    /// [`ModelStore::download`] with the fetching step passed in, so the checks after it can be
-    /// tested without a network.
-    fn download_with(
+    /// Files already on disk with the right hash are kept. Blocks; the user starts it, `cancel`
+    /// stops it, and `online` is asked before any connection (the app's offline switch).
+    pub fn download(
         &self,
         id: &str,
-        fetch: &Fetch,
         progress: &mut dyn FnMut(Progress),
         cancel: &CancelToken,
+        online: &dyn Fn() -> bool,
     ) -> Result<()> {
         let spec = spec(id)?;
-        let dir = self.dir(spec);
-        fs::create_dir_all(&dir)?;
-        let total: u64 = spec.files.iter().map(|f| f.bytes).sum();
-        let mut done = 0u64;
-        for file in spec.files {
-            cancel.check()?;
-            let path = dir.join(file.name);
-            if matches(&path, file)? {
-                done += file.bytes;
-                progress(Progress { model: id.to_string(), received: done, total });
-                continue;
-            }
-            let part = dir.join(format!("{}.part", file.name));
-            let written = (|| {
-                let mut sink = Hashing::new(BufWriter::new(File::create(&part)?), file.bytes);
-                fetch(
-                    file,
-                    &mut sink,
-                    &mut |n| progress(Progress { model: id.to_string(), received: done + n, total }),
-                    cancel,
-                )?;
-                let (bytes, hash) = sink.finish()?;
-                if bytes != file.bytes || hash != file.sha256 {
-                    return Err(OcrError::ChecksumMismatch { model: format!("{id}/{}", file.name) });
-                }
-                fs::rename(&part, &path)?;
-                Ok(())
-            })();
-            if let Err(error) = written {
-                // A partial or wrong file never stays behind, so nothing can load it later.
-                let _ = fs::remove_file(&part);
-                return Err(error);
-            }
-            done += file.bytes;
-        }
+        let files: Vec<&ModelFile> = MODELS.iter().flat_map(|m| m.files).collect();
+        glimpsfy_models::download(
+            &self.dir(spec),
+            id,
+            spec.files,
+            &reviewed(&files),
+            &mut |received, total| progress(Progress { model: id.to_string(), received, total }),
+            &|| cancel.is_cancelled(),
+            online,
+        )?;
         Ok(())
     }
 
     /// Deletes a downloaded model. Removing a model that is not there succeeds.
     pub fn remove(&self, id: &str) -> Result<()> {
-        let spec = spec(id)?;
-        match fs::remove_dir_all(self.dir(spec)) {
-            Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error.into()),
-            _ => Ok(()),
-        }
+        Ok(glimpsfy_models::remove(&self.dir(spec(id)?))?)
     }
 
     /// Checks the hash of every file of the model before it is loaded. A missing file fails with
@@ -264,81 +315,26 @@ impl ModelStore {
     pub fn verified(&self, id: &str) -> Result<VerifiedModel> {
         let spec = spec(id)?;
         let dir = self.dir(spec);
-        for file in spec.files {
-            let path = dir.join(file.name);
-            if !path.is_file() {
-                return Err(OcrError::ModelMissing(id.to_string()));
-            }
-            if !matches(&path, file)? {
-                let _ = fs::remove_file(&path);
-                return Err(OcrError::ChecksumMismatch { model: format!("{id}/{}", file.name) });
-            }
-        }
+        glimpsfy_models::verify(&dir, id, spec.files)?;
         Ok(VerifiedModel { spec, dir })
     }
 }
 
-/// Fetches one file of the table into the sink, reporting the bytes received so far.
-type Fetch = dyn Fn(&ModelFile, &mut dyn Write, &mut dyn FnMut(u64), &CancelToken) -> Result<()>;
+/// The table as the fetch checks it: every file of [`MODELS`] and the hosts they live on.
+pub fn reviewed<'a>(files: &'a [&'a ModelFile]) -> Reviewed<'a> {
+    Reviewed { files, hosts: ALLOWED_HOSTS, host_suffixes: ALLOWED_HOST_SUFFIXES }
+}
 
-/// Whether the file on disk has the table's size and hash.
-fn matches(path: &Path, file: &ModelFile) -> Result<bool> {
-    match fs::metadata(path) {
-        Ok(m) if m.is_file() && m.len() == file.bytes => {}
-        Ok(_) => return Ok(false),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
-        Err(error) => return Err(error.into()),
-    }
-    let mut reader = File::open(path)?;
-    let mut hasher = Sha256::new();
-    let mut buf = vec![0u8; 64 * 1024];
-    loop {
-        let n = reader.read(&mut buf)?;
-        if n == 0 {
-            break;
+impl From<ModelError> for OcrError {
+    fn from(error: ModelError) -> Self {
+        match error {
+            ModelError::Download(reason) => OcrError::Download(reason),
+            ModelError::Offline => OcrError::Download(ModelError::Offline.to_string()),
+            ModelError::Missing(model) => OcrError::ModelMissing(model),
+            ModelError::ChecksumMismatch { model } => OcrError::ChecksumMismatch { model },
+            ModelError::Cancelled => OcrError::Cancelled,
+            ModelError::Io(error) => OcrError::Io(error),
         }
-        hasher.update(&buf[..n]);
-    }
-    Ok(hex(&hasher.finalize()) == file.sha256)
-}
-
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
-}
-
-/// Writes through to a file while hashing, and refuses more bytes than the table names, so an
-/// oversized answer stops early instead of filling the disk.
-struct Hashing<W: Write> {
-    inner: W,
-    hasher: Sha256,
-    written: u64,
-    limit: u64,
-}
-
-impl<W: Write> Hashing<W> {
-    fn new(inner: W, limit: u64) -> Self {
-        Hashing { inner, hasher: Sha256::new(), written: 0, limit }
-    }
-
-    fn finish(mut self) -> io::Result<(u64, String)> {
-        self.inner.flush()?;
-        Ok((self.written, hex(&self.hasher.finalize())))
-    }
-}
-
-impl<W: Write> Write for Hashing<W> {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        if self.written + buf.len() as u64 > self.limit {
-            return Err(io::Error::other("the server sent more bytes than the model table names"));
-        }
-        let n = self.inner.write(buf)?;
-        self.hasher.update(&buf[..n]);
-        self.written += n as u64;
-        Ok(n)
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        self.inner.flush()
     }
 }
 
@@ -346,51 +342,11 @@ impl<W: Write> Write for Hashing<W> {
 mod tests {
     use super::*;
 
-    /// A fetch that writes the right number of bytes with the wrong content, as a tampered or
-    /// corrupted download would.
-    fn wrong_bytes(
-        file: &ModelFile,
-        sink: &mut dyn Write,
-        progress: &mut dyn FnMut(u64),
-        _: &CancelToken,
-    ) -> Result<()> {
-        sink.write_all(&vec![0x42; file.bytes as usize])?;
-        progress(file.bytes);
-        Ok(())
-    }
-
     #[test]
-    fn a_download_with_the_wrong_checksum_is_deleted_and_never_loaded() {
-        let dir = tempfile::tempdir().expect("a temporary folder");
-        let store = ModelStore::new(dir.path());
-        let model = MODELS[0].id;
-
-        let result = store.download_with(model, &wrong_bytes, &mut |_| {}, &CancelToken::new());
-        assert!(matches!(result, Err(OcrError::ChecksumMismatch { .. })), "{result:?}");
-
-        // Neither the partial file nor a final file is left behind.
-        let folder = dir.path().join(model);
-        let left: Vec<_> = fs::read_dir(&folder).expect("the model folder").filter_map(|e| e.ok()).collect();
-        assert!(left.is_empty(), "files left behind: {left:?}");
-        assert!(!store.list()[0].installed);
-        assert!(matches!(store.verified(model), Err(OcrError::ModelMissing(_))));
-    }
-
-    #[test]
-    fn a_stored_model_whose_bytes_changed_is_deleted_before_loading() {
-        let dir = tempfile::tempdir().expect("a temporary folder");
-        let store = ModelStore::new(dir.path());
-        let spec = &MODELS[0];
-        // Files with the table's sizes but other bytes, as if replaced on disk after a download.
-        let folder = dir.path().join(spec.id);
-        fs::create_dir_all(&folder).expect("the model folder");
-        for file in spec.files {
-            fs::write(folder.join(file.name), vec![0u8; file.bytes as usize]).expect("a file");
+    fn every_url_of_the_table_is_on_an_allowed_host() {
+        let files: Vec<&ModelFile> = MODELS.iter().flat_map(|m| m.files).collect();
+        for file in &files {
+            assert!(glimpsfy_models::download::allowed(file.url, &reviewed(&files)).is_ok(), "{}", file.url);
         }
-        assert!(store.list()[0].installed, "the size check alone passes");
-
-        let result = store.verified(spec.id);
-        assert!(matches!(result, Err(OcrError::ChecksumMismatch { .. })), "{result:?}");
-        assert!(!folder.join(spec.files[0].name).exists(), "the mismatching file was deleted");
     }
 }

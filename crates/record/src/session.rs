@@ -69,6 +69,14 @@ pub struct WriterSpec {
     /// (the mix) and the others are alternates a player leaves off.
     pub audio: Vec<TrackKind>,
     pub fragment_interval_ms: u64,
+    /// The video's bit rate; `None` lets the writer pick a take's rate for the size and frame
+    /// rate, and an export sets its own.
+    pub bits_per_second: Option<u32>,
+    /// Writes as fast as the encoder goes instead of in real time, for an export: a busy encoder
+    /// makes the writer wait instead of dropping sound, the index goes to the front of the file
+    /// instead of movie fragments, and a writer dropped before `finish` has closed its file when
+    /// the drop returns, so the file can be removed.
+    pub offline: bool,
 }
 
 impl WriterSpec {
@@ -307,6 +315,8 @@ impl StreamSink for Sink {
                 color_space: frame.color_space,
                 audio: shared.tracks.clone(),
                 fragment_interval_ms: FRAGMENT_INTERVAL_MS,
+                bits_per_second: None,
+                offline: false,
             };
             match shared.writers.create(&spec) {
                 Ok(writer) => {
@@ -471,6 +481,8 @@ impl Take {
                 color_space: ColorSpace::Srgb,
                 audio: shared.tracks.clone(),
                 fragment_interval_ms: FRAGMENT_INTERVAL_MS,
+                bits_per_second: None,
+                offline: false,
             }
             .tracks(),
             codec,

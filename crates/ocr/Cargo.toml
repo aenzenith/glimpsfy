@@ -21,14 +21,13 @@ glimpsfy-capture.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 png.workspace = true
+# The model download, the only network traffic this crate may cause, is `glimpsfy-models`'.
+glimpsfy-models.workspace = true
 # The rules of `src/entities/rules.rs`: links, email addresses, phone numbers and dates on every
 # platform. regex-lite has no Unicode tables, so a letter outside ASCII is checked in the rules.
 regex-lite = "0.1.9"
 # A found date's start and end, in the system's local time without a zone (`src/entities`).
 chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
-# The model download is the only network traffic this crate may cause (`models/download.rs`).
-ureq = { version = "3.5", default-features = false, features = ["rustls"] }
-sha2 = "0.10.9"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2.workspace = true

@@ -193,6 +193,54 @@ impl Mixer {
     }
 }
 
+/// Places a reader's decoded buffers on a span of the file, for `platform::decode_audio`: what
+/// lies before the span or past its end is cut off, and a buffer that lands within a millisecond
+/// of where the one before ended follows it exactly, so the positions handed out need no fixing.
+#[derive(Debug)]
+pub(crate) struct SpanAudio {
+    /// The span's first frame in the file, and its length in frames.
+    start: u64,
+    length: u64,
+    /// Where the next buffer is expected, from the span's start.
+    next: u64,
+}
+
+impl SpanAudio {
+    pub(crate) fn new(start_ns: u64, end_ns: u64) -> SpanAudio {
+        let start = frames_at(start_ns);
+        SpanAudio { start, length: frames_at(end_ns).saturating_sub(start), next: 0 }
+    }
+
+    /// The position from the span's start and the frames of `samples` (interleaved stereo)
+    /// inside the span, for a buffer whose first frame plays at `pts_ns`; `None` when none is.
+    pub(crate) fn place<'a>(&mut self, pts_ns: u64, samples: &'a [f32]) -> Option<(u64, &'a [f32])> {
+        let frames = (samples.len() / CHANNELS) as u64;
+        let at = frames_at(pts_ns) as i128 - self.start as i128;
+        let mut skip = if at < 0 { at.unsigned_abs() as u64 } else { 0 };
+        let mut position = at.max(0) as u64;
+        // Decoded times are rounded to the container's clock; a frame or two off is the same
+        // buffer that follows on.
+        if position.abs_diff(self.next) <= RATE as u64 / 1000 {
+            position = self.next;
+        }
+        if position < self.next {
+            skip += self.next - position;
+            position = self.next;
+        }
+        if skip >= frames || position >= self.length {
+            return None;
+        }
+        let take = (frames - skip).min(self.length - position);
+        self.next = position + take;
+        Some((position, &samples[skip as usize * CHANNELS..(skip + take) as usize * CHANNELS]))
+    }
+
+    /// Whether the span is complete, so reading can stop.
+    pub(crate) fn done(&self) -> bool {
+        self.next >= self.length
+    }
+}
+
 /// The peak of `samples` as a 0–1 level for a meter, on a decibel scale from −60 dB.
 pub fn level(samples: &[f32]) -> f32 {
     let peak = samples.iter().fold(0.0f32, |p, s| p.max(s.abs()));

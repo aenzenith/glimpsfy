@@ -1,0 +1,31 @@
+[package]
+name = "glimpsfy-speech"
+description = "Speech to text on the machine for Glimpsfy's cut-by-text: whisper.cpp behind one engine trait, filler words and silences"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+serde.workspace = true
+thiserror.workspace = true
+# The model download, the only network traffic this crate may cause, is `glimpsfy-models`'.
+glimpsfy-models.workspace = true
+# whisper.cpp (MIT), compiled from source by whisper-rs-sys with CMake and a C++ compiler and bound
+# with bindgen, which needs libclang at build time. `raw-api` lets the progress callback read the
+# segments decoded so far (`src/whisper.rs`). Only this crate links it, so the recorder never
+# carries the C++ build.
+whisper-rs = { version = "0.16", default-features = false, features = ["raw-api"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# Metal runs the model on the GPU of the Mac; Windows and Linux run it on the CPU.
+whisper-rs = { version = "0.16", default-features = false, features = ["raw-api", "metal"] }
+
+[dev-dependencies]
+# Reads the WAV files of the examples.
+hound = "3.5"
+
+[lints]
+workspace = true

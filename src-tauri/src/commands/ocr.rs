@@ -268,7 +268,8 @@ pub async fn ocr_model_download(app: AppHandle, id: String, job: Option<String>)
         let mut progress = |p: Progress| {
             let _ = emitter.emit(ocr_events::MODEL_PROGRESS, p);
         };
-        store.download(&id, &mut progress, &guard.cancel)?;
+        // The offline switch (card A8) is not in the app yet, so the download is always allowed.
+        store.download(&id, &mut progress, &guard.cancel, &|| true)?;
         store.list().into_iter().find(|m| m.id == id).ok_or_else(|| CommandError::not_found(format!("model {id}")))
     })
     .await

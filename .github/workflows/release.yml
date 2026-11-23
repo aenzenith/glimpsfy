@@ -150,6 +150,12 @@ jobs:
       APPLE_ID: ${{ secrets.APPLE_ID }}
       APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
       APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      # whisper.cpp (crates/speech) would otherwise be compiled for the runner's own CPU and crash
+      # on a user's machine that lacks its instructions (an M1 for an M2+ runner, or no AVX-512).
+      # Off, an x86_64 build needs AVX2, FMA and F16C.
+      GGML_NATIVE: "OFF"
+      # Its C++ follows the app's minimum macOS (tauri.conf.json), not the runner's version.
+      MACOSX_DEPLOYMENT_TARGET: "14.0"
     steps:
       - uses: actions/checkout@v5
         with:
@@ -163,6 +169,17 @@ jobs:
       # rust-toolchain.toml pins the channel; rustup installs it on first use.
       - name: Rust toolchain
         run: rustup show active-toolchain
+
+      # whisper.cpp (crates/speech) is built with CMake, and bindgen loads libclang for its Rust
+      # bindings; as in ci.yml, Linux gets both from packages.txt.
+      - name: Speech build tools
+        shell: bash
+        run: |
+          cmake --version
+          if [ "$RUNNER_OS" = Windows ]; then
+            echo 'LIBCLANG_PATH=C:\Program Files\LLVM\bin' >> "$GITHUB_ENV"
+            test -f '/c/Program Files/LLVM/bin/libclang.dll'
+          fi
 
       - uses: Swatinem/rust-cache@v2
         with:

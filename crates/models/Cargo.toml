@@ -1,0 +1,21 @@
+[package]
+name = "glimpsfy-models"
+description = "Model files Glimpsfy downloads when the user asks: the one network fetch, and storing, verifying and removing the files of a reviewed table"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+# The model download is the only network traffic the model areas may cause (`src/download.rs`).
+ureq = { version = "3.5", default-features = false, features = ["rustls"] }
+sha2 = "0.10.9"
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

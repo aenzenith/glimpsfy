@@ -7,6 +7,10 @@
 //! each append becomes one `CMSampleBuffer` stamped with its position, so the tracks stay on the
 //! session's timeline.
 //!
+//! An offline writer ([`WriterSpec::offline`], an export with cuts) takes the decoder's pictures
+//! and scales them to its size, waits for the encoders instead of dropping sound, writes no movie
+//! fragments but moves its index to the front, and cancels itself when it is dropped unfinished.
+//!
 //! With several audio tracks, they form one alternate group: the first (the mix) is enabled and
 //! is the one every player plays; the microphone and system audio tracks are disabled
 //! alternates that an editor can pick.
@@ -28,8 +32,8 @@ use objc2_av_foundation::{
     AVVideoCodecTypeH264, AVVideoCodecTypeHEVC, AVVideoColorPrimariesKey, AVVideoColorPrimaries_ITU_R_709_2,
     AVVideoColorPropertiesKey, AVVideoCompressionPropertiesKey, AVVideoExpectedSourceFrameRateKey, AVVideoHeightKey,
     AVVideoMaxKeyFrameIntervalDurationKey, AVVideoMaxKeyFrameIntervalKey, AVVideoProfileLevelH264HighAutoLevel,
-    AVVideoProfileLevelKey, AVVideoTransferFunctionKey, AVVideoTransferFunction_ITU_R_709_2, AVVideoWidthKey,
-    AVVideoYCbCrMatrixKey, AVVideoYCbCrMatrix_ITU_R_709_2,
+    AVVideoProfileLevelKey, AVVideoScalingModeKey, AVVideoScalingModeResizeAspect, AVVideoTransferFunctionKey,
+    AVVideoTransferFunction_ITU_R_709_2, AVVideoWidthKey, AVVideoYCbCrMatrixKey, AVVideoYCbCrMatrix_ITU_R_709_2,
 };
 use objc2_core_foundation::CFRetained;
 use objc2_core_media::{
@@ -51,10 +55,17 @@ const VIDEO_SCALE: i32 = 90_000;
 const AAC: i64 = u32::from_be_bytes(*b"aac ") as i64;
 /// Audio a busy encoder has not taken yet is kept this long before the oldest is dropped.
 const MAX_PENDING_FRAMES: u64 = crate::audio::RATE as u64 * 10;
+/// An offline writer (an export) waits once this much audio is queued, and drops none.
+const OFFLINE_PENDING_FRAMES: u64 = crate::audio::RATE as u64;
+/// How long an offline writer waits for an encoder that takes nothing before it gives up.
+const OFFLINE_STALL: Duration = Duration::from_secs(30);
 
 /// Bits per pixel per frame of the recording, for screen content at the quality the design asks
 /// for ("crisp text"); HEVC needs about two thirds of H.264's rate for the same picture.
 fn bit_rate(spec: &WriterSpec) -> i64 {
+    if let Some(bits) = spec.bits_per_second {
+        return bits.max(1) as i64;
+    }
     let bpp = match spec.codec {
         VideoCodec::H264 => 0.08,
         VideoCodec::Hevc => 0.05,
@@ -81,6 +92,9 @@ pub(crate) struct MacWriter {
     last: Option<(CFRetained<CVPixelBuffer>, u64)>,
     /// One frame's length at the take's frame rate.
     frame_ns: u64,
+    /// An export: audio waits instead of being dropped, and a writer dropped unfinished cancels.
+    offline: bool,
+    path: std::path::PathBuf,
 }
 
 // SAFETY: AVAssetWriter and its inputs may be used from any thread as long as calls are not
@@ -119,8 +133,14 @@ impl MacWriter {
             let file_type = constant(AVFileTypeMPEG4, "AVFileTypeMPEG4")?;
             let writer = AVAssetWriter::assetWriterWithURL_fileType_error(&url, file_type)
                 .map_err(|e| RecordError::Encoder(describe(&e)))?;
-            writer.setMovieFragmentInterval(time(spec.fragment_interval_ms * 1_000_000, 1000));
-            writer.setShouldOptimizeForNetworkUse(false);
+            if spec.offline {
+                // An export is finished in one go: its index goes to the front, so a browser
+                // starts playing before the whole file has arrived, as the other exports do.
+                writer.setShouldOptimizeForNetworkUse(true);
+            } else {
+                writer.setMovieFragmentInterval(time(spec.fragment_interval_ms * 1_000_000, 1000));
+                writer.setShouldOptimizeForNetworkUse(false);
+            }
 
             let codec = match spec.codec {
                 VideoCodec::H264 => constant(AVVideoCodecTypeH264, "H.264")?,
@@ -166,7 +186,7 @@ impl MacWriter {
                     any(constant(AVVideoYCbCrMatrix_ITU_R_709_2, "BT.709 matrix")?.retain()),
                 ),
             ]);
-            let settings = dict(&[
+            let mut settings = vec![
                 (constant(AVVideoCodecKey, "AVVideoCodecKey")?, any(codec.retain())),
                 (constant(AVVideoWidthKey, "AVVideoWidthKey")?, int(spec.size.width as i64)),
                 (constant(AVVideoHeightKey, "AVVideoHeightKey")?, int(spec.size.height as i64)),
@@ -175,7 +195,16 @@ impl MacWriter {
                     constant(AVVideoCompressionPropertiesKey, "AVVideoCompressionPropertiesKey")?,
                     any(dict(&compression)),
                 ),
-            ]);
+            ];
+            if spec.offline {
+                // An export hands over the decoder's pictures at the recording's size; a smaller
+                // export is scaled here, by the encoder's own scaler.
+                settings.push((
+                    constant(AVVideoScalingModeKey, "AVVideoScalingModeKey")?,
+                    any(constant(AVVideoScalingModeResizeAspect, "resize aspect")?.retain()),
+                ));
+            }
+            let settings = dict(&settings);
             let video_type = constant(AVMediaTypeVideo, "AVMediaTypeVideo")?;
             if !writer.canApplyOutputSettings_forMediaType(Some(&settings), video_type) {
                 return Err(RecordError::Encoder(format!(
@@ -259,6 +288,8 @@ impl MacWriter {
                 finished: false,
                 last: None,
                 frame_ns: 1_000_000_000 / spec.fps.max(1) as u64,
+                offline: spec.offline,
+                path: spec.path.clone(),
             })
         }
     }
@@ -404,8 +435,21 @@ impl TakeWriter for MacWriter {
             return Err(RecordError::Encoder(reason));
         }
         self.pending[track].push_back((position, samples.to_vec()));
-        let queued: u64 = self.pending[track].iter().map(|(_, s)| s.len() as u64 / 2).sum();
-        if queued > MAX_PENDING_FRAMES {
+        let queued = |pending: &VecDeque<(u64, Vec<f32>)>| pending.iter().map(|(_, s)| s.len() as u64 / 2).sum::<u64>();
+        if self.offline {
+            // An export loses no sound: it waits for the encoder instead.
+            let deadline = Instant::now() + OFFLINE_STALL;
+            self.drain(track)?;
+            while queued(&self.pending[track]) > OFFLINE_PENDING_FRAMES {
+                if Instant::now() >= deadline {
+                    return Err(RecordError::Encoder("the audio encoder stopped taking sound".into()));
+                }
+                std::thread::sleep(Duration::from_millis(1));
+                self.drain(track)?;
+            }
+            return Ok(());
+        }
+        if queued(&self.pending[track]) > MAX_PENDING_FRAMES {
             if let Some((_, old)) = self.pending[track].pop_front() {
                 self.dropped_audio_frames += old.len() as u64 / 2;
             }
@@ -422,8 +466,9 @@ impl TakeWriter for MacWriter {
             return Ok(());
         }
         self.finished = true;
-        // Let the encoders take what is still queued, for up to two seconds.
-        let deadline = Instant::now() + Duration::from_secs(2);
+        // Let the encoders take what is still queued, for up to two seconds; an export loses no
+        // sound, so it waits as long as the encoder keeps taking it.
+        let deadline = Instant::now() + if self.offline { OFFLINE_STALL } else { Duration::from_secs(2) };
         while self.pending.iter().any(|q| !q.is_empty()) && Instant::now() < deadline {
             for track in 0..self.audio.len() {
                 self.drain(track)?;
@@ -433,6 +478,9 @@ impl TakeWriter for MacWriter {
         if let Some(reason) = self.failed() {
             return Err(RecordError::Encoder(reason));
         }
+        if self.offline && self.pending.iter().any(|q| !q.is_empty()) {
+            return Err(RecordError::Encoder("the audio encoder stopped taking sound".into()));
+        }
         // A still screen sends no frames, so the video track would end with the last change
         // while the sound and the take go on: `endSessionAtSourceTime` does not stretch the last
         // frame. The last frame goes in once more, one frame before the end, so the picture
@@ -440,7 +488,7 @@ impl TakeWriter for MacWriter {
         if let Some((buffer, at)) = self.last.take() {
             let again = end_ns.saturating_sub(self.frame_ns);
             if again > at {
-                let deadline = Instant::now() + Duration::from_secs(1);
+                let deadline = Instant::now() + if self.offline { OFFLINE_STALL } else { Duration::from_secs(1) };
                 // SAFETY: reading the input's readiness.
                 while !unsafe { self.video.isReadyForMoreMediaData() } && Instant::now() < deadline {
                     std::thread::sleep(Duration::from_millis(2));
@@ -472,6 +520,31 @@ impl TakeWriter for MacWriter {
         match unsafe { self.writer.status() } {
             AVAssetWriterStatus::Completed => Ok(()),
             _ => Err(RecordError::Encoder(self.failed().unwrap_or_else(|| "the file could not be finished".into()))),
+        }
+    }
+}
+
+impl Drop for MacWriter {
+    fn drop(&mut self) {
+        if !self.offline {
+            return;
+        }
+        // SAFETY: reading the status, and cancelling a writer that is still writing; the call
+        // blocks until it stops and removes what it wrote.
+        unsafe {
+            if !self.finished && self.writer.status() == AVAssetWriterStatus::Writing {
+                self.writer.cancelWriting();
+            }
+        }
+        // Moving the index to the front writes the file again as `<name>.sb-…` next to it; a
+        // failed or cancelled move can leave that behind.
+        let (Some(dir), Some(name)) = (self.path.parent(), self.path.file_name()) else { return };
+        let prefix = format!("{}.sb-", name.to_string_lossy());
+        let Ok(entries) = std::fs::read_dir(dir) else { return };
+        for entry in entries.flatten() {
+            if entry.file_name().to_string_lossy().starts_with(&prefix) {
+                let _ = std::fs::remove_file(entry.path());
+            }
         }
     }
 }

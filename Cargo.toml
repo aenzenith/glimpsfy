@@ -7,6 +7,8 @@ members = [
     "crates/upload",
     "crates/history",
     "crates/annotate",
+    "crates/models",
+    "crates/speech",
     "src-tauri",
 ]
 
@@ -25,6 +27,8 @@ glimpsfy-ocr = { path = "crates/ocr" }
 glimpsfy-upload = { path = "crates/upload" }
 glimpsfy-history = { path = "crates/history" }
 glimpsfy-annotate = { path = "crates/annotate" }
+glimpsfy-models = { path = "crates/models" }
+glimpsfy-speech = { path = "crates/speech" }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -64,3 +68,14 @@ opt-level = 3
 opt-level = 3
 [profile.dev.package.adler2]
 opt-level = 3
+# Speech to text (`crates/speech`) resamples and measures the whole sound of a recording around
+# whisper.cpp.
+[profile.dev.package.glimpsfy-speech]
+opt-level = 3
+# whisper-rs-sys's build script compiles whisper.cpp with CMake. When the script itself is built
+# with debug assertions it picks RelWithDebInfo (-O2 -g) and turns on WHISPER_DEBUG, which formats
+# a trace line for every decoded token; without them it builds Release (-O3), as a release build
+# does. On the CPU that reads 87 s of speech in 13.1 s instead of 14.9 s.
+[profile.dev.package.whisper-rs-sys]
+opt-level = 3
+debug-assertions = false

@@ -8,9 +8,11 @@
 //!   parts (the stream, the writer, the Trash, the clock) are traits, so the policy can be tested
 //!   without a screen.
 //! - [`files`] names files, never replaces one and checks free space; [`export`] writes MP4 and
-//!   GIF files from a finished take ([`gif`] is the pure-Rust GIF encoder).
-//! - [`platform`] holds the system's side: `AVAssetWriter`, `AVAssetReader`, the devices, the
-//!   microphone fallback and the Trash on macOS. Other platforms answer `NotImplemented`.
+//!   GIF files from a finished take ([`gif`] is the pure-Rust GIF encoder), and [`cuts`] says
+//!   which parts of it an export with cuts keeps.
+//! - [`platform`] holds the system's side: `AVAssetWriter` and `AVAssetReader` on macOS, Media
+//!   Foundation's sink writer and source reader on Windows, GStreamer on Linux, and on each the
+//!   devices and the Trash.
 //!
 //! # Threads
 //!
@@ -25,6 +27,7 @@ use glimpsfy_capture::{CaptureError, MicrophoneSource, PhysicalSize, StreamTarge
 use serde::{Deserialize, Serialize};
 
 pub mod audio;
+pub mod cuts;
 pub mod devices;
 pub mod export;
 pub mod files;
@@ -439,6 +442,11 @@ pub struct ExportOptions {
     pub audio: ExportAudio,
     #[serde(default)]
     pub purpose: ExportPurpose,
+    /// The ranges taken out of the trimmed part (filler words, silences), in the recording's
+    /// time; they may be unsorted and overlap. Only the exported file leaves them out: the
+    /// recording itself is never changed.
+    #[serde(default)]
+    pub cuts: Vec<TrimRange>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -446,6 +454,7 @@ pub struct ExportOptions {
 pub struct ExportResult {
     pub recording_id: RecordingId,
     pub path: PathBuf,
+    /// The length of the file: the sum of the kept parts.
     pub duration_ms: u64,
     pub size: PhysicalSize,
     pub file_bytes: u64,
@@ -453,6 +462,11 @@ pub struct ExportResult {
     pub reencoded: bool,
     /// The part that was really exported: a pass-through trim starts at a keyframe.
     pub trim: TrimRange,
+    /// The parts of the recording the file holds, in order, in the recording's time: the trim
+    /// alone without cuts, and with cuts the parts between them, whose edges moved to the
+    /// quietest moment nearby.
+    #[serde(default)]
+    pub kept: Vec<TrimRange>,
 }
 
 /// How a microphone or a camera is connected.

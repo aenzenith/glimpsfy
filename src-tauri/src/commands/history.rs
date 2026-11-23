@@ -148,6 +148,11 @@ fn light(mut entry: Entry) -> Entry {
 }
 
 fn changed(app: &AppHandle, change: HistoryChanged) {
+    // Every removal (Delete, the retention sweep) passes here, so a removed recording's
+    // transcript goes with it and no text of it stays on disk.
+    if let HistoryChanged::Removed { ids } = &change {
+        crate::recording::transcript::forget_entries(app, ids);
+    }
     let _ = app.emit(events::CHANGED, change);
 }
 

@@ -17,12 +17,27 @@ concurrency:
 jobs:
   check:
     runs-on: macos-latest
+    env:
+      # As in release.yml: whisper.cpp is built for a baseline CPU, never for the runner's own.
+      GGML_NATIVE: "OFF"
     steps:
       - uses: actions/checkout@v5
 
       # rust-toolchain.toml pins the channel and adds rustfmt and clippy.
       - name: Rust toolchain
         run: rustup show active-toolchain
+
+      # whisper.cpp (crates/speech) is built with CMake, and bindgen loads libclang for its Rust
+      # bindings. The macOS and Windows images have both (LLVM in C:\Program Files\LLVM); Linux
+      # gets them from packages.txt. The step fails early when an image drops one of them.
+      - name: Speech build tools
+        shell: bash
+        run: |
+          cmake --version
+          if [ "$RUNNER_OS" = Windows ]; then
+            echo 'LIBCLANG_PATH=C:\Program Files\LLVM\bin' >> "$GITHUB_ENV"
+            test -f '/c/Program Files/LLVM/bin/libclang.dll'
+          fi
 
       - uses: Swatinem/rust-cache@v2
 

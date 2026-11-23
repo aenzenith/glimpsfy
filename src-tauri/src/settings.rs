@@ -664,6 +664,14 @@ pub struct Recording {
     /// Whether drawings on a take fade 3 s after the last stroke. The Presentation card sets it,
     /// and the next take starts with the same choice.
     pub ink_fades: bool,
+    /// The language the trim window's text panel reads a recording's speech in, as the speech
+    /// model's code ("tr", "en"…), or "auto" to let the model detect it.
+    pub transcript_language: String,
+    /// A silence counts as long from this many milliseconds: 500, 1000 or 2000 (the Shorten
+    /// menu of the text panel).
+    pub silence_threshold_ms: u32,
+    /// Whether Shorten leaves 0.3 s of a long silence (`true`) or cuts it whole.
+    pub silence_shorten: bool,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
@@ -694,6 +702,9 @@ impl Default for Recording {
             gif_fps: 15,
             gif_width: Some(640),
             ink_fades: false,
+            transcript_language: "auto".into(),
+            silence_threshold_ms: 1000,
+            silence_shorten: true,
             extra: Map::new(),
         }
     }

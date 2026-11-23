@@ -7,8 +7,14 @@
 // options and handles lock and the footer shows the progress; closing the window loses nothing,
 // because the export runs on in the core. Discard (⌘⌫) asks, then moves the take to the Trash and
 // closes the window. A new recording (`record://trim`) replaces the one on show.
+//
+// The Text panel on the left (design row 22, Y1) cuts the recording by its speech. The window owns
+// the cuts: it keeps them with the undo stack (⌘Z, ⇧⌘Z), saves them with the transcript, plays
+// past them (Space skips what was cut, as the file will) and hands them to the export; the
+// recording itself never changes. Below 1280 points of width the panel closes, and a toolbar
+// button opens it again.
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { computed, onMounted, onUnmounted, reactive, ref, shallowRef, watch } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, shallowRef, watch } from "vue";
 
 import ConfirmDialog from "../components/ConfirmDialog.vue";
 import GIcon from "../components/GIcon.vue";
@@ -25,8 +31,10 @@ import {
   type ExportPurpose,
   type ExportResult,
   type RecordingInfo,
+  type TrimRange,
 } from "../lib/api/record";
 import { settings_get } from "../lib/api/settings";
+import { transcript_save_cuts } from "../lib/api/transcript";
 import {
   onUploadDone,
   onUploadFailed,
@@ -44,12 +52,14 @@ import type { Settings } from "../lib/settings";
 import FirstUploadDialog, { type DialogFile } from "../upload/FirstUploadDialog.vue";
 import { prepareUpload } from "../upload/flow";
 import { doneText, failureText, issueText } from "../upload/text";
-import { exportFormat, exportOptions, initialChoice, keptSources, withEdge, type ExportChoice } from "./choice";
+import { exportFormat, exportOptions, initialChoice, keptSources, MIN_KEPT_MS, trimOf, withEdge, type ExportChoice } from "./choice";
+import { CutHistory, keptMs as keptOf, playableFrom, sameCuts } from "./cuts";
 import { estimateExport } from "./estimate";
 import ExportPanel from "./ExportPanel.vue";
 import { codeOf, createdAt, errorText, tenths, type ErrorPlace } from "./format";
 import { clamp } from "./geometry";
 import Timeline from "./Timeline.vue";
+import Transcript from "./Transcript.vue";
 
 const info = shallowRef<RecordingInfo | null>(null);
 const loaded = ref(false);
@@ -61,6 +71,21 @@ const playing = ref(false);
 const loop = ref(false);
 const muted = ref(false);
 const playFailed = ref(false);
+
+/** The parts cut from the text, in source milliseconds, sorted and apart. */
+const cuts = shallowRef<TrimRange[]>([]);
+const history = new CutHistory();
+/** The cut playback goes through instead of skipping: the one "Play from here" started in. */
+let exempt: TrimRange | null = null;
+/** How far the speech is read while the Text panel reads it, for the timeline. */
+const transcribedMs = ref<number | null>(null);
+/** The gap whose menu is open, outlined on the timeline. */
+const pickedCut = shallowRef<TrimRange | null>(null);
+const textPanel = ref<InstanceType<typeof Transcript> | null>(null);
+
+const WIDE = typeof window !== "undefined" ? window.matchMedia("(min-width: 1280px)") : null;
+const wide = ref(WIDE?.matches ?? true);
+const panelOpen = ref(wide.value);
 
 const choice = reactive<ExportChoice>({
   format: "mp4",
@@ -102,7 +127,7 @@ const stops: (() => void)[] = [];
 
 const result = computed(() => info.value?.result ?? null);
 const totalMs = computed(() => result.value?.durationMs ?? 0);
-const keptMs = computed(() => range.endMs - range.startMs);
+const keptMs = computed(() => keptOf(cuts.value, range));
 const locked = computed(() => job.value !== null);
 const aspect = computed(() => (result.value ? result.value.size.width / Math.max(1, result.value.size.height) : 16 / 9));
 
@@ -158,8 +183,10 @@ const dialogFile = computed<DialogFile | null>(() => {
   const e = estimate.value;
   if (!i || !e) return null;
   const base = i.result.path.split(/[\\/]/).pop()?.replace(/\.[^.]+$/, "") || t("record.trim.title");
+  // The core names a trimmed or cut export this way (`wanted_path` in crates/record/src/export.rs).
+  const trimmed = trimOf(range, i.result.durationMs) !== null || cuts.value.length > 0;
   return {
-    name: `${base}.${choice.format}`,
+    name: `${base}${trimmed ? " (trimmed)" : ""}.${choice.format}`,
     thumbnail: recordingFrameUrl(i.result.id, range.startMs, 160),
     width: e.width,
     height: e.height,
@@ -172,6 +199,12 @@ const dialogFile = computed<DialogFile | null>(() => {
 
 function open(next: RecordingInfo): void {
   video.value?.pause();
+  flushSave();
+  cuts.value = [];
+  history.clear();
+  exempt = null;
+  transcribedMs.value = null;
+  pickedCut.value = null;
   info.value = next;
   loaded.value = true;
   range.startMs = 0;
@@ -199,7 +232,14 @@ function seekTo(ms: number): void {
 function followPlayback(): void {
   const v = video.value;
   if (!v) return;
-  const ms = v.currentTime * 1000;
+  let ms = v.currentTime * 1000;
+  if (exempt && (ms < exempt.startMs - 100 || ms >= exempt.endMs)) exempt = null;
+  // Playback jumps over what was cut, as the exported file will.
+  const past = ms < range.endMs ? playableFrom(cuts.value, ms, exempt) : ms;
+  if (past !== ms) {
+    ms = past;
+    if (ms < range.endMs) v.currentTime = ms / 1000;
+  }
   if (ms >= range.endMs) {
     if (loop.value) seekTo(range.startMs);
     else {
@@ -217,7 +257,19 @@ function togglePlay(): void {
     v.pause();
     return;
   }
+  exempt = null;
   if (playMs.value < range.startMs || playMs.value >= range.endMs - 50) seekTo(range.startMs);
+  const from = playableFrom(cuts.value, playMs.value);
+  if (from !== playMs.value) seekTo(from >= range.endMs - 50 ? range.startMs : from);
+  v.play().catch(playRefused);
+}
+
+/** "Play from here" in the Text panel: from a word, or from inside a cut, which then plays too. */
+function playFrom(ms: number, through: TrimRange | null): void {
+  const v = video.value;
+  if (!v) return;
+  seekTo(clamp(ms, range.startMs, range.endMs));
+  exempt = through;
   v.play().catch(playRefused);
 }
 
@@ -279,6 +331,72 @@ watch(
   },
 );
 
+// --------------------------------------------------------------------------------- cuts
+
+let saveTimer = 0;
+let pendingSave: { id: string; cuts: TrimRange[] } | null = null;
+
+/** One edit of the Text panel, as one step of the undo stack. A cut that would leave less than
+ * half a second has nothing left to export, so it is not made. */
+function commit(next: TrimRange[]): void {
+  if (locked.value || sameCuts(next, cuts.value)) return;
+  if (keptOf(next, range) < Math.min(MIN_KEPT_MS, keptMs.value)) return;
+  history.push(cuts.value);
+  cuts.value = next;
+  scheduleSave();
+}
+
+function undo(): void {
+  const before = locked.value ? null : history.undo(cuts.value);
+  if (!before) return;
+  cuts.value = before;
+  scheduleSave();
+}
+
+function redo(): void {
+  const after = locked.value ? null : history.redo(cuts.value);
+  if (!after) return;
+  cuts.value = after;
+  scheduleSave();
+}
+
+/** The cuts are saved with the transcript a moment after the last change, so the recording opens
+ * with them again. */
+function scheduleSave(): void {
+  const i = info.value;
+  if (!i) return;
+  pendingSave = { id: i.result.id, cuts: cuts.value };
+  window.clearTimeout(saveTimer);
+  saveTimer = window.setTimeout(flushSave, 600);
+}
+
+function flushSave(): void {
+  window.clearTimeout(saveTimer);
+  const p = pendingSave;
+  pendingSave = null;
+  if (p) transcript_save_cuts(p.id, p.cuts).catch((error) => console.warn("The cuts were not saved.", error));
+}
+
+/** A transcript arrived: a recording opens with its saved cuts, and cuts made before the speech
+ * was read again are kept and saved with the new transcript. */
+function transcriptLoaded(id: string, saved: TrimRange[]): void {
+  if (info.value?.result.id !== id) return;
+  if (!cuts.value.length) {
+    cuts.value = saved;
+    history.clear();
+  } else if (!sameCuts(saved, cuts.value)) scheduleSave();
+}
+
+function openSearch(): void {
+  panelOpen.value = true;
+  void nextTick(() => textPanel.value?.openSearch());
+}
+
+function onWidth(event: MediaQueryListEvent): void {
+  wide.value = event.matches;
+  panelOpen.value = event.matches;
+}
+
 // ------------------------------------------------------------------------------- export
 
 function fail(error: unknown, place: ErrorPlace): void {
@@ -297,7 +415,7 @@ async function runExport(purpose: ExportPurpose): Promise<ExportResult | null> {
   const mine = ++token;
   job.value = { token: mine, recordingId: i.result.id, format: choice.format, fraction: 0, remainingMs: null, adopted: false };
   try {
-    return await record_export(i.result.id, exportOptions(choice, i, range, purpose));
+    return await record_export(i.result.id, exportOptions(choice, i, range, purpose, cuts.value));
   } catch (error) {
     if (info.value?.result.id === i.result.id) fail(error, "export");
     return null;
@@ -439,9 +557,22 @@ function onKeyDown(event: KeyboardEvent): void {
   if (event.defaultPrevented || confirming.value || asking.value || !info.value) return;
   const target = event.target as Element | null;
   const mod = event.metaKey || event.ctrlKey;
+  const inField = !!target?.closest("input, select, textarea");
+  // ⇧⌘Z puts back the cut ⌘Z took away; inside a field both belong to the field's own text.
+  if (mod && !event.altKey && event.shiftKey && event.key.toLowerCase() === "z" && !inField) {
+    event.preventDefault();
+    redo();
+    return;
+  }
   if (mod && !event.altKey && !event.shiftKey) {
     const key = event.key.toLowerCase();
-    const run: Record<string, () => void> = { s: save, c: copy, u: () => void startUpload(), backspace: askDiscard };
+    // ⌘C copies the words selected in the Text panel while the panel has the focus.
+    if (key === "c" && textPanel.value?.copySelection(target)) {
+      event.preventDefault();
+      return;
+    }
+    const run: Record<string, () => void> = { s: save, u: () => void startUpload(), backspace: askDiscard, f: openSearch };
+    if (!inField) run.z = undo;
     const action = run[key];
     if (!action) return;
     // ⌘C copies text the user selected in a field instead of the recording.
@@ -450,7 +581,7 @@ function onKeyDown(event: KeyboardEvent): void {
     action();
     return;
   }
-  if (mod || event.altKey || target?.closest("input, select, textarea")) return;
+  if (mod || event.altKey || inField) return;
   const onButton = !!target?.closest("button");
   const ownsArrows = !!target?.closest('[role="slider"], [role="radiogroup"]');
   switch (event.key) {
@@ -478,6 +609,14 @@ function onKeyDown(event: KeyboardEvent): void {
       if (ownsArrows) return;
       step(1);
       break;
+    case "Backspace":
+    case "Delete":
+      // ⌫ cuts the words selected in the Text panel.
+      if (!textPanel.value?.cutSelection()) return;
+      break;
+    case "Escape":
+      if (!textPanel.value?.escape()) return;
+      break;
     default:
       return;
   }
@@ -500,6 +639,8 @@ watch(stageEl, (el, old) => {
 
 onMounted(async () => {
   window.addEventListener("keydown", onKeyDown);
+  window.addEventListener("pagehide", flushSave);
+  WIDE?.addEventListener("change", onWidth);
   let heard = false;
   try {
     stops.push(
@@ -532,6 +673,9 @@ onMounted(async () => {
 
 onUnmounted(() => {
   window.removeEventListener("keydown", onKeyDown);
+  window.removeEventListener("pagehide", flushSave);
+  WIDE?.removeEventListener("change", onWidth);
+  flushSave();
   cancelAnimationFrame(follow);
   window.clearTimeout(adoptTimer);
   stageObserver.disconnect();
@@ -542,6 +686,17 @@ onUnmounted(() => {
 <template>
   <div class="r-trimwin">
     <header class="g-toolbar">
+      <TipWrap v-if="info && !wide" :tip="panelOpen ? t('record.transcript.hide') : t('record.transcript.show')" side="below" align="start">
+        <button
+          type="button"
+          class="g-btn"
+          :aria-label="panelOpen ? t('record.transcript.hide') : t('record.transcript.show')"
+          :aria-pressed="panelOpen"
+          @click="panelOpen = !panelOpen"
+        >
+          <GIcon name="sidebar" />
+        </button>
+      </TipWrap>
       <h1 class="g-window-title">{{ t("record.trim.title") }}</h1>
       <span class="r-subtitle">{{ subtitle }}</span>
       <span class="g-spacer" />
@@ -553,6 +708,23 @@ onUnmounted(() => {
     </header>
 
     <div v-if="info && result && estimate" class="r-body">
+      <Transcript
+        v-show="panelOpen"
+        ref="textPanel"
+        :info="info"
+        :cuts="cuts"
+        :play-ms="playMs"
+        :kept-ms="keptMs"
+        :settings="settings"
+        :locked="locked"
+        @edit="commit"
+        @loaded="transcriptLoaded"
+        @seek="(ms) => seekTo(clamp(ms, range.startMs, range.endMs))"
+        @play="playFrom"
+        @transcribed="(ms) => (transcribedMs = ms)"
+        @pick="(cut) => (pickedCut = cut)"
+        @settings="(next) => (settings = next)"
+      />
       <div class="r-stagecol">
         <div ref="stageEl" class="r-player">
           <div class="r-video" :style="videoBox">
@@ -609,8 +781,12 @@ onUnmounted(() => {
           :aspect="aspect"
           :locked="locked"
           :encoded="job?.fraction ?? 0"
+          :cuts="cuts"
+          :transcribed-ms="transcribedMs"
+          :picked="pickedCut"
           @range="setRange"
           @seek="seekTo"
+          @cutmenu="(cut, x, y) => textPanel?.cutMenu(cut, x, y)"
         />
       </div>
 

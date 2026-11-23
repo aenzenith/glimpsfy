@@ -202,7 +202,8 @@ function formatKey(event: KeyboardEvent): void {
 .r-export-sec > .g-group + .g-group { margin-top: var(--space-12); }
 .r-export-sec > .g-help { margin-top: var(--space-8); }
 .r-export-est { margin-top: auto; }
-.r-switch-label { display: inline-flex; align-items: center; gap: var(--space-8); }
+/* `.g-form-label > label` makes a label a block; the icon and its words stay one row with a gap. */
+.g-form-label > .r-switch-label { display: inline-flex; align-items: center; gap: var(--space-8); }
 .r-switch-label > g-icon { flex: none; color: var(--win-text-2); }
 .r-subtitle { font: var(--type-body); color: var(--win-text-2); white-space: nowrap; font-variant-numeric: tabular-nums; }
 </style>

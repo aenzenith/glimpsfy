@@ -5,7 +5,7 @@
 use std::path::Path;
 use std::sync::atomic::AtomicBool;
 
-use glimpsfy_capture::{Frame, HostTime, PhysicalSize};
+use glimpsfy_capture::{Frame, HostTime, PhysicalSize, VideoFrame};
 
 use crate::export::Mp4Plan;
 use crate::session::{TakeWriter, WriterSpec};
@@ -87,6 +87,35 @@ pub fn decode_video(
         let _ = (source, trim, size, cancel, each);
         Err(RecordError::NotImplemented("decoding recordings on this platform"))
     }
+}
+
+/// Decodes the video of `source` within `span` into frames a writer of `size` takes as they are,
+/// each with its time from the span's start: native `CVPixelBuffer`s at the file's size on macOS
+/// (the writer scales them), RGBA frames at `size` elsewhere. As in [`decode_video`], the frame on
+/// screen at the span's start goes out at time 0 when it comes from before the span.
+pub fn decode_frames(
+    source: &Path,
+    span: TrimRange,
+    size: PhysicalSize,
+    cancel: &AtomicBool,
+    each: &mut dyn FnMut(VideoFrame, u64) -> Result<()>,
+) -> Result<()> {
+    sys::reader::decode_frames(source, span, size, cancel, each)
+}
+
+/// Decodes audio track `track` of `source` (an index among its audio tracks, as in
+/// [`MediaInfo::audio`]) within `span` to interleaved 48 kHz stereo float, and hands it to `each`
+/// buffer by buffer with each buffer's frame position from the span's start. It streams, so a
+/// whole recording can be read (a span reaching past the end reads to the end) without holding
+/// it in memory; buffers that follow each other are contiguous.
+pub fn decode_audio(
+    source: &Path,
+    track: usize,
+    span: TrimRange,
+    cancel: &AtomicBool,
+    each: &mut dyn FnMut(&[f32], u64) -> Result<()>,
+) -> Result<()> {
+    sys::reader::decode_audio(source, track, span, cancel, each)
 }
 
 /// The frame shown at `at_ms`, at most `max_height` pixels high, for the trim timeline and the

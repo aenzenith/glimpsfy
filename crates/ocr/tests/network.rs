@@ -1,7 +1,8 @@
-//! Text recognition runs on the machine. The only network traffic the OCR area may cause is the
-//! PP-OCR model download a user asks for, and only to the hosts of the reviewed model table. This
-//! test reads the area's sources and fails when a second way out appears: another HTTP client, a
-//! socket, a browser request in the text layer, or another caller of the download.
+//! Text recognition and speech to text run on the machine. The only network traffic the OCR and
+//! speech areas may cause is a model download a user asks for (a PP-OCR model, the speech model),
+//! and only to the hosts of the reviewed model tables. This test reads the areas' sources and
+//! fails when a second way out appears: another HTTP client, a socket, a browser request in the
+//! text layer or the trim window's text panel, or another caller of the download.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -46,25 +47,40 @@ fn rel(path: &Path) -> String {
 fn only_the_model_download_reaches_the_network() {
     let root = repo();
     let mut rust = Vec::new();
-    files(&root.join("crates/ocr/src"), &["rs"], &mut rust);
-    rust.push(root.join("src-tauri/src/commands/ocr.rs"));
+    for dir in ["crates/models/src", "crates/ocr/src", "crates/speech/src"] {
+        files(&root.join(dir), &["rs"], &mut rust);
+    }
+    for file in [
+        "src-tauri/src/commands/ocr.rs",
+        "src-tauri/src/commands/transcript.rs",
+        "src-tauri/src/recording/transcript.rs",
+    ] {
+        rust.push(root.join(file));
+    }
     let mut web = Vec::new();
     files(&root.join("src/ocr"), &["ts", "vue"], &mut web);
-    web.push(root.join("src/lib/api/ocr.ts"));
-    assert!(rust.len() > 5, "the OCR sources were not found from {}", root.display());
+    for file in
+        ["src/lib/api/ocr.ts", "src/lib/api/transcript.ts", "src/recorder/Transcript.vue", "src/recorder/cuts.ts"]
+    {
+        web.push(root.join(file));
+    }
+    assert!(rust.len() > 5, "the OCR and speech sources were not found from {}", root.display());
+    for path in rust.iter().chain(&web) {
+        assert!(path.is_file(), "{} is missing; the test must read every file it names", rel(path));
+    }
 
     let rust_lines = code_lines(&rust);
     let mut problems = Vec::new();
 
     // 1. The HTTP client is used in the download module only, and there inside `fetch` only.
-    let download = "crates/ocr/src/models/download.rs";
+    let download = "crates/models/src/download.rs";
     for (path, n, line) in &rust_lines {
         if line.contains("ureq") && rel(path) != download {
             problems.push(format!("{}:{n} uses the HTTP client outside {download}", rel(path)));
         }
     }
     let source = fs::read_to_string(root.join(download)).expect("the download module exists");
-    let body_start = source.find("pub(super) fn fetch(").expect("the download module has `fetch`");
+    let body_start = source.find("pub(crate) fn fetch(").expect("the download module has `fetch`");
     let body_end = source[body_start..].find("\n}\n").map(|i| body_start + i).expect("`fetch` ends");
     for (offset, _) in source.match_indices("ureq") {
         if offset < body_start || offset > body_end {
@@ -72,21 +88,35 @@ fn only_the_model_download_reaches_the_network() {
         }
     }
 
-    // 2. `fetch` has one caller, `ModelStore::download`, and the app calls that from one
-    //    command, the one behind the user's Download button.
+    // 2. `fetch` has one caller, `glimpsfy_models::download`; that has one caller per table (the
+    //    PP-OCR models, the speech model); and the app starts each from one command, the one
+    //    behind the user's Download button (Settings, and for speech the trim window's panel).
     let fetch_calls: Vec<_> = rust_lines.iter().filter(|(_, _, l)| l.contains("download::fetch")).collect();
-    if fetch_calls.len() != 1 || rel(&fetch_calls[0].0) != "crates/ocr/src/models/mod.rs" {
-        problems.push(format!("`download::fetch` must have exactly one caller, in models/mod.rs: {fetch_calls:?}"));
+    if fetch_calls.len() != 1 || rel(&fetch_calls[0].0) != "crates/models/src/lib.rs" {
+        problems.push(format!("`download::fetch` must have exactly one caller, in crates/models: {fetch_calls:?}"));
+    }
+    let mut table_downloads: Vec<String> = rust_lines
+        .iter()
+        .filter(|(_, _, l)| l.contains("glimpsfy_models::download("))
+        .map(|(p, _, _)| rel(p))
+        .collect();
+    table_downloads.sort();
+    if table_downloads != ["crates/ocr/src/models/mod.rs", "crates/speech/src/model.rs"] {
+        problems.push(format!("each model table must start the download in one place: {table_downloads:?}"));
     }
     let mut app = Vec::new();
     files(&root.join("src-tauri/src"), &["rs"], &mut app);
-    let store_downloads: Vec<_> = code_lines(&app)
+    let mut store_downloads: Vec<String> = code_lines(&app)
         .into_iter()
         .filter(|(_, _, l)| l.contains(".download(&") && l.contains("store"))
-        .map(|(p, n, _)| format!("{}:{n}", rel(&p)))
+        .map(|(p, _, _)| rel(&p))
         .collect();
-    if store_downloads.len() != 1 || !store_downloads[0].starts_with("src-tauri/src/commands/ocr.rs") {
-        problems.push(format!("the model download must be started from ocr_model_download only: {store_downloads:?}"));
+    store_downloads.sort();
+    if store_downloads != ["src-tauri/src/commands/ocr.rs", "src-tauri/src/commands/transcript.rs"] {
+        problems.push(format!(
+            "the model downloads must be started from ocr_model_download and transcript_model_download only: \
+             {store_downloads:?}"
+        ));
     }
 
     // 3. No other way out in the core: sockets, other HTTP clients, URL loading by the system.
@@ -126,7 +156,7 @@ fn only_the_model_download_reaches_the_network() {
 
     assert!(
         problems.is_empty(),
-        "the OCR area may reach the network only through the model download:\n{}",
+        "the OCR and speech areas may reach the network only through the model downloads:\n{}",
         problems.join("\n")
     );
 }

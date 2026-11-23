@@ -1,8 +1,9 @@
 // What the export panel holds, and how it becomes the `ExportOptions` of `record_export`: the
-// format with its options, which audio the MP4 keeps, and the trim.
+// format with its options, which audio the MP4 keeps, the trim and the cuts made from the text.
 
 import type { ExportFormat, ExportOptions, ExportPurpose, Mp4Quality, RecordingInfo, Resolution, TrimRange } from "../lib/api/record";
 import type { Settings } from "../lib/settings";
+import { cutsWithin } from "./cuts";
 import { GIF_WIDTHS } from "./estimate";
 
 export type ExportChoice = {
@@ -99,12 +100,19 @@ export function trimOf(range: TrimRange, totalMs: number): TrimRange | null {
   return range.startMs <= 0 && range.endMs >= totalMs ? null : { startMs: range.startMs, endMs: range.endMs };
 }
 
-export function exportOptions(choice: ExportChoice, info: RecordingInfo, range: TrimRange, purpose: ExportPurpose): ExportOptions {
+export function exportOptions(
+  choice: ExportChoice,
+  info: RecordingInfo,
+  range: TrimRange,
+  purpose: ExportPurpose,
+  cuts: readonly TrimRange[] = [],
+): ExportOptions {
   return {
     format: exportFormat(choice),
     trim: trimOf(range, info.result.durationMs),
     destination: null,
     audio: exportAudio(choice, info),
     purpose,
+    cuts: cutsWithin(cuts, range),
   };
 }

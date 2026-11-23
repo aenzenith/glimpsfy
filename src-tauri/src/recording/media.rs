@@ -265,6 +265,7 @@ pub fn trash(app: &AppHandle, id: &RecordingId) -> CommandResult<()> {
     if known.result.path.exists() {
         glimpsfy_record::files::SystemTrash.trash(&known.result.path)?;
     }
+    super::transcript::forget(app, &known);
     library(app).forget(&id.0);
     Ok(())
 }
@@ -326,8 +327,9 @@ fn run_export(
             crate::paths::cache_dir(app).map_err(|e| CommandError::new(ErrorCode::Io, e.to_string()))?.join("exports")
         }
     };
-    let wanted =
-        glimpsfy_record::export::wanted_path(&folder, &known.result.path, &options.format, options.trim.is_some());
+    // A file with cuts is a trimmed copy too, so it never takes the recording's own name.
+    let trimmed = options.trim.is_some() || !options.cuts.is_empty();
+    let wanted = glimpsfy_record::export::wanted_path(&folder, &known.result.path, &options.format, trimmed);
     let format = match options.format {
         ExportFormat::Mp4 { .. } => StartFormat::Mp4,
         ExportFormat::Gif { .. } => StartFormat::Gif,

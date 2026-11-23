@@ -29,6 +29,7 @@
 pub mod media;
 pub mod present;
 pub mod setup;
+pub mod transcript;
 
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -215,6 +216,7 @@ pub fn setup(app: &AppHandle) {
         ending: AtomicUsize::new(0),
         quitting: Mutex::new(None),
     });
+    transcript::setup(app);
     // A poster is read only in the run that wrote it, so an earlier run's posters serve no one.
     if let Some(dir) = poster_dir(app) {
         let started = std::time::SystemTime::now();

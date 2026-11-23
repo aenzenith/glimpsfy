@@ -4,10 +4,12 @@
 // handles and the playhead. The handles are sliders: drag them, or use ← and → (0.1 s, ⇧ 1 s),
 // Home and End; the kept part never falls under half a second. A press on the strip moves the
 // playhead inside the kept range. During an export the handles lock and the kept range fills with
-// iris as the encoder passes through it.
+// iris as the encoder passes through it. A part cut from the text shows as a striped dark gap (an
+// outline marks the one whose menu is open, and a right click on a gap opens its menu), and while
+// the speech is read, the part already read fills the waveform with iris.
 import { computed, onMounted, onUnmounted, ref, watch, watchPostEffect } from "vue";
 
-import { recordingFrameUrl, recordingWaveUrl } from "../lib/api/record";
+import { recordingFrameUrl, recordingWaveUrl, type TrimRange } from "../lib/api/record";
 import { t } from "../lib/i18n";
 import { withEdge } from "./choice";
 import { clock, tenths } from "./format";
@@ -27,8 +29,19 @@ const props = defineProps<{
   locked: boolean;
   /** How much of the kept range the export has encoded, from 0 to 1. */
   encoded: number;
+  /** The parts cut from the text, sorted and apart. */
+  cuts?: readonly TrimRange[];
+  /** How far the speech is read while it is read; `null` when nothing is read. */
+  transcribedMs?: number | null;
+  /** The gap whose menu is open. */
+  picked?: TrimRange | null;
 }>();
-const emit = defineEmits<{ range: [startMs: number, endMs: number]; seek: [ms: number] }>();
+const emit = defineEmits<{
+  range: [startMs: number, endMs: number];
+  seek: [ms: number];
+  /** A right click on a gap, at the pointer. */
+  cutmenu: [cut: TrimRange, x: number, y: number];
+}>();
 
 const THUMB_H = 52;
 const WAVE_STEP = 3;
@@ -52,6 +65,31 @@ let scrubbing = false;
 const X = (ms: number) => (props.totalMs > 0 ? (ms / props.totalMs) * width.value : 0);
 const xi = computed(() => X(props.startMs));
 const xo = computed(() => X(props.endMs));
+
+/** A cut wide enough for its stripes keeps them. A short cut of a long recording becomes a
+ * one-point line instead of vanishing, and lines that fall on the same point merge, so hundreds of
+ * cuts in a long take read as thin marks rather than one dark band. */
+const gaps = computed(() => {
+  const out: { key: number; left: number; width: number; thin: boolean }[] = [];
+  for (const c of props.cuts ?? []) {
+    const left = X(c.startMs);
+    const width = X(c.endMs) - left;
+    if (width >= 2) {
+      out.push({ key: c.startMs, left, width, thin: false });
+      continue;
+    }
+    const last = out[out.length - 1];
+    if (last && left - (last.left + last.width) < 1) continue;
+    out.push({ key: c.startMs, left: Math.floor(left), width: 1, thin: true });
+  }
+  return out;
+});
+const pickedBox = computed(() => {
+  const c = props.picked;
+  if (!c) return null;
+  const left = X(c.startMs);
+  return { left: `${left}px`, width: `${Math.max(4, X(c.endMs) - left)}px` };
+});
 
 // ------------------------------------------------------------------------------ the strips
 
@@ -183,6 +221,18 @@ function scrub(event: PointerEvent): void {
   if (scrubbing) seekAt(event.clientX);
 }
 
+/** A right click within 3 points of a gap opens that gap's menu. */
+function gapMenu(event: MouseEvent): void {
+  const list = props.cuts ?? [];
+  if (!list.length || !width.value) return;
+  const ms = msAt(event.clientX);
+  const slack = (3 / width.value) * props.totalMs;
+  const cut = list.find((c) => ms >= c.startMs - slack && ms <= c.endMs + slack);
+  if (!cut) return;
+  event.preventDefault();
+  emit("cutmenu", cut, event.clientX, event.clientY);
+}
+
 // --------------------------------------------------------------------------------- chips
 
 // The in and out chips sit centred on their handles and step aside when they would meet; the
@@ -246,7 +296,15 @@ const valueNow = (ms: number) => (ms / 1000).toFixed(1);
         <span v-if="tick.label" class="r-tick-label" :style="{ left: `${tick.x}px` }">{{ tick.label }}</span>
       </template>
     </div>
-    <div ref="track" class="r-tl-track" @pointerdown="press" @pointermove="scrub" @pointerup="scrubbing = false" @pointercancel="scrubbing = false">
+    <div
+      ref="track"
+      class="r-tl-track"
+      @pointerdown="press"
+      @pointermove="scrub"
+      @pointerup="scrubbing = false"
+      @pointercancel="scrubbing = false"
+      @contextmenu="gapMenu"
+    >
       <div class="r-tl-strip">
         <div v-for="thumb in thumbs" :key="thumb.key" class="r-tl-thumb" :style="{ width: `${thumb.width}px` }">
           <img
@@ -260,6 +318,7 @@ const valueNow = (ms: number) => (ms / 1000).toFixed(1);
         </div>
         <div class="r-tl-shade" :style="{ left: '0px', width: `${xi}px` }" />
         <div class="r-tl-shade" :style="{ left: `${xo}px`, right: '0px' }" />
+        <div v-for="gap in gaps" :key="gap.key" class="r-tl-cut" :data-thin="gap.thin ? '' : undefined" :style="{ left: `${gap.left}px`, width: `${gap.width}px` }" />
         <div class="r-tl-enc" :style="{ left: `${xi}px`, width: `${(xo - xi) * encoded}px` }" />
       </div>
       <div class="r-tl-wave">
@@ -268,9 +327,12 @@ const valueNow = (ms: number) => (ms / 1000).toFixed(1);
         </svg>
         <div class="r-tl-shade" :style="{ left: '0px', width: `${xi}px` }" />
         <div class="r-tl-shade" :style="{ left: `${xo}px`, right: '0px' }" />
+        <div v-for="gap in gaps" :key="gap.key" class="r-tl-cut" :data-thin="gap.thin ? '' : undefined" :style="{ left: `${gap.left}px`, width: `${gap.width}px` }" />
+        <div v-if="transcribedMs != null" class="r-tl-enc" :style="{ left: '0px', width: `${X(transcribedMs)}px` }" />
         <div class="r-tl-enc" :style="{ left: `${xi}px`, width: `${(xo - xi) * encoded}px` }" />
       </div>
       <div class="r-tl-range" :style="{ left: `${xi}px`, width: `${xo - xi}px` }" />
+      <div v-if="pickedBox" class="r-tl-gap" :style="pickedBox" />
       <button
         type="button"
         class="r-tl-handle"
@@ -332,6 +394,10 @@ const valueNow = (ms: number) => (ms / 1000).toFixed(1);
 .r-tl-wave rect { fill: var(--win-iris-text); }
 .r-tl-shade { position: absolute; top: 0; bottom: 0; background: var(--dim); pointer-events: none; }
 .r-tl-enc { position: absolute; top: 0; bottom: 0; background: var(--iris-soft); pointer-events: none; }
+/* A cut wears the dim of the trimmed ends with stripes, so it reads as gone but still there. */
+.r-tl-cut { position: absolute; top: 0; bottom: 0; background: repeating-linear-gradient(135deg, var(--dim) 0 2px, transparent 2px 5px), var(--dim); pointer-events: none; }
+.r-tl-cut[data-thin] { background: var(--dim); }
+.r-tl-gap { position: absolute; top: -3px; height: 94px; border-radius: 3px; box-shadow: 0 0 0 2px var(--iris); pointer-events: none; }
 .r-tl-range { position: absolute; top: 0; height: 88px; pointer-events: none; box-shadow: inset 0 2px 0 var(--iris), inset 0 -2px 0 var(--iris); }
 .r-tl-handle {
   position: absolute; top: 0; display: grid; place-items: center; width: 14px; height: 88px; margin: 0; padding: 0; border: 0;

@@ -19,6 +19,7 @@ pub mod render;
 pub mod send;
 pub mod settings;
 pub mod subject;
+pub mod transcript;
 pub mod update;
 pub mod upload;
 pub mod windows;
@@ -145,6 +146,14 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Syn
         record::record_export,
         record::record_export_cancel,
         record::record_trash,
+        // cut-by-text
+        transcript::transcript_model,
+        transcript::transcript_model_download,
+        transcript::transcript_model_remove,
+        transcript::transcript_get,
+        transcript::transcript_start,
+        transcript::transcript_cancel,
+        transcript::transcript_save_cuts,
         // settings
         settings::settings_get,
         settings::settings_set,
