@@ -354,6 +354,7 @@ impl CaptureBackend for WindowsBackend {
             content: None,
             frames: displays.iter().map(|id| (*id, None)).collect(),
             total: Duration::ZERO,
+            tone_mapped: None,
         };
         let result = self.displays_until(displays, options, &mut report);
         report.total = started.elapsed();
@@ -369,6 +370,7 @@ impl CaptureBackend for WindowsBackend {
             content: None,
             frames: Vec::new(),
             total: Duration::ZERO,
+            tone_mapped: None,
         };
         let result = self.window_until(window, options, &mut report);
         report.total = started.elapsed();

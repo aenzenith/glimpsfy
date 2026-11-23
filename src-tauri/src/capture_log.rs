@@ -45,6 +45,12 @@ pub fn record(
     let _ = append(app, &line);
 }
 
+/// What a capture that was tone mapped from HDR adds to the dev trace and to its line here,
+/// "tone mapped (headroom 3.2)"; `None` for an SDR capture.
+pub fn tone_mapped(report: Option<&CaptureReport>) -> Option<String> {
+    report?.tone_mapped.map(|headroom| format!("tone mapped (headroom {headroom:.1})"))
+}
+
 /// Writes one line about a frame of an interval series that was skipped (`what` names it), so a
 /// gap in the series is explained in the same file as the captures that were slow.
 pub fn skipped(app: &AppHandle, what: &str, reason: &str) {
@@ -98,6 +104,7 @@ fn line(what: &str, waited: Duration, report: Option<&CaptureReport>, error: Opt
                 .collect();
             parts.push(frames.join(", "));
         }
+        parts.extend(tone_mapped(Some(report)));
     }
     parts.push(match error {
         Some(error) => format!("failed: {error}"),

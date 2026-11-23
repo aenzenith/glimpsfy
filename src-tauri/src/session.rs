@@ -544,7 +544,11 @@ fn capture_frozen(
         let taken = backend.capture_displays(&ids, &options);
         #[cfg(not(target_os = "macos"))]
         drop(hidden);
-        capture_log::record(app, &format!("{mode:?}"), at.elapsed(), backend.take_report(), taken.as_ref().err());
+        let report = backend.take_report();
+        if let Some(note) = capture_log::tone_mapped(report.as_ref()) {
+            trace.note(note);
+        }
+        capture_log::record(app, &format!("{mode:?}"), at.elapsed(), report, taken.as_ref().err());
         taken?.into_iter().map(|(id, frame)| (id, Arc::new(frame))).collect()
     };
     let taken_at = SystemTime::now();
@@ -820,7 +824,11 @@ fn capture_direct(
         #[cfg(not(target_os = "macos"))]
         drop(hidden);
         let what = format!("{:?}", kind.mode());
-        capture_log::record(app, &what, at.elapsed(), backend.take_report(), taken.as_ref().err());
+        let report = backend.take_report();
+        if let Some(note) = capture_log::tone_mapped(report.as_ref()) {
+            trace::log(format!("[glimpsfy] {what} capture: {note}"));
+        }
+        capture_log::record(app, &what, at.elapsed(), report, taken.as_ref().err());
         taken?
     };
     let taken_at = SystemTime::now();
@@ -1047,6 +1055,9 @@ pub fn pick_window(
         let started = Instant::now();
         let taken = state.backend.capture_window(window, &options);
         let report = state.backend.take_report();
+        if let Some(note) = capture_log::tone_mapped(report.as_ref()) {
+            trace::log(format!("[glimpsfy] Window pick: {note}"));
+        }
         capture_log::record(app, "Window pick", started.elapsed(), report, taken.as_ref().err());
         taken?
     };

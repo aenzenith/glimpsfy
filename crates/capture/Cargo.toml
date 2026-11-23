@@ -27,10 +27,13 @@ block2.workspace = true
 dispatch2.workspace = true
 # NSColor, NSColorSpace and NSAppearance read the system's window colour, which fills a window
 # capture's translucent parts.
-objc2-app-kit = { workspace = true, features = ["std", "NSScreen", "NSGraphics", "NSApplication", "NSColor", "NSColorSpace", "NSAppearance", "NSResponder", "block2"] }
-objc2-foundation = { workspace = true, features = ["std", "NSArray", "NSDictionary", "NSEnumerator", "NSString", "NSValue", "NSError", "NSObject"] }
+objc2-app-kit = { workspace = true, features = ["std", "NSScreen", "NSGraphics", "NSApplication", "objc2-core-foundation", "NSColor", "NSColorSpace", "NSAppearance", "NSResponder", "block2"] }
+objc2-foundation = { workspace = true, features = ["std", "NSArray", "NSDictionary", "NSEnumerator", "NSString", "NSValue", "NSError", "NSObject", "NSNotification", "NSOperation", "block2"] }
 objc2-core-foundation = { workspace = true, features = ["std", "CFArray", "CFData", "CFDictionary", "CFString", "CFCGTypes"] }
-objc2-core-graphics = { workspace = true, features = ["std", "CGColorSpace", "CGDataProvider", "CGDirectDisplay", "CGDisplayConfiguration", "CGError", "CGGeometry", "CGImage", "CGWindow", "bitflags", "libc"] }
+objc2-core-graphics = { workspace = true, features = ["std", "CGColorSpace", "CGDataProvider", "CGDirectDisplay", "CGDisplayConfiguration", "CGError", "CGGeometry", "CGImage", "CGWindow", "CGBitmapContext", "CGContext", "CGToneMapping", "bitflags", "libc"] }
+# `dlsym` for the tone mapping functions of macOS 15 (`platform/macos_hdr.rs`), so the app still
+# starts on macOS 14.
+libc = "0.2"
 objc2-screen-capture-kit = { workspace = true, features = ["std", "SCScreenshotManager", "SCShareableContent", "SCStream", "SCError", "block2", "libc", "objc2-core-foundation", "objc2-core-graphics", "objc2-core-media"] }
 # The recording stream (`stream.rs`, `platform/macos_stream.rs`, screen recording): sample
 # buffers, pixel buffers and the microphone through AVCaptureSession on macOS 14.

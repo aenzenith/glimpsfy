@@ -118,6 +118,9 @@ pub struct CaptureReport {
     pub frames: Vec<(DisplayId, Option<Duration>)>,
     /// From the call to its return.
     pub total: Duration,
+    /// The EDR headroom a frame was tone mapped from (the largest, when several were); `None`
+    /// when every frame was SDR. Only macOS tone maps.
+    pub tone_mapped: Option<f32>,
 }
 
 /// One platform's way of reading the screen.

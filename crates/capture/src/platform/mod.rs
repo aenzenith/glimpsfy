@@ -5,6 +5,9 @@
 pub mod linux;
 #[cfg(target_os = "macos")]
 pub mod macos;
+/// HDR stills on macOS: the displays showing EDR content and the tone mapping of their captures.
+#[cfg(target_os = "macos")]
+mod macos_hdr;
 /// The recording stream (screen recording owns it; the screenshot side is `macos`).
 #[cfg(target_os = "macos")]
 pub mod macos_stream;

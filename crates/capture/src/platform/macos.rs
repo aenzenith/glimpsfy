@@ -6,7 +6,9 @@
 //!   wanted, the displays are taken as rectangles of the composited screen (`capture_rects`),
 //!   which is two to three times faster than the filtered capture that leaves windows out.
 //! - Every capture is requested in an explicit colour space (Display P3 for wide-gamut panels,
-//!   sRGB otherwise) and in 32-bit BGRA, so the frame is tagged without guessing.
+//!   sRGB otherwise) and in 32-bit BGRA, so the frame is tagged without guessing. A display that
+//!   shows HDR content is the exception: it is asked for half floats in its own profile, which
+//!   `macos_hdr` tone maps into the same kind of frame.
 //! - A capture has one deadline for all of its requests (`DEADLINE`). A slow answer is waited
 //!   for instead of being asked for again on the other path, because every app's requests wait
 //!   in the same ScreenCaptureKit queue; only a refused rectangle falls back to the filter.
@@ -180,6 +182,10 @@ impl MacBackend {
         if options.shows_cursor || options.clean_desktop || !rect_capture_available() {
             return false;
         }
+        // A rectangle comes in 8 bits with the highlights clipped; HDR content needs the filter.
+        if displays.iter().any(|d| super::macos_hdr::headroom(d.0).is_some()) {
+            return false;
+        }
         let refused = self.rect_refused.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         if displays.iter().any(|d| refused.contains(&d.0)) {
             return false;
@@ -348,7 +354,7 @@ impl MacBackend {
         let Shared((sc_displays, own_app)) = self.content_for(displays, deadline, &mut report.content)?;
 
         let requested = Instant::now();
-        let (tx, rx) = mpsc::channel::<(usize, Result<Frame>)>();
+        let (tx, rx) = mpsc::channel::<(usize, Result<(Frame, Option<f32>)>)>();
         for (index, (id, sc_display)) in displays.iter().zip(sc_displays.iter()).enumerate() {
             let info = described.iter().find(|d| d.id == *id).ok_or(CaptureError::DisplayNotFound(*id))?;
             let mut excluded: Vec<&SCRunningApplication> =
@@ -366,9 +372,14 @@ impl MacBackend {
                     &excepted,
                 )
             };
-            let config = stream_configuration(info.pixel_size, info.color_space, options.shows_cursor);
+            let headroom = super::macos_hdr::headroom(id.0);
+            let config = match headroom {
+                Some(_) => super::macos_hdr::hdr_configuration(info.pixel_size, options.shows_cursor),
+                None => stream_configuration(info.pixel_size, info.color_space, options.shows_cursor),
+            };
             let tx = tx.clone();
-            screenshot(&filter, &config, info.color_space, info.scale, false, move |result| {
+            let headroom = headroom.unwrap_or(1.0);
+            screenshot(&filter, &config, info.color_space, info.scale, false, headroom, move |result| {
                 let _ = tx.send((index, result));
             });
         }
@@ -378,7 +389,11 @@ impl MacBackend {
         for _ in 0..displays.len() {
             let (index, frame) = deadline.wait(&rx)?;
             report.frames[index].1 = Some(requested.elapsed());
-            frames[index] = Some(frame?);
+            let (frame, tone_mapped) = frame?;
+            if let Some(headroom) = tone_mapped {
+                report.tone_mapped = Some(report.tone_mapped.map_or(headroom, |kept| kept.max(headroom)));
+            }
+            frames[index] = Some(frame);
         }
         displays
             .iter()
@@ -426,7 +441,11 @@ impl MacBackend {
             ((rect.size.width + 2.0 * margin) * scale).round().max(1.0) as u32,
             ((rect.size.height + 2.0 * margin) * scale).round().max(1.0) as u32,
         );
-        let config = stream_configuration(size, display.color_space, options.shows_cursor);
+        let headroom = super::macos_hdr::headroom(display.id.0);
+        let config = match headroom {
+            Some(_) => super::macos_hdr::hdr_configuration(size, options.shows_cursor),
+            None => stream_configuration(size, display.color_space, options.shows_cursor),
+        };
         // SAFETY: plain property setters on a configuration this function owns; the one added
         // after macOS 14.0 is guarded.
         unsafe {
@@ -442,11 +461,13 @@ impl MacBackend {
         }
 
         let requested = Instant::now();
-        let (tx, rx) = mpsc::sync_channel::<Result<Frame>>(1);
-        screenshot(&filter, &config, display.color_space, ScaleFactor(scale), true, move |result| {
+        let (tx, rx) = mpsc::sync_channel::<Result<(Frame, Option<f32>)>>(1);
+        let headroom = headroom.unwrap_or(1.0);
+        screenshot(&filter, &config, display.color_space, ScaleFactor(scale), true, headroom, move |result| {
             let _ = tx.send(result);
         });
-        let frame = deadline.wait(&rx)??;
+        let (frame, tone_mapped) = deadline.wait(&rx)??;
+        report.tone_mapped = tone_mapped;
         if let Some((_, arrived)) = report.frames.last_mut() {
             *arrived = Some(requested.elapsed());
         }
@@ -538,6 +559,7 @@ impl CaptureBackend for MacBackend {
             content: None,
             frames: displays.iter().map(|id| (*id, None)).collect(),
             total: Duration::ZERO,
+            tone_mapped: None,
         };
         let result = self.displays_until(displays, options, Deadline::after(DEADLINE), &mut report);
         report.total = started.elapsed();
@@ -553,6 +575,7 @@ impl CaptureBackend for MacBackend {
             content: None,
             frames: Vec::new(),
             total: Duration::ZERO,
+            tone_mapped: None,
         };
         let result = self.window_until(window, options, Deadline::after(DEADLINE), &mut report);
         report.total = started.elapsed();
@@ -587,6 +610,7 @@ impl CaptureBackend for MacBackend {
     }
 
     fn prepare(&self) {
+        super::macos_hdr::prepare();
         // The names need no permission; reading them now keeps the main-thread hop out of the
         // first capture.
         let displays = self.displays().unwrap_or_default();
@@ -720,25 +744,37 @@ fn window_fill(space: ColorSpace) -> Option<[u8; 3]> {
     rx.recv_timeout(FILL_TIMEOUT).ok().flatten()
 }
 
-/// Asks ScreenCaptureKit for one still; `done` gets the frame (or the error) on
-/// ScreenCaptureKit's queue. `alpha` keeps real transparency (a window); without it the frame is
-/// made fully opaque, whatever the alpha bytes held.
+/// Asks ScreenCaptureKit for one still; `done` gets the frame (or the error) and the headroom
+/// it was tone mapped from. An 8-bit image is read on ScreenCaptureKit's queue; a half-float one
+/// (an HDR request, `macos_hdr`) is tone mapped on a thread of its own, so the queue's next
+/// answer does not wait for it. The image decides, not the request, because a Mac that ignores
+/// the HDR request answers in 8 bits. `alpha` keeps real transparency (a window); without it the
+/// frame is made fully opaque, whatever the alpha bytes held. `headroom` is the display's.
 fn screenshot(
     filter: &SCContentFilter,
     config: &SCStreamConfiguration,
     space: ColorSpace,
     scale: ScaleFactor,
     alpha: bool,
-    done: impl Fn(Result<Frame>) + 'static,
+    headroom: f32,
+    done: impl Fn(Result<(Frame, Option<f32>)>) + Send + Sync + 'static,
 ) {
+    let done = std::sync::Arc::new(done);
     let handler = RcBlock::new(move |image: *mut CGImage, error: *mut NSError| {
-        let result = match NonNull::new(image) {
-            // SAFETY: ScreenCaptureKit hands over a valid image for the duration of the call; it
-            // is read here, before the handler returns.
-            Some(image) => frame_from_image(unsafe { image.as_ref() }, space, scale, alpha),
-            None => Err(sc_error(error)),
+        let Some(image) = NonNull::new(image) else {
+            done(Err(sc_error(error)));
+            return;
         };
-        done(result);
+        // SAFETY: ScreenCaptureKit hands over a valid image for the duration of the call.
+        let image_ref = unsafe { image.as_ref() };
+        if !super::macos_hdr::is_half_float(image_ref) {
+            done(frame_from_image(image_ref, space, scale, alpha).map(|frame| (frame, None)));
+            return;
+        }
+        // SAFETY: retained, so the image outlives the call on the thread that tone maps it.
+        let image = unsafe { CFRetained::retain(image) };
+        let done = done.clone();
+        std::thread::spawn(move || done(super::macos_hdr::tone_mapped_frame(&image, space, scale, headroom, alpha)));
     });
     // SAFETY: filter and configuration live until the call returns, and the handler is retained
     // by ScreenCaptureKit until it runs.
@@ -935,7 +971,7 @@ fn info_frame(described: &[Display], id: DisplayId) -> Option<CGRect> {
 
 /// Converts a screen image from the display's colour space into `space`, as 32-bit BGRA with
 /// premultiplied (here always opaque) alpha, the layout the filtered capture delivers.
-fn converted_frame(image: &CGImage, space: ColorSpace, scale: ScaleFactor) -> Result<Frame> {
+pub(super) fn converted_frame(image: &CGImage, space: ColorSpace, scale: ScaleFactor) -> Result<Frame> {
     let width = CGImage::width(Some(image));
     let height = CGImage::height(Some(image));
     let provider = CGImage::data_provider(Some(image)).ok_or_else(|| CaptureError::Backend("no pixel data".into()))?;

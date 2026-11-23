@@ -12,6 +12,9 @@
 //! - `GLIMPSFY_HOME=<folder>` moves the settings, the history, the caches, the default save and
 //!   recordings folders and the keychain service under that folder (`paths.rs`), so a dev run
 //!   never touches the user's real data.
+//! - `GLIMPSFY_FORCE_HDR=1` sends every display down the HDR capture path on macOS 15 and later,
+//!   so its timing and its SDR output can be checked without HDR content on screen. The capture
+//!   crate reads it itself (`platform/macos_hdr.rs`), because nothing here reaches the backend.
 
 use std::path::PathBuf;
 use std::sync::OnceLock;
