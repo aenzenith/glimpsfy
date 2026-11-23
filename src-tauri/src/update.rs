@@ -96,7 +96,7 @@ fn release_page(app: &AppHandle) -> Option<String> {
 
 /// The `.app` bundle the running executable sits in, when it sits in one.
 #[cfg(target_os = "macos")]
-fn install_path() -> Option<PathBuf> {
+pub(crate) fn install_path() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?.canonicalize().ok()?;
     let macos = exe.parent()?;
     let contents = macos.parent()?;

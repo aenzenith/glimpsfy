@@ -60,7 +60,7 @@ pub enum Action {
 }
 
 /// Every action, for the command line.
-const ACTIONS: [Action; 21] = [
+pub(crate) const ACTIONS: [Action; 21] = [
     Action::CaptureArea,
     Action::CaptureWindow,
     Action::CaptureDisplay,
@@ -87,7 +87,7 @@ const ACTIONS: [Action; 21] = [
 impl Action {
     /// The action's name on the command line: its name in kebab-case (`capture-area`,
     /// `record-screen`, `open-history`).
-    fn cli_name(self) -> &'static str {
+    pub(crate) fn cli_name(self) -> &'static str {
         match self {
             Action::CaptureArea => "capture-area",
             Action::CaptureWindow => "capture-window",
@@ -250,46 +250,6 @@ pub(crate) fn run(app: &AppHandle, action: Action, at: Instant) {
     if let Err(error) = result {
         trace::log(format!("[glimpsfy] {action:?}: {error}"));
     }
-}
-
-/// The action a launch names with `--action <name>` or `--action=<name>`, where the name is the
-/// action's in kebab-case. This is how a system shortcut starts a capture where Glimpsfy gets no
-/// global shortcuts of its own (Wayland): the desktop's keyboard settings run
-/// `glimpsfy --action capture-area`. An unknown name is logged and does nothing.
-pub fn action_from_arguments(arguments: &[String]) -> Option<Action> {
-    let mut rest = arguments.iter().skip(1);
-    let name = loop {
-        let argument = rest.next()?;
-        if argument == "--action" {
-            break rest.next()?.as_str();
-        }
-        if let Some(name) = argument.strip_prefix("--action=") {
-            break name;
-        }
-    };
-    let action = ACTIONS.into_iter().find(|action| action.cli_name() == name);
-    if action.is_none() {
-        trace::log(format!("[glimpsfy] --action {name}: no such action"));
-    }
-    action
-}
-
-/// How long the first launch's action waits for the windows that were just made to load.
-const LAUNCH_ACTION_AFTER: std::time::Duration = std::time::Duration::from_millis(1200);
-
-/// Runs the action this launch named on its command line, once the app is up. A launch while
-/// Glimpsfy already runs hands its arguments to the running one instead (`lib.rs`).
-pub fn run_launch_action(app: &AppHandle) {
-    let arguments: Vec<String> = std::env::args().collect();
-    let Some(action) = action_from_arguments(&arguments) else {
-        return;
-    };
-    let app = app.clone();
-    std::thread::spawn(move || {
-        std::thread::sleep(LAUNCH_ACTION_AFTER);
-        let handle = app.clone();
-        let _ = app.run_on_main_thread(move || run(&handle, action, Instant::now()));
-    });
 }
 
 /// The keys registered now, with their actions, for the dev driver.

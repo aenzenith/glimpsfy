@@ -11,6 +11,7 @@
 //! - `output`: crop, PNG, clipboard and files.
 //! - `colors`: the colour picker's recent colours and format (`colors.json`).
 //! - `settings`, `shortcuts`, `tray`, `permissions`: what their names say.
+//! - `cli`: the command line and the `glimpsfy://` scheme, read first in `run`.
 //! - `macos`: AppKit glue (panels, levels, pasteboard, display changes).
 //! - `desktop/`: the same on Windows and Linux: `mod.rs` holds what Tauri's cross-platform API
 //!   does for both, `windows.rs` and `linux.rs` what needs the system itself.
@@ -21,6 +22,7 @@
 mod agents;
 mod calendar;
 mod capture_log;
+mod cli;
 mod clipboard;
 mod colors;
 pub mod commands;
@@ -65,12 +67,10 @@ pub struct AppState {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // `glimpsfy mcp` is an agent's stdio server: it joins the agent to the running app's socket and
-    // never starts Tauri. It must branch off before the single-instance plugin, which would hand
-    // the argument to the running app and exit.
-    if std::env::args().nth(1).as_deref() == Some("mcp") {
-        std::process::exit(glimpsfy_mcp::bridge::run(cfg!(debug_assertions)));
-    }
+    // Help, version, a usage error and `glimpsfy mcp` (an agent's stdio server) end here, and a
+    // verb hands its request to a detached launch. All of it must happen before the
+    // single-instance plugin, which would hand the arguments to the running app and exit.
+    cli::early();
     // GTK's backend is chosen before anything starts it, and a process without a display stops.
     #[cfg(target_os = "linux")]
     desktop::prepare_environment();
@@ -80,14 +80,19 @@ pub fn run() {
     }
     let builder = tauri::Builder::default()
         // A second launch (a login item racing a manual start) does nothing, unless the menu bar
-        // icon is hidden: then it opens Settings, the only way back to them. One that names an
-        // action (`glimpsfy --action capture-area`) runs it here instead.
-        .plugin(tauri_plugin_single_instance::init(|app, arguments, _| {
-            match shortcuts::action_from_arguments(&arguments) {
-                Some(action) => shortcuts::run(app, action, std::time::Instant::now()),
-                None => popover::second_launch(app),
-            }
+        // icon is hidden: then it opens Settings, the only way back to them. One that asks for
+        // something (`glimpsfy capture --area`, `--action capture-area`, or a `glimpsfy://` URL
+        // on Windows and Linux) runs it here instead.
+        .plugin(tauri_plugin_single_instance::init(|app, arguments, _| match cli::parse(&arguments) {
+            cli::Invocation::Action(action) => cli::run_when_ready(app, action),
+            cli::Invocation::Url(capture) => cli::open_url(app, capture),
+            cli::Invocation::App => popover::second_launch(app),
+            // A refused URL was logged; help, version, `mcp` and usage errors end in `cli::early`.
+            _ => {}
         }))
+        // After single-instance, so a second launch has handed its URL over and exited before
+        // this reads the arguments. Its JavaScript API gets no permission.
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(shortcuts::plugin())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
@@ -161,8 +166,8 @@ pub fn run() {
             #[cfg(debug_assertions)]
             driver::setup(&handle);
 
-            // `glimpsfy --action <name>` on the first launch.
-            shortcuts::run_launch_action(&handle);
+            // What the first launch's command line or URL asks for (`cli.rs`).
+            cli::run_launch(&handle);
 
             let runs = dev::options().autocapture;
             if runs > 0 {

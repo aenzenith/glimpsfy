@@ -31,6 +31,9 @@ glimpsfy-mcp.workspace = true
 tauri = { version = "2", features = ["image-png", "macos-private-api", "tray-icon"] }
 tauri-plugin-global-shortcut = "2.4.0"
 tauri-plugin-single-instance = "2.5.2"
+# The `glimpsfy://` scheme: macOS hands its URLs over as Apple Events, and an AppImage registers
+# the scheme itself (`cli.rs`).
+tauri-plugin-deep-link = "2.6.3"
 tauri-plugin-opener = "2"
 serde.workspace = true
 serde_json = { workspace = true, features = ["preserve_order"] }
@@ -83,7 +86,7 @@ zune-jpeg = "0.5.15"
 # pointer and the keys, the capture exclusion, panels that stay out of Alt+Tab and show without
 # the keyboard, the display and theme watch, a take's input hooks, files on the clipboard, the
 # login item and the registry for the taskbar's theme.
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Globalization", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_Security", "Win32_System_DataExchange", "Win32_System_LibraryLoader", "Win32_System_Memory", "Win32_System_Ole", "Win32_System_Registry", "Win32_System_Threading", "Win32_UI_Accessibility", "Win32_UI_HiDpi", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Globalization", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_Security", "Win32_System_Console", "Win32_System_DataExchange", "Win32_System_LibraryLoader", "Win32_System_Memory", "Win32_System_Ole", "Win32_System_Registry", "Win32_System_Threading", "Win32_UI_Accessibility", "Win32_UI_HiDpi", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 # Dragging a capture out goes through the shell's own data object and OLE, which are COM
 # interfaces that windows-sys does not wrap (`desktop/windows.rs`); tao already builds 0.62.
 windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_System_Com", "Win32_System_Ole", "Win32_UI_Shell"] }

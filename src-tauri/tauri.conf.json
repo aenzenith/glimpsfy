@@ -18,6 +18,11 @@
     }
   },
   "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["glimpsfy"]
+      }
+    },
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDRDREQyNTc0QjNBRjZFRjYKUldUMmJxK3pkQ1hkVEx4QXdBM0phK1YvdVppSjB0T2RUOU5WcGNaUFJzcy9yN05DdDUvdEJJNk0K",
       "endpoints": [
