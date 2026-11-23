@@ -34,7 +34,7 @@ use dispatch2::DispatchQueue;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObjectProtocol};
 use objc2::{sel, AllocAnyThread, ClassType, MainThreadMarker};
-use objc2_app_kit::NSScreen;
+use objc2_app_kit::{NSApplication, NSColor, NSColorSpace, NSScreen};
 use objc2_core_foundation::{CFData, CFDictionary, CFRetained, CFString, CGRect};
 use objc2_core_graphics::{
     kCGColorSpaceDisplayP3, kCGColorSpaceSRGB, kCGNullWindowID, kCGWindowAlpha, kCGWindowBounds, kCGWindowIsOnscreen,
@@ -58,7 +58,7 @@ use crate::error::{CaptureError, Result};
 use crate::frame::{ColorInfo, ColorSpace, Frame, PixelFormat};
 use crate::geometry::{LogicalRect, PhysicalRect, PhysicalSize, ScaleFactor};
 use crate::stream::{CaptureStream, StreamConfig, StreamSink};
-use crate::window::finish_window;
+use crate::window::{finish_window, BodyHint};
 
 /// `kCVPixelFormatType_32BGRA`, spelled out to keep Core Video out of the dependencies.
 const PIXEL_FORMAT_BGRA: u32 = u32::from_be_bytes(*b"BGRA");
@@ -83,6 +83,10 @@ const PREPARE_TIMEOUT: Duration = Duration::from_secs(15);
 /// that is busy (or not running an event loop, as in tests) costs this once and the names fall
 /// back to generic ones.
 const NAMES_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// How long a window capture waits for the main thread to read the system's window colour; past
+/// it the translucent parts are filled with white.
+const FILL_TIMEOUT: Duration = Duration::from_millis(250);
 
 thread_local! {
     /// The report of the last still capture made on this thread, until `take_report` takes it.
@@ -388,6 +392,8 @@ impl MacBackend {
         // after macOS 14.0 is guarded.
         unsafe {
             config.setIgnoreShadowsSingleWindow(!options.include_shadow);
+            // Not the system's own opaque backing: it is white and fills the corners and the
+            // shadow too, where `finish_window` fills the body alone.
             config.setShouldBeOpaque(false);
             config.setIgnoreGlobalClipSingleWindow(true);
             config.setPreservesAspectRatio(true);
@@ -406,7 +412,16 @@ impl MacBackend {
             *arrived = Some(requested.elapsed());
         }
         let frame = if margin > 0.0 { crop_to_visible(frame)? } else { frame };
-        Ok(finish_window(frame, options))
+        // With the shadow the image holds more than the window, whose size the filter gave;
+        // without it the image is the window.
+        let body = (margin > 0.0).then(|| {
+            PhysicalSize::new(
+                (rect.size.width * scale).round().max(1.0) as u32,
+                (rect.size.height * scale).round().max(1.0) as u32,
+            )
+        });
+        let fill = if options.opaque_body { window_fill(display.color_space) } else { None };
+        Ok(finish_window(frame, BodyHint { size: body, radius: None, fill }, options))
     }
 }
 
@@ -631,6 +646,39 @@ fn screen_names() -> Option<HashMap<u32, String>> {
         }
     });
     rx.recv_timeout(NAMES_TIMEOUT).ok()
+}
+
+/// `NSColor.windowBackgroundColor` in the system's appearance (light or dark) and in `space`,
+/// as `[r, g, b]`: the colour a window shows where nothing is drawn, which fills its translucent
+/// parts. Only the main thread may resolve it; `None` when the main thread did not answer in
+/// time.
+fn window_fill(space: ColorSpace) -> Option<[u8; 3]> {
+    fn read(mtm: MainThreadMarker, space: ColorSpace) -> Option<[u8; 3]> {
+        let target = match space {
+            ColorSpace::Srgb => NSColorSpace::sRGBColorSpace(),
+            ColorSpace::DisplayP3 => NSColorSpace::displayP3ColorSpace(),
+        };
+        let colour = std::cell::Cell::new(None);
+        // A dynamic colour takes the value of the appearance that is current while it is read.
+        let block = RcBlock::new(|| {
+            colour.set(NSColor::windowBackgroundColor().colorUsingColorSpace(&target).map(|c| {
+                [c.redComponent(), c.greenComponent(), c.blueComponent()]
+                    .map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8)
+            }));
+        });
+        NSApplication::sharedApplication(mtm).effectiveAppearance().performAsCurrentDrawingAppearance(&block);
+        colour.get()
+    }
+    if let Some(mtm) = MainThreadMarker::new() {
+        return read(mtm, space);
+    }
+    let (tx, rx) = mpsc::sync_channel(1);
+    DispatchQueue::main().exec_async(move || {
+        if let Some(mtm) = MainThreadMarker::new() {
+            let _ = tx.send(read(mtm, space));
+        }
+    });
+    rx.recv_timeout(FILL_TIMEOUT).ok().flatten()
 }
 
 /// Asks ScreenCaptureKit for one still; `done` gets the frame (or the error) on

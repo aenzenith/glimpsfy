@@ -989,6 +989,20 @@ pub fn overlay_failed(app: &AppHandle, id: CaptureId, display: DisplayId, messag
     );
 }
 
+/// A window capture's options from Settings › Output › Window captures, without the background:
+/// each caller decides when that fill happens, since a picked window leaves it to the output,
+/// which knows whether the window is beautified.
+pub fn window_options(settings: &settings::Settings) -> WindowCaptureOptions {
+    WindowCaptureOptions {
+        shows_cursor: settings.general.include_pointer,
+        include_shadow: settings.output.window_shadow,
+        keep_rounded_corners: settings.output.window_corners,
+        background: None,
+        opaque_body: settings.output.window_backing,
+        border: settings.output.window_border,
+    }
+}
+
 /// Captures one window of the open capture on its own and keeps it for Copy and Save.
 pub fn pick_window(
     app: &AppHandle,
@@ -1020,14 +1034,8 @@ pub fn pick_window(
             .ok_or_else(|| CommandError::invalid("the window is not on this display"))?;
         entry.frame.crop(pixels)?
     } else {
-        let settings = state.settings.get();
-        let options = WindowCaptureOptions {
-            shows_cursor: settings.general.include_pointer,
-            include_shadow: settings.output.window_shadow,
-            keep_rounded_corners: settings.output.window_corners,
-            // The fill waits for the output (`fill`), which knows whether the window is beautified.
-            background: None,
-        };
+        // The fill waits for the output (`fill`), which knows whether the window is beautified.
+        let options = window_options(&state.settings.get());
         let started = Instant::now();
         let taken = state.backend.capture_window(window, &options);
         let report = state.backend.take_report();

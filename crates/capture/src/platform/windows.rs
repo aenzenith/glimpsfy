@@ -47,7 +47,7 @@ use crate::frame::{ColorInfo, Frame, PixelFormat};
 use crate::geometry::{PhysicalRect, PhysicalSize};
 use crate::platform::windows_convert as convert;
 use crate::stream::{CaptureStream, StreamConfig, StreamSink};
-use crate::window::finish_window;
+use crate::window::{finish_window, BodyHint};
 
 pub(crate) use stream::open_microphone;
 pub(crate) use sys::host_now;
@@ -264,7 +264,8 @@ impl WindowsBackend {
             *arrived = Some(requested.elapsed());
         }
         let frame = Frame::new(size, size.width as usize * 4, PixelFormat::Bgra8, ColorInfo::srgb(), scale, pixels)?;
-        Ok(finish_window(frame, options))
+        // The image is the window without a shadow, and DWM names its corners' radius.
+        Ok(finish_window(frame, BodyHint { size: None, radius: Some(corner), fill: None }, options))
     }
 }
 

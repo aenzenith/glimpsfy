@@ -45,7 +45,7 @@ use crate::error::{CaptureError, Result};
 use crate::frame::{ColorInfo, ColorSpace, Frame, PixelFormat};
 use crate::geometry::{LogicalRect, PhysicalRect, PhysicalSize, ScaleFactor};
 use crate::stream::{CaptureStream, HostTime, MicrophoneSource, StreamConfig, StreamSink};
-use crate::window::finish_window;
+use crate::window::{finish_window, BodyHint};
 
 /// How long the Screenshot portal may take once it has answered before.
 const PORTAL_LIMIT: Duration = Duration::from_secs(15);
@@ -430,7 +430,7 @@ impl CaptureBackend for LinuxBackend {
             let grab = x.grab_window(window.0, options.include_shadow, options.shows_cursor)?;
             Ok((grab, x.layout()?.scale))
         })?;
-        Ok(finish_window(frame_of(grab.data, grab.size, scale as f64)?, options))
+        Ok(finish_window(frame_of(grab.data, grab.size, scale as f64)?, BodyHint::default(), options))
     }
 
     fn permission(&self) -> PermissionState {

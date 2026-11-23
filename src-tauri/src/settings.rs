@@ -560,6 +560,11 @@ pub struct Output {
     pub optimise_png: bool,
     pub window_shadow: bool,
     pub window_corners: bool,
+    /// Fills the translucent parts of a captured window with the system's window colour (on by
+    /// default); `WindowCaptureOptions::opaque_body`.
+    pub window_backing: bool,
+    /// Draws a thin line along a captured window's edge and rounded corners (off by default).
+    pub window_border: bool,
     pub window_background: WindowBackground,
     pub history_retention: HistoryRetention,
     /// Whether the history's retention sweep also moves an expired entry's saved file (the copy
@@ -607,6 +612,8 @@ impl Default for Output {
             optimise_png: true,
             window_shadow: true,
             window_corners: true,
+            window_backing: true,
+            window_border: false,
             window_background: WindowBackground::Transparent,
             history_retention: HistoryRetention::Days30,
             trash_saved_files: false,

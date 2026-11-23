@@ -89,6 +89,10 @@ export type Output = Extra & {
   optimisePng: boolean;
   windowShadow: boolean;
   windowCorners: boolean;
+  /** Fills a captured window's translucent parts with the system's window colour (on by default). */
+  windowBacking: boolean;
+  /** Draws a thin line along a captured window's edge and rounded corners (off by default). */
+  windowBorder: boolean;
   windowBackground: WindowBackground;
   historyRetention: HistoryRetention;
   /** The retention sweep also moves an expired entry's saved file to the Trash. */

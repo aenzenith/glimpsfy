@@ -24,7 +24,7 @@ import SendTargets from "./SendTargets.vue";
 const props = defineProps<{ settings: Settings }>();
 const o = computed(() => props.settings.output);
 
-const ids = { template: uid("tpl"), templateError: uid("tpl-err"), format: uid("fmt"), quality: uid("q"), retina: uid("ret"), copy: uid("copy"), shadow: uid("shadow"), corners: uid("corners"), background: uid("bg"), keep: uid("keep"), trash: uid("trash") };
+const ids = { template: uid("tpl"), templateError: uid("tpl-err"), format: uid("fmt"), quality: uid("q"), retina: uid("ret"), copy: uid("copy"), shadow: uid("shadow"), corners: uid("corners"), backing: uid("backing"), border: uid("border"), background: uid("bg"), keep: uid("keep"), trash: uid("trash") };
 
 // ------------------------------------------------------------------ file name template
 // `{title}` is the captured window's title; an area or display capture leaves it empty. `{text}`
@@ -321,6 +321,12 @@ function cancelClear(): void {
     </FormRow>
     <FormRow :label="t('settings.output.corners')" :for="ids.corners">
       <SwitchControl :id="ids.corners" :model-value="o.windowCorners" @update:model-value="(v) => update((s) => (s.output.windowCorners = v))" />
+    </FormRow>
+    <FormRow v-if="can('windowShadow')" :label="t('settings.output.backing')" :for="ids.backing" :help="t('settings.output.backingHelp')">
+      <SwitchControl :id="ids.backing" :model-value="o.windowBacking" @update:model-value="(v) => update((s) => (s.output.windowBacking = v))" />
+    </FormRow>
+    <FormRow :label="t('settings.output.border')" :for="ids.border" :help="t('settings.output.borderHelp')">
+      <SwitchControl :id="ids.border" :model-value="o.windowBorder" @update:model-value="(v) => update((s) => (s.output.windowBorder = v))" />
     </FormRow>
     <FormRow :label="t('settings.output.background')" :label-id="ids.background" :help="t('settings.output.backgroundHelp')">
       <SegmentedControl :labelledby="ids.background" :model-value="o.windowBackground" :options="backgrounds" @update:model-value="(v) => update((s) => (s.output.windowBackground = v))" />

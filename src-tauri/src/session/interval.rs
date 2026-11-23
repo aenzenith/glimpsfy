@@ -629,13 +629,11 @@ fn take(app: &AppHandle, target: Target) -> Result<Frame, CaptureError> {
                 };
             }
             let options = WindowCaptureOptions {
-                shows_cursor: settings.general.include_pointer,
-                include_shadow: settings.output.window_shadow,
-                keep_rounded_corners: settings.output.window_corners,
                 background: match settings.output.window_background {
                     WindowBackground::White => Some([255, 255, 255]),
                     WindowBackground::Transparent => None,
                 },
+                ..super::window_options(&settings)
             };
             backend.capture_window(id, &options)
         }

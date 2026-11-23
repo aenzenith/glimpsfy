@@ -9,8 +9,8 @@
 //! - [`display`] describes displays and windows.
 //! - [`frame`] is a pixel buffer with its format, colour space and scale, and its outputs;
 //!   [`encode`] writes it as PNG, JPEG or WebP and [`resample`] scales it to 1×.
-//! - [`window`] finishes a window capture (square corners, background fill) the same way on
-//!   every platform.
+//! - [`window`] finishes a window capture (opaque body, square corners, border, background
+//!   fill) the same way on every platform.
 //! - [`backend`] is the trait for stills and permissions; [`stream`] is the recording side.
 //! - [`stitch`] joins the frames of a scrolling area into one tall image (scrolling capture).
 //! - [`new_backend`] returns the backend of the platform the app was built for. macOS uses
@@ -55,4 +55,4 @@ pub use stream::{
 #[cfg(target_os = "macos")]
 pub use stream::MacPixelBuffer;
 pub use stream::{cpu_frame, host_now, open_microphone, FilterPlan, StreamPixelFormat};
-pub use window::finish_window;
+pub use window::{finish_window, BodyHint};

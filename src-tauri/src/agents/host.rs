@@ -134,7 +134,8 @@ impl AppHost {
 
     /// The image a request asks for, and the card's line naming it.
     fn take(&self, ask: &Ask) -> Result<(Frame, Option<String>), ToolError> {
-        let backend = self.app.state::<AppState>().backend.clone();
+        let state = self.app.state::<AppState>();
+        let backend = state.backend.clone();
         let options = CaptureOptions { shows_cursor: false, exclude_own_windows: true };
         match ask {
             Ask::Window { app, title, .. } => {
@@ -143,11 +144,14 @@ impl AppHost {
                     let titled = title.as_ref().map(|t| format!(" whose title contains \"{t}\"")).unwrap_or_default();
                     ToolError::NotFound(format!("No window of {app}{titled} is on screen."))
                 })?;
+                // An agent gets the window alone, without the pointer and the shadow, but its body
+                // filled and bordered as the user's own window captures are.
                 let window_options = WindowCaptureOptions {
                     shows_cursor: false,
                     include_shadow: false,
                     keep_rounded_corners: true,
                     background: None,
+                    ..crate::session::window_options(&state.settings.get())
                 };
                 let frame = backend.capture_window(window.id, &window_options).map_err(capture_error)?;
                 Ok((frame, Some(window_name(window))))

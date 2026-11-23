@@ -53,11 +53,25 @@ pub struct WindowCaptureOptions {
     /// as `[r, g, b]`; `None` keeps the transparency.
     #[serde(default)]
     pub background: Option<[u8; 3]>,
+    /// Fills the translucent parts of the window's body with the system's window colour, so they
+    /// come out neither dark nor see-through; the shadow and the corners keep their alpha.
+    #[serde(default)]
+    pub opaque_body: bool,
+    /// Draws a thin line along the window's edge and its rounded corners, inside the window.
+    #[serde(default)]
+    pub border: bool,
 }
 
 impl Default for WindowCaptureOptions {
     fn default() -> Self {
-        WindowCaptureOptions { shows_cursor: false, include_shadow: true, keep_rounded_corners: true, background: None }
+        WindowCaptureOptions {
+            shows_cursor: false,
+            include_shadow: true,
+            keep_rounded_corners: true,
+            background: None,
+            opaque_body: false,
+            border: false,
+        }
     }
 }
 

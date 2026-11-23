@@ -25,7 +25,9 @@ oxipng.workspace = true
 objc2.workspace = true
 block2.workspace = true
 dispatch2.workspace = true
-objc2-app-kit = { workspace = true, features = ["std", "NSScreen", "NSGraphics"] }
+# NSColor, NSColorSpace and NSAppearance read the system's window colour, which fills a window
+# capture's translucent parts.
+objc2-app-kit = { workspace = true, features = ["std", "NSScreen", "NSGraphics", "NSApplication", "NSColor", "NSColorSpace", "NSAppearance", "NSResponder", "block2"] }
 objc2-foundation = { workspace = true, features = ["std", "NSArray", "NSDictionary", "NSEnumerator", "NSString", "NSValue", "NSError", "NSObject"] }
 objc2-core-foundation = { workspace = true, features = ["std", "CFArray", "CFData", "CFDictionary", "CFString", "CFCGTypes"] }
 objc2-core-graphics = { workspace = true, features = ["std", "CGColorSpace", "CGDataProvider", "CGDirectDisplay", "CGDisplayConfiguration", "CGError", "CGGeometry", "CGImage", "CGWindow", "bitflags", "libc"] }
