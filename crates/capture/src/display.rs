@@ -5,12 +5,15 @@ use serde::{Deserialize, Serialize};
 use crate::frame::ColorSpace;
 use crate::geometry::{LogicalRect, PhysicalSize, ScaleFactor};
 
-/// A display, stable for as long as it stays connected. On macOS it is the `CGDirectDisplayID`.
+/// A display, stable for as long as it stays connected. On macOS it is the `CGDirectDisplayID`,
+/// on Windows the `HMONITOR` (which changes when the display layout does) and on Linux the RandR
+/// output.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct DisplayId(pub u32);
 
-/// A window of any app, stable while the window exists. On macOS it is the `CGWindowID`.
+/// A window of any app, stable while the window exists. On macOS it is the `CGWindowID`, on
+/// Windows the `HWND` and on Linux the X11 window.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct WindowId(pub u32);

@@ -19,7 +19,13 @@ edition = "2021"
 license = "MIT"
 authors = ["Mustafa Sarı"]
 repository = "https://github.com/aenzenith/glimpsfy"
-rust-version = "1.85"
+# RTen, the PP-OCR runtime on Windows and Linux, is the newest requirement (Tauri needs 1.90).
+rust-version = "1.94"
+
+[workspace.lints.clippy]
+# With Rust 1.88 and newer, clippy would turn every `chunks_exact(4)` over pixels into `as_chunks`;
+# the loops read the same either way and were measured as they are, so they stay.
+chunks_exact_to_as_chunks = "allow"
 
 [workspace.dependencies]
 glimpsfy-capture = { path = "crates/capture" }
@@ -60,6 +66,10 @@ strip = true
 # so the latency measured in `npm run tauri dev` is close to what a release build does.
 [profile.dev.package.glimpsfy-capture]
 opt-level = 3
+# The Windows writer converts every frame to NV12 itself; unoptimised it takes 7 ms at 1080p and
+# 28 ms at 4K, which drops frames in `npm run tauri dev` and in the pipeline tests on CI.
+[profile.dev.package.glimpsfy-record]
+opt-level = 3
 [profile.dev.package.png]
 opt-level = 3
 [profile.dev.package.fdeflate]
@@ -70,6 +80,47 @@ opt-level = 3
 opt-level = 3
 [profile.dev.package.adler2]
 opt-level = 3
+# The QR and barcode search outside macOS (`crates/ocr/src/barcodes.rs`) takes 406 ms for a
+# full-HD screen unoptimised and 37 ms optimised.
+[profile.dev.package.rxing]
+opt-level = 3
+# PP-OCR runs in Rust (`crates/ocr`, feature `ppocr`): unoptimised, a dev build reads a 1440 × 660
+# screenshot in 29 s instead of 0.3 s and checks a model's hashes in a second. The runtime's own
+# debug checks add a third to a dense screen's reading, so they are left out as well.
+[profile.dev.package.glimpsfy-ocr]
+opt-level = 3
+[profile.dev.package.sha2]
+opt-level = 3
+[profile.dev.package.rayon]
+opt-level = 3
+[profile.dev.package.rayon-core]
+opt-level = 3
+[profile.dev.package.rten-parallel]
+opt-level = 3
+[profile.dev.package.rten]
+opt-level = 3
+debug-assertions = false
+overflow-checks = false
+[profile.dev.package.rten-base]
+opt-level = 3
+debug-assertions = false
+overflow-checks = false
+[profile.dev.package.rten-gemm]
+opt-level = 3
+debug-assertions = false
+overflow-checks = false
+[profile.dev.package.rten-simd]
+opt-level = 3
+debug-assertions = false
+overflow-checks = false
+[profile.dev.package.rten-tensor]
+opt-level = 3
+debug-assertions = false
+overflow-checks = false
+[profile.dev.package.rten-vecmath]
+opt-level = 3
+debug-assertions = false
+overflow-checks = false
 # Speech to text (`crates/speech`) resamples and measures the whole sound of a recording around
 # whisper.cpp.
 [profile.dev.package.glimpsfy-speech]

@@ -42,7 +42,8 @@ pub enum StreamTarget {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MicrophoneSource {
-    /// The system's identifier (`AVCaptureDevice.uniqueID` on macOS); `None` is the default input.
+    /// The system's identifier (`AVCaptureDevice.uniqueID` on macOS, the endpoint id on Windows,
+    /// the PulseAudio source name on Linux); `None` is the default input.
     pub device_id: Option<String>,
 }
 
@@ -237,7 +238,11 @@ pub trait CaptureStream: Send {
 pub fn host_now() -> HostTime {
     #[cfg(target_os = "macos")]
     return crate::platform::macos_stream::host_now();
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    return crate::platform::windows::host_now();
+    #[cfg(target_os = "linux")]
+    return crate::platform::linux::host_now();
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
     {
         use std::sync::OnceLock;
         use std::time::Instant;
@@ -268,7 +273,11 @@ pub fn cpu_frame(frame: &VideoFrame) -> Result<Frame> {
 pub fn open_microphone(source: MicrophoneSource, sink: Box<dyn StreamSink>) -> Result<Box<dyn CaptureStream>> {
     #[cfg(target_os = "macos")]
     return crate::platform::macos_stream::open_microphone(source, sink);
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    return crate::platform::windows::open_microphone(source, sink);
+    #[cfg(target_os = "linux")]
+    return crate::platform::linux::open_microphone(source, sink);
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
     {
         let _ = (source, sink);
         Err(CaptureError::NotImplemented("the microphone on this platform"))

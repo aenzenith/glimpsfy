@@ -11,6 +11,12 @@
 //!
 //! [`ScaleFactor`] converts between the two for one display. It is explicit everywhere, so no
 //! function silently assumes 1× or 2×.
+//!
+//! On Windows, monitors of different scales share no logical space, so the global space is
+//! defined per display: a display's frame starts at its top-left corner in virtual-screen pixels
+//! and is its pixel size divided by its scale, and a global value is read through the display
+//! that holds most of it (`physical = origin + (logical − origin) × scale`). [`crate::desktop`]
+//! holds that mapping.
 
 use serde::{Deserialize, Serialize};
 

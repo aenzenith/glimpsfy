@@ -10,6 +10,10 @@ pub mod macos;
 pub mod macos_stream;
 #[cfg(target_os = "windows")]
 pub mod windows;
+/// The Windows backend's conversions that need no system API; tests run them on every host.
+#[cfg(any(target_os = "windows", test))]
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+pub(crate) mod windows_convert;
 
 use std::sync::Arc;
 
