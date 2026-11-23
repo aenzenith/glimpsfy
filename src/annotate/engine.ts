@@ -493,6 +493,24 @@ export class AnnotationEngine {
     else if (this.selectedId) this.remove(this.selectedId);
   }
 
+  /** Smart redaction (D28): one blur or pixelate per rectangle, at the tool's level, as one undo
+   * step, so ⌘Z takes all of them back together. The objects carry no word of what they hide,
+   * because the document is written to disk with the capture's history. */
+  addRedactions(rects: readonly Rect[], kind: "blur" | "pixelate"): void {
+    if (!rects.length) return;
+    this.finishText();
+    const level = this.prefs.tools[kind].level;
+    const made: AnnotationObject[] = rects.map((r) => {
+      const base = { id: newId(kind), hidden: false, locked: false, rect: { x: r.x, y: r.y, width: r.width, height: r.height } };
+      return kind === "blur" ? { ...base, kind, strength: BLUR_LEVELS[level] } : { ...base, kind, cell: CELL_LEVELS[level] };
+    });
+    this.apply((objects) => [...objects, ...made]);
+    this.selectedId = null;
+    this.groupIds = [];
+    if (!this.prefs.redactionNoticeSeen) this.onRedaction();
+    this.bump();
+  }
+
   duplicate(): void {
     const source = this.selected();
     if (!source || source.kind === "crop") return;

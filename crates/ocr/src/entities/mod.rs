@@ -3,8 +3,8 @@
 //!
 //! The text layer underlines what [`find_entities`] returns and offers a menu for each piece: a
 //! number is called, an address gets an email, a link opens, a date goes to the calendar. Smart
-//! redaction (D28) reads the same module for the kinds it hides, which is why [`EntityKind`]
-//! names cards, IBANs and keys too; those kinds find nothing until D28 adds their rules.
+//! redaction (D28) reads the same module for the kinds it offers to hide: addresses, numbers,
+//! cards, IBANs, keys, tokens and the passwords inside links ([`checks`]).
 //!
 //! # How a piece is found
 //!
@@ -36,6 +36,7 @@ use crate::{Bounds, OcrResult};
 
 #[cfg(target_os = "macos")]
 mod apple;
+mod checks;
 mod rules;
 mod spans;
 
@@ -126,7 +127,14 @@ pub fn find_entities(result: &OcrResult, kinds: &[EntityKind], now: NaiveDateTim
     let first = apple::detect(text);
     #[cfg(not(target_os = "macos"))]
     let first = Vec::new();
-    let chosen = merge(first, rules::find(text, now));
+    let mut chosen = merge(first, rules::find(text, now));
+    // A card's or an IBAN's digits are no phone number and the `secret@host` of a link is no
+    // address, whatever NSDataDetector or the rules made of them. A key may sit inside a link,
+    // so the sensitive pieces are added beside the others rather than merged with them.
+    let sensitive = checks::find(text);
+    chosen.retain(|c| !checks::hides(text, &sensitive, c));
+    chosen.extend(sensitive);
+    chosen.sort_by_key(|c| c.range.start);
     chosen
         .into_iter()
         .filter(|c| kinds.contains(&c.kind))

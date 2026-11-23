@@ -43,6 +43,9 @@ import {
   withPresetStyle,
 } from "../annotate/beautify";
 import { useRecognition } from "../ocr/useRecognition";
+import SensitiveMarks from "../ocr/SensitiveMarks.vue";
+import SensitivePanel from "../ocr/SensitivePanel.vue";
+import { useSensitive } from "../ocr/sensitive";
 import { CURRENT_VERSION, parseDocument, serializeDocument, writeBeautify, type AnnotationDocument, type BeautifyStyle } from "../lib/annotate";
 import { ApiError, on, onWindow } from "../lib/api/core";
 import {
@@ -61,7 +64,7 @@ import {
   type RenderedImage,
 } from "../lib/api/render";
 import { settings_get, settings_set } from "../lib/api/settings";
-import { app_choose_file, pin_open } from "../lib/api/windows";
+import { app_choose_file, pin_open, window_open_settings } from "../lib/api/windows";
 import { subject_cancel, subject_cut, subject_find } from "../lib/api/subject";
 import { SETTINGS_CHANGED } from "../lib/events";
 import { language, t, type Key } from "../lib/i18n";
@@ -231,6 +234,29 @@ const textLayer: TextLayerContext = {
 provide(TEXT_LAYER, textLayer);
 const snapWords = useSnapWords(engine, textLayer, computed(() => source.value !== null));
 const snapProblem = snapWords.problem;
+
+// Smart redaction (D28): D opens its list in the objects panel's place; after Redact the objects
+// panel shows the blurs it added, each an object of its own.
+const sensitive = useSensitive(textLayer, engine);
+
+function toggleSensitive(): void {
+  if (sensitive.open.value) return sensitive.close();
+  if (!source.value) return;
+  engine.setTool(null);
+  sensitive.start();
+}
+
+function applySensitive(): void {
+  const kind = sensitive.apply();
+  if (!kind) return;
+  engine.setTool(kind);
+  objectsOpen.value = true;
+}
+
+function openOcrSettings(): void {
+  sensitive.close();
+  void window_open_settings("ocr").catch((error) => console.warn("window_open_settings", error));
+}
 
 // ------------------------------------------------------------------------------ beautify
 //
@@ -521,6 +547,7 @@ async function show(img: EditorImage): Promise<void> {
     engine.load(documentFor(img, width, height), (img.document !== null && img.entryId === null) || img.combinedFrom !== null);
     textLayerVisible.value = false;
     snapWords.reset();
+    sensitive.close();
     noticeShown.value = false;
     if (previous) void editor_close(previous.token).catch(() => {});
     await nextTick();
@@ -1177,6 +1204,9 @@ function chooseTool(id: ToolId): void {
   if (!source.value) return;
   if (id === "undo") return engine.undo();
   if (id === "redo") return engine.redo();
+  if (id === "sensitive") return toggleSensitive();
+  // A drawing tool puts the list of smart redaction away.
+  if (sensitive.open.value) sensitive.close();
   const next = engine.tool === id ? null : (id as AnnotateTool);
   if (next === "crop" && !engine.crop()) {
     // Crop mode starts from the whole image, which is no change of its own.
@@ -1201,6 +1231,13 @@ function onKeyDown(e: KeyboardEvent): void {
   // A dialog that took the key (the first-upload question's Esc) has prevented its default.
   if (sheet.value || uploadAsk.value || e.defaultPrevented) return;
   const target = e.target as HTMLElement | null;
+  // The list of smart redaction keeps ↩ and Esc while one of its switches has the focus.
+  if (sensitive.open.value && (e.key === "Enter" || e.key === "Escape") && !target?.isContentEditable && !engine.busy()) {
+    e.preventDefault();
+    if (e.key === "Enter") applySensitive();
+    else sensitive.close();
+    return;
+  }
   // The beautify panel's sliders keep only their own keys (`BeautifyPanel.vue`).
   const slider = target instanceof HTMLInputElement && target.type === "range";
   if (target && (target.isContentEditable || (!slider && ["INPUT", "SELECT", "TEXTAREA"].includes(target.tagName)))) return;
@@ -1437,7 +1474,7 @@ onUnmounted(() => {
               type="button"
               class="g-btn"
               :aria-label="t(item.label)"
-              :aria-pressed="item.momentary ? undefined : tool === item.id"
+              :aria-pressed="item.momentary ? undefined : tool === item.id || (item.id === 'sensitive' && sensitive.open.value)"
               :disabled="!source || (item.id === 'undo' && !undoable) || (item.id === 'redo' && !redoable)"
               @click="chooseTool(item.id)"
             >
@@ -1498,6 +1535,10 @@ onUnmounted(() => {
           </div>
         </template>
 
+        <!-- What smart redaction found, marked over the image while its list is open. -->
+        <div v-if="sensitive.open.value && source" class="e-textlayer">
+          <SensitiveMarks :sensitive="sensitive" :view="view" />
+        </div>
         <!-- Mount point of the text recognition layer (src/ocr/TextLayer.vue); its context comes
              from `provide(TEXT_LAYER)` above. -->
         <div v-if="textLayerComponent && source" class="e-textlayer">
@@ -1596,7 +1637,15 @@ onUnmounted(() => {
         />
         <div v-if="message" class="g-hint g-glass e-message" role="status">{{ message }}</div>
       </div>
-      <ObjectsPanel v-if="objectsOpen" :engine="engine" @close="objectsOpen = false" />
+      <SensitivePanel
+        v-if="sensitive.open.value && source"
+        variant="side"
+        :sensitive="sensitive"
+        @close="sensitive.close()"
+        @apply="applySensitive()"
+        @settings="openOcrSettings()"
+      />
+      <ObjectsPanel v-else-if="objectsOpen" :engine="engine" @close="objectsOpen = false" />
     </div>
 
     <footer class="g-statusbar e-status" data-size="large">

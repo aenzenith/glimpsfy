@@ -15,6 +15,7 @@ export type ToolId =
   | "blur"
   | "pixelate"
   | "spotlight"
+  | "sensitive"
   | "crop"
   | "undo"
   | "redo";
@@ -49,6 +50,8 @@ export const TOOLS: (Tool | null)[] = [
   { id: "blur", label: "tool.blur", key: "B" },
   { id: "pixelate", label: "tool.pixelate", key: "X" },
   { id: "spotlight", label: "tool.spotlight", key: "S" },
+  // Smart redaction (D28) opens its list instead of drawing; the page handles it.
+  { id: "sensitive", label: "tool.sensitive", key: "D" },
   null,
   { id: "crop", label: "tool.crop", key: "C" },
   null,

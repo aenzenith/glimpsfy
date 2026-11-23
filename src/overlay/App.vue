@@ -30,6 +30,9 @@ import type { ToolId as AnnotateTool } from "../annotate/prefs";
 import { TEXT_LAYER, textLayerComponent, type TextLayerContext } from "../annotate/textLayer";
 import { useSnapWords } from "../annotate/useSnapWords";
 import { useRecognition } from "../ocr/useRecognition";
+import SensitiveMarks from "../ocr/SensitiveMarks.vue";
+import SensitivePanel from "../ocr/SensitivePanel.vue";
+import { useSensitive } from "../ocr/sensitive";
 import { thumbnail, thumbnailOfPixels, uploadFlow } from "../annotate/upload";
 import { clamped, edgeMedian, useBackgroundImage } from "../annotate/beautify";
 import { writeBeautify, type BeautifyStyle } from "../lib/annotate";
@@ -370,6 +373,51 @@ provide(TEXT_LAYER, textLayer);
 const snapWords = useSnapWords(engine, textLayer, computed(() => mode.value === "sel"));
 const snapProblem = snapWords.problem;
 
+// Smart redaction (D28): D opens the list of what it found in the action bar's place, its bottom
+// edge level with the selection's, on the side where the bar stands.
+const sensitive = useSensitive(textLayer, engine);
+const sensitiveShown = computed(() => sensitive.open.value && barsShown.value && mode.value === "sel" && hasSel.value);
+const SENSITIVE_W = 264;
+const sensitiveAt = computed(() => {
+  const r = sel.value;
+  if (!r) return { left: "-9999px", top: "-9999px" };
+  const right = r.x + r.w + 8;
+  const left = r.x - 8 - SENSITIVE_W;
+  const fitsRight = right + SENSITIVE_W + 8 <= view.w;
+  const inside = !fitsRight && left < 8;
+  const x = fitsRight ? right : !inside ? left : clamp(r.x + r.w - 8 - SENSITIVE_W, 8, view.w - 8 - SENSITIVE_W);
+  const bottom = inside ? r.y + r.h - 8 : r.y + r.h;
+  // A selection near the top of the screen leaves no room above its bottom edge: the panel then
+  // hangs from its top instead.
+  if (bottom - 8 < 200) return { left: `${x}px`, top: `${Math.max(8, r.y)}px`, maxHeight: `${view.h - 8 - Math.max(8, r.y)}px` };
+  return { left: `${x}px`, bottom: `${view.h - bottom}px`, maxHeight: `${bottom - 8}px` };
+});
+
+function toggleSensitive(): void {
+  if (sensitive.open.value) {
+    sensitive.close();
+    void layoutBars();
+    return;
+  }
+  if (!frame.value || !sel.value || mode.value !== "sel") return;
+  tool.value = null;
+  annotations.setTool(null);
+  beautify.open.value = false;
+  closeSend();
+  menu.value = null;
+  sensitive.start();
+}
+
+/** Redact (↩): the found items become blurs or pixelations, and their tool is chosen so its
+ * strength shows in the strip. */
+function applySensitive(): void {
+  const kind = sensitive.apply();
+  if (!kind) return;
+  tool.value = kind;
+  annotations.setTool(kind);
+  void layoutBars();
+}
+
 // --------------------------------------------------------------------- per-frame painting
 //
 // The parts that follow the pointer (the dim, the selection's edge, the size label, the crosshair
@@ -612,6 +660,7 @@ function resetSelection(): void {
   pickedWindow = null;
   pickedSize.value = null;
   beautify.open.value = false;
+  sensitive.close();
   closeSend();
   annotations.clear();
 }
@@ -1056,6 +1105,7 @@ function toggleBeautify(): void {
   if (!frame.value || !sel.value || mode.value !== "sel" || !beautifiable.value) return;
   closeSend();
   menu.value = null;
+  sensitive.close();
   beautify.open.value = true;
 }
 
@@ -1490,6 +1540,9 @@ async function leave(run: () => Promise<void>): Promise<void> {
 function setTool(id: ToolId): void {
   if (id === "undo") return annotations.undo();
   if (id === "redo") return annotations.redo();
+  if (id === "sensitive") return toggleSensitive();
+  // A drawing tool puts the list of smart redaction away.
+  if (sensitive.open.value) sensitive.close();
   tool.value = tool.value === id ? null : id;
   annotations.setTool(tool.value as AnnotateTool | null);
   void layoutBars();
@@ -1837,8 +1890,14 @@ function onKeyDown(e: KeyboardEvent): void {
   }
   if (e.key === "Escape") {
     e.preventDefault();
-    // Esc first ends a drawing gesture or drops the selected object, then closes the beautify
-    // panel's menu and the panel, then hides the text layer, and only then closes the capture.
+    // Esc first closes the list of smart redaction, then ends a drawing gesture or drops the
+    // selected object, then closes the beautify panel's menu and the panel, then hides the text
+    // layer, and only then closes the capture.
+    if (sensitive.open.value) {
+      sensitive.close();
+      void layoutBars();
+      return;
+    }
     if (annotations.key(e)) return;
     if (beautify.open.value) {
       if (!beautifyEl.value?.escape()) beautify.open.value = false;
@@ -1916,6 +1975,8 @@ function onKeyDown(e: KeyboardEvent): void {
   }
   if (e.key === "Enter") {
     e.preventDefault();
+    // Return redacts what the open list has switched on, and copies otherwise.
+    if (sensitive.open.value) return applySensitive();
     void act("copy");
     return;
   }
@@ -2184,6 +2245,10 @@ onUnmounted(() => {
         @update="beautify.updatePreset"
         @create="beautify.createPreset"
       />
+      <!-- What smart redaction found, marked over the selection while its list is open. -->
+      <div v-if="sensitiveShown" class="o-textlayer">
+        <SensitiveMarks :sensitive="sensitive" :view="annotationView" />
+      </div>
       <!-- Mount point of the text recognition layer (src/ocr/TextLayer.vue); its context comes
            from `provide(TEXT_LAYER)` above. -->
       <div v-if="textLayerComponent && hasSel && mode === 'sel'" class="o-textlayer">
@@ -2272,7 +2337,7 @@ onUnmounted(() => {
             class="g-btn"
             :data-id="item.id"
             :aria-label="t(item.label)"
-            :aria-pressed="item.momentary ? undefined : tool === item.id"
+            :aria-pressed="item.momentary ? undefined : tool === item.id || (item.id === 'sensitive' && sensitive.open.value)"
             :disabled="(item.id === 'undo' && !undoable) || (item.id === 'redo' && !redoable)"
             @click="setTool(item.id)"
           >
@@ -2302,13 +2367,23 @@ onUnmounted(() => {
       @dismiss="engine.dismissRedactionNotice(); annotations.noticeShown.value = false"
     />
 
+    <SensitivePanel
+      v-if="sensitiveShown"
+      class="o-bar o-float o-sensitive"
+      :style="sensitiveAt"
+      :sensitive="sensitive"
+      @close="toggleSensitive()"
+      @apply="applySensitive()"
+      @settings="openModels()"
+    />
+
     <div
       ref="actionsEl"
       class="g-bar o-bar o-actions o-live-bar"
       role="toolbar"
       aria-orientation="vertical"
       :aria-label="t('overlay.actions')"
-      :data-shown="barsShown && mode === 'sel' ? 'true' : 'false'"
+      :data-shown="barsShown && mode === 'sel' && !sensitive.open.value ? 'true' : 'false'"
       :data-tips="placement?.actionTips ?? 'right'"
       :style="at(placement?.actions ?? { x: -9999, y: -9999 })"
       @mousedown.stop

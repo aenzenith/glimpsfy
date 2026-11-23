@@ -55,7 +55,7 @@ export function centred(area: PixelRect, room: Room, k: number): View {
 export function opening(area: PixelRect, room: Room, scale: number): { view: View; mode: ZoomMode } {
   const points = { width: area.width / scale, height: area.height / scale };
   if (area.height / area.width > TALL) return { view: fitWidth(area, room, scale), mode: "width" };
-  if (points.width * 2 < 492 && points.height * 2 < room.height - room.top - room.bottom) {
+  if (points.width * 2 < 524 && points.height * 2 < room.height - room.top - room.bottom) {
     return { view: centred(area, room, kOf(200, scale)), mode: "custom" };
   }
   return { view: fit(area, room, scale), mode: "fit" };

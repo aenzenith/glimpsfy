@@ -160,6 +160,7 @@ const ALIASES: Record<string, string> = {
     rectangle: 'rect', clock: 'history', gear: 'settings', 'microphone-on': 'microphone', mic: 'microphone',
     'mic-off': 'microphone-off', refresh: 'retry', 'drag': 'grip', ellipsis: 'more', camera: 'webcam',
     'camera-off': 'webcam-off', power: 'quit', loop: 'repeat', forward: 'bring-forward', backward: 'send-backward',
+    sensitive: 'shield',
   };
 
 let uid = 0;

@@ -1,5 +1,6 @@
 // What the annotation tools remember between captures: the last ink, width, size and choice of
-// every tool, the crop ratio, and whether the redaction notice was dismissed. It lives in the
+// every tool, the crop ratio, whether the redaction notice was dismissed, and whether smart
+// redaction (D28) blurs or pixelates. It lives in the
 // settings file as the top-level `annotate` section. settings.rs keeps a section it does not know
 // and writes it back unchanged, so this needs no field on the Rust side; if Settings ever gains a
 // typed `annotate` section, it must keep these names.
@@ -16,14 +17,21 @@ export const TOOL_IDS: readonly ToolId[] = ["arrow", "line", "rect", "ellipse", 
 /** One tool's choices. `width`, `size` and `level` are indexes into the strip's three choices. */
 export type ToolOptions = { ink: Ink; width: number; size: number; background: boolean; level: number; ratio: CropRatio };
 
-export type AnnotatePrefs = { tools: Record<ToolId, ToolOptions>; redactionNoticeSeen: boolean };
+/** How smart redaction hides what it found; the strength is the chosen tool's level. */
+export type SensitiveMethod = "blur" | "pixelate";
+
+export type AnnotatePrefs = { tools: Record<ToolId, ToolOptions>; redactionNoticeSeen: boolean; sensitiveMethod: SensitiveMethod };
 
 function defaults(tool: ToolId): ToolOptions {
   return { ink: tool === "highlighter" ? "yellow" : "red", width: 1, size: 1, background: true, level: 1, ratio: "free" };
 }
 
 export function defaultPrefs(): AnnotatePrefs {
-  return { tools: Object.fromEntries(TOOL_IDS.map((t) => [t, defaults(t)])) as Record<ToolId, ToolOptions>, redactionNoticeSeen: false };
+  return {
+    tools: Object.fromEntries(TOOL_IDS.map((t) => [t, defaults(t)])) as Record<ToolId, ToolOptions>,
+    redactionNoticeSeen: false,
+    sensitiveMethod: "blur",
+  };
 }
 
 const index = (value: unknown, fallback: number) => (Number.isInteger(value) && (value as number) >= 0 && (value as number) <= 2 ? (value as number) : fallback);
@@ -32,8 +40,9 @@ const index = (value: unknown, fallback: number) => (Number.isInteger(value) && 
 export function readPrefs(raw: unknown): AnnotatePrefs {
   const prefs = defaultPrefs();
   if (typeof raw !== "object" || raw === null) return prefs;
-  const r = raw as { tools?: Record<string, Partial<Record<keyof ToolOptions, unknown>>>; redactionNoticeSeen?: unknown };
+  const r = raw as { tools?: Record<string, Partial<Record<keyof ToolOptions, unknown>>>; redactionNoticeSeen?: unknown; sensitiveMethod?: unknown };
   prefs.redactionNoticeSeen = r.redactionNoticeSeen === true;
+  if (r.sensitiveMethod === "blur" || r.sensitiveMethod === "pixelate") prefs.sensitiveMethod = r.sensitiveMethod;
   for (const tool of TOOL_IDS) {
     const saved = r.tools?.[tool];
     if (!saved || typeof saved !== "object") continue;
