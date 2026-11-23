@@ -26,8 +26,22 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 regex-lite = "0.1.9"
 keyring-core = "1.0.1"
 
+# The system keyring of each platform, all behind `keyring-core` (see `secrets.rs`): the login
+# keychain, the Credential Manager, and the Secret Service that GNOME Keyring and KWallet offer.
 [target.'cfg(target_os = "macos")'.dependencies]
 apple-native-keyring-store = { version = "1.0.2", features = ["keychain"] }
 
+# Without `search`, which lists every credential of the user to match a pattern and is not used.
+[target.'cfg(windows)'.dependencies]
+windows-native-keyring-store = { version = "1.1.0", default-features = false }
+
+# The Secret Service is reached over zbus, which Tauri's plugins already bring, with the session's
+# encryption in Rust: nothing links libdbus or OpenSSL.
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus-secret-service-keyring-store = { version = "1.0.1", features = ["rt-async-io-crypto-rust"] }
+
 [dev-dependencies]
 tempfile.workspace = true
+
+[lints]
+workspace = true
