@@ -152,8 +152,11 @@ const testing = ref(false);
 const result = ref<{ ok: boolean; text: string; code: string | null; warnings: string[] } | null>(null);
 /** The destination the test dialog asks about, while it is open. */
 const testConsent = ref<ConsentInfo | null>(null);
+/** The test sends a request, so Settings › General's switches keep it off like an upload. */
+const uploadsOn = computed(() => props.settings.general.allowUploads !== false && !props.settings.general.offline);
 
 async function test(): Promise<void> {
+  if (!uploadsOn.value) return;
   for (const field of fields.value) field?.touch();
   result.value = null;
   if (fields.value.some((f) => f?.invalid())) {
@@ -316,13 +319,14 @@ async function askAgain(): Promise<void> {
     <div class="g-group p-test-group">
       <FormRow stacked>
         <div class="p-test">
-          <button type="button" class="g-button" :disabled="testing" @click="test">
+          <button type="button" class="g-button" :disabled="testing || !uploadsOn" @click="test">
             <GIcon v-if="result && !result.ok" name="retry" :size="16" />{{ testing ? t("settings.upload.testing") : result && !result.ok ? t("settings.upload.testAgain") : t("settings.upload.test") }}
           </button>
           <span v-if="result?.ok" class="g-help" data-tone="ok" role="status"><GIcon name="check" :size="14" />{{ result.text }}</span>
           <span v-else-if="result" class="g-help" data-tone="danger" role="alert"
             ><GIcon name="bang" :size="14" /><span>{{ result.text }}<template v-if="result.code"> <span class="p-code">{{ result.code }}</span></template></span></span
           >
+          <span v-else-if="!uploadsOn" class="g-help">{{ t(settings.general.offline ? "settings.upload.offlineNote" : "settings.upload.offNote") }}</span>
           <span v-else class="g-help">{{ blocked ? t("settings.upload.testBlocked") : t("settings.upload.testHelp") }}</span>
         </div>
         <span v-for="(warning, i) in result?.warnings ?? []" :key="i" class="g-help" data-tone="warn"><GIcon name="warning" :size="14" />{{ warning }}</span>

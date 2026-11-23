@@ -69,6 +69,7 @@ import { app_choose_file, pin_open, window_open_settings } from "../lib/api/wind
 import { SETTINGS_CHANGED } from "../lib/events";
 import { language, t, tp, type Key } from "../lib/i18n";
 import { commandHeld, commandKeyName } from "../lib/keys";
+import { uploadsAllowed } from "../lib/network";
 import { can, isMac } from "../lib/platform";
 import type { ImageFormat, Settings } from "../lib/settings";
 import { jobName } from "../ocr/text";
@@ -699,7 +700,10 @@ const uploads = uploadFlow({
   say,
 });
 const uploadAsk = uploads.asking;
-const upload = () => void uploads.start();
+/** ⌘U does nothing while Settings keep uploads off and the button is hidden. */
+const upload = () => {
+  if (uploadsAllowed.value) void uploads.start();
+};
 
 // The image's own scale, or the pin would take the scale of the screen under the pointer.
 const pin = () => staged((path) => pin_open({ kind: "file", path, scale: scale.value }));
@@ -1434,7 +1438,7 @@ onUnmounted(() => {
       <TipWrap :tip="t('editor.saveAs')" :caps="['⇧', '⌘', 'S']" side="below">
         <button type="button" class="g-btn" :aria-label="t('editor.saveAs')" :disabled="!source || busy" @click="output('saveAs')"><GIcon name="save-as" /></button>
       </TipWrap>
-      <TipWrap :tip="t('action.upload')" :caps="['⌘', 'U']" side="below">
+      <TipWrap v-if="uploadsAllowed" :tip="t('action.upload')" :caps="['⌘', 'U']" side="below">
         <button type="button" class="g-btn" :aria-label="t('action.upload')" :disabled="!source || busy" @click="upload"><GIcon name="upload" /></button>
       </TipWrap>
       <TipWrap :tip="t('action.copyText')" :caps="['⇧', '⌘', 'C']" side="below">

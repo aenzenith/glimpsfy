@@ -34,6 +34,7 @@ import {
   type TranscriptWord,
 } from "../lib/api/transcript";
 import { language, t, tp, type Key } from "../lib/i18n";
+import { online } from "../lib/network";
 import type { Recording, Settings } from "../lib/settings";
 import { audioLayout } from "./choice";
 import {
@@ -632,7 +633,8 @@ function onProgress(p: TranscriptProgress): void {
 // --------------------------------------------------------------------------- the model
 
 async function downloadModel(): Promise<void> {
-  if (download.value) return;
+  // Work offline keeps the download off, as Settings › Recording does.
+  if (download.value || !online.value) return;
   const job = `speech-model-${Date.now()}`;
   download.value = { job, received: 0, total: model.value?.bytes ?? 0, remainingMs: null };
   if (phase.value.kind === "prompt") phase.value = { kind: "prompt", problem: null };
@@ -646,7 +648,7 @@ async function downloadModel(): Promise<void> {
     const code = codeOf(error);
     if (code === "cancelled") return;
     if (code === "not_implemented") phase.value = { kind: "unavailable" };
-    else if (phase.value.kind === "prompt") phase.value = { kind: "prompt", problem: t("record.transcript.downloadFailed") };
+    else if (phase.value.kind === "prompt") phase.value = { kind: "prompt", problem: code === "offline" ? t("error.offline") : t("record.transcript.downloadFailed") };
   }
 }
 
@@ -1172,8 +1174,9 @@ defineExpose({
         <h3 class="g-empty-title">{{ t("record.transcript.promptTitle") }}</h3>
         <p class="g-empty-text">{{ tp("record.transcript.promptText", { size: megabytes(model?.bytes ?? 0) }) }}</p>
         <p v-if="phase.problem" class="g-help" data-tone="danger" role="alert"><GIcon name="bang" :size="14" />{{ phase.problem }}</p>
+        <p v-else-if="!online" class="g-help">{{ t("settings.common.offlineNote") }}</p>
         <div class="g-empty-actions">
-          <button type="button" class="g-button" data-variant="primary" :disabled="!model" @click="downloadModel">
+          <button type="button" class="g-button" data-variant="primary" :disabled="!model || !online" @click="downloadModel">
             {{ t("record.transcript.download") }}
           </button>
         </div>

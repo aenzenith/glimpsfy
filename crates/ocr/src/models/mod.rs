@@ -329,7 +329,7 @@ impl From<ModelError> for OcrError {
     fn from(error: ModelError) -> Self {
         match error {
             ModelError::Download(reason) => OcrError::Download(reason),
-            ModelError::Offline => OcrError::Download(ModelError::Offline.to_string()),
+            ModelError::Offline => OcrError::Offline,
             ModelError::Missing(model) => OcrError::ModelMissing(model),
             ModelError::ChecksumMismatch { model } => OcrError::ChecksumMismatch { model },
             ModelError::Cancelled => OcrError::Cancelled,

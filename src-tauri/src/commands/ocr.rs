@@ -40,6 +40,7 @@ use tauri::{AppHandle, Emitter, Listener, Manager};
 
 use crate::commands::capture::{CaptureId, Selection};
 use crate::commands::error::{CommandError, CommandResult, ErrorCode};
+use crate::network::Traffic;
 use crate::settings::OcrEngineChoice;
 use crate::windows::{Toast, ToastKind};
 use crate::{events, windows, AppState};
@@ -72,6 +73,7 @@ impl From<OcrError> for CommandError {
             OcrError::Engine(_) => ErrorCode::Internal,
             OcrError::Cancelled => ErrorCode::Cancelled,
             OcrError::Download(_) => ErrorCode::Provider,
+            OcrError::Offline => ErrorCode::Offline,
             OcrError::ChecksumMismatch { .. } | OcrError::Io(_) => ErrorCode::Io,
         };
         CommandError::new(code, error.to_string())
@@ -255,7 +257,7 @@ pub async fn ocr_models(app: AppHandle) -> CommandResult<Vec<ModelInfo>> {
 /// Downloads a PP-OCR model from the reviewed table, reporting `ocr://model-progress`. Only a
 /// user's click calls this; nothing in the app downloads a model on its own. Fails with
 /// `not_implemented` in a build without the PP-OCR engine, so no one downloads a model the app
-/// cannot use.
+/// cannot use, and with `offline` while Settings › General keeps the app offline.
 #[tauri::command]
 pub async fn ocr_model_download(app: AppHandle, id: String, job: Option<String>) -> CommandResult<ModelInfo> {
     if !glimpsfy_ocr::available_engines().contains(&EngineId::PpOcr) {
@@ -268,8 +270,8 @@ pub async fn ocr_model_download(app: AppHandle, id: String, job: Option<String>)
         let mut progress = |p: Progress| {
             let _ = emitter.emit(ocr_events::MODEL_PROGRESS, p);
         };
-        // The offline switch (card A8) is not in the app yet, so the download is always allowed.
-        store.download(&id, &mut progress, &guard.cancel, &|| true)?;
+        // Work offline is asked before the first connection and again at every hop and chunk.
+        store.download(&id, &mut progress, &guard.cancel, &|| crate::network::online(&app, Traffic::ModelDownload))?;
         store.list().into_iter().find(|m| m.id == id).ok_or_else(|| CommandError::not_found(format!("model {id}")))
     })
     .await

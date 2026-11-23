@@ -48,6 +48,7 @@ import {
 } from "../lib/api/upload";
 import { window_open_settings } from "../lib/api/windows";
 import { t, tp } from "../lib/i18n";
+import { uploadsAllowed } from "../lib/network";
 import { can, isMac } from "../lib/platform";
 import type { Settings } from "../lib/settings";
 import FirstUploadDialog, { type DialogFile } from "../upload/FirstUploadDialog.vue";
@@ -462,7 +463,8 @@ function copy(): void {
 /** Upload checks the host first, as every Upload does: no host or a broken one sends the user to
  * Settings › Upload before anything is encoded, and a host not confirmed yet asks first. */
 async function startUpload(): Promise<void> {
-  if (!info.value || job.value || preparing.value || asking.value) return;
+  // ⌘U does nothing while Settings keep uploads off and the button is hidden.
+  if (!uploadsAllowed.value || !info.value || job.value || preparing.value || asking.value) return;
   problem.value = null;
   note.value = null;
   preparing.value = true;
@@ -828,7 +830,7 @@ onUnmounted(() => {
             <p v-else-if="uploadLine" class="g-help" role="status">{{ uploadLine }}</p>
             <p v-else class="g-help">{{ t("record.export.saveTo", { folder: info.folderName }) }}</p>
             <div class="r-outputs">
-              <TipWrap :tip="t('record.export.uploadTip')" :caps="['⌘', 'U']" align="start">
+              <TipWrap v-if="uploadsAllowed" :tip="t('record.export.uploadTip')" :caps="['⌘', 'U']" align="start">
                 <button type="button" class="g-button" :disabled="preparing" @click="startUpload">
                   <GIcon name="upload" :size="16" />{{ t("record.export.upload") }}
                 </button>

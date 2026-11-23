@@ -26,6 +26,10 @@ export function describeError(error: unknown): string {
         return t("settings.error.provider", { detail: error.message });
       case "not_confirmed":
         return t("error.not_confirmed");
+      case "uploads_off":
+        return t("error.uploads_off");
+      case "offline":
+        return t("error.offline");
       case "keychain":
         return tp("settings.error.keychain", { detail: error.message });
       default:

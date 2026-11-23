@@ -60,7 +60,7 @@ export function uploadFlow(options: {
 
   const fail = (error: unknown) => {
     const code = error instanceof ApiError ? error.code : "internal";
-    const known = ["permission_denied", "not_found", "io", "not_implemented", "not_confirmed", "keychain"];
+    const known = ["permission_denied", "not_found", "io", "not_implemented", "not_confirmed", "keychain", "uploads_off", "offline"];
     options.say(tp(known.includes(code) ? (`error.${code}` as "error.other") : "error.other"));
   };
 

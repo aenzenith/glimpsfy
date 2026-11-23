@@ -983,8 +983,9 @@ function onFailed(failed: UploadFailed): void {
 }
 
 /** Failures that end the same way however often they are retried: the settings or the file must
- * change first, and the sentence says how. */
-const FINAL: ReadonlySet<string> = new Set(["fileTooLarge", "hostNotAllowed", "notConfirmed", "missingSecret", "invalidConfig"]);
+ * change first, and the sentence says how. A switch of Settings › General stopped `uploadsOff` and
+ * `offline`, and Retry is an Upload button, which the switches hide. */
+const FINAL: ReadonlySet<string> = new Set(["fileTooLarge", "hostNotAllowed", "notConfirmed", "missingSecret", "invalidConfig", "uploadsOff", "offline"]);
 
 /** Failures that Settings › Upload fixes, so the toast offers the way there. */
 const SETTINGS_FIX: ReadonlySet<string> = new Set(["missingSecret", "invalidConfig"]);

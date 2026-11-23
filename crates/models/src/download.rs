@@ -12,8 +12,9 @@ const MAX_REDIRECTS: usize = 5;
 
 /// Streams one file of the table into `sink`. Refuses a URL that is not in `reviewed`, and a
 /// redirect to a host outside its hosts or to anything but HTTPS, before connecting. `online`
-/// is asked before the first connection, so a switch that keeps the app offline is kept here,
-/// in the one function that could break it.
+/// (the app's Work offline switch) is asked before every other check, before every hop of a
+/// redirect and before every 64 KB of the body, so the switch is kept here, in the one function
+/// that could break it, and turning it on stops a download that already runs.
 pub(crate) fn fetch(
     file: &ModelFile,
     reviewed: &Reviewed,
@@ -22,11 +23,9 @@ pub(crate) fn fetch(
     cancelled: &dyn Fn() -> bool,
     online: &dyn Fn() -> bool,
 ) -> Result<()> {
+    stay_offline(online)?;
     if !reviewed.files.iter().any(|f| f.url == file.url) {
         return Err(ModelError::Download(format!("{} is not in the reviewed model table", file.url)));
-    }
-    if !online() {
-        return Err(ModelError::Offline);
     }
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .https_only(true)
@@ -41,6 +40,7 @@ pub(crate) fn fetch(
 
     let mut url = file.url.to_string();
     for _ in 0..=MAX_REDIRECTS {
+        stay_offline(online)?;
         allowed(&url, reviewed)?;
         check(cancelled)?;
         let response = agent.get(&url).call().map_err(|e| ModelError::Download(e.to_string()))?;
@@ -62,6 +62,7 @@ pub(crate) fn fetch(
         let mut received = 0u64;
         loop {
             check(cancelled)?;
+            stay_offline(online)?;
             let n = reader.read(&mut buf).map_err(|e| ModelError::Download(e.to_string()))?;
             if n == 0 {
                 return Ok(());
@@ -72,6 +73,14 @@ pub(crate) fn fetch(
         }
     }
     Err(ModelError::Download("the server redirected too many times".into()))
+}
+
+fn stay_offline(online: &dyn Fn() -> bool) -> Result<()> {
+    if online() {
+        Ok(())
+    } else {
+        Err(ModelError::Offline)
+    }
 }
 
 fn check(cancelled: &dyn Fn() -> bool) -> Result<()> {
@@ -159,5 +168,35 @@ mod tests {
         assert!(resolve("https://huggingface.co/a", "//evil.example/a").is_err());
         assert!(resolve("https://huggingface.co/a", "ftp://huggingface.co/a").is_err());
         assert_eq!(resolve("https://huggingface.co/a", "/api/b").ok().as_deref(), Some("https://huggingface.co/api/b"));
+    }
+
+    /// Work offline comes before every other check of the fetch: a URL outside the table, one on
+    /// a host that is not allowed and one over plain HTTP all answer `Offline`, and `online` is
+    /// asked before anything else could happen. A download that runs while the switch turns on
+    /// stops at its next hop or chunk, which `fetch` asks it before.
+    #[test]
+    fn no_request_leaves_while_the_app_is_offline() {
+        for url in [
+            FILE.url,
+            "https://example.com/det.onnx",
+            "http://huggingface.co/someone/model/resolve/0123456789abcdef/model.bin",
+            "https://evil.example/model.bin",
+        ] {
+            let file = ModelFile { name: "x", url, sha256: "", bytes: 1 };
+            let asked = std::cell::Cell::new(0);
+            let mut sink = Vec::new();
+            let result = fetch(&file, &reviewed(), &mut sink, &mut |_| {}, &|| false, &|| {
+                asked.set(asked.get() + 1);
+                false
+            });
+            assert!(matches!(result, Err(ModelError::Offline)), "{url}: {result:?}");
+            assert_eq!(asked.get(), 1, "{url}: the switch was not the first thing asked");
+            assert!(sink.is_empty());
+        }
+        // The same holds through the public download, which leaves no part file behind.
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let result = crate::download(dir.path(), "m", &[FILE], &reviewed(), &mut |_, _| {}, &|| false, &|| false);
+        assert!(matches!(result, Err(ModelError::Offline)), "{result:?}");
+        assert!(!dir.path().join("model.bin").exists() && !dir.path().join("model.bin.part").exists());
     }
 }

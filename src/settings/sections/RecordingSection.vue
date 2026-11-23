@@ -161,9 +161,12 @@ async function loadSpeech(): Promise<void> {
   }
 }
 
+/** Work offline keeps the download off; a model on disk still works and can be removed. */
+const offline = computed(() => props.settings.general.offline === true);
+
 async function downloadSpeech(): Promise<void> {
   const model = speech.value;
-  if (!model || speechJob.value) return;
+  if (!model || speechJob.value || offline.value) return;
   const job = `speech-model-${Date.now()}`;
   speechJob.value = { job, received: 0, total: model.bytes };
   speechProblem.value = null;
@@ -386,7 +389,11 @@ function swatchKey(event: KeyboardEvent): void {
     />
     <template v-else>
       <FormRow v-if="speechProblem" :help="speechProblem" tone="danger" />
-      <FormRow :label="speech.title" :help="speechMeta">
+      <FormRow
+        :label="speech.title"
+        :help="offline && !speech.installed && !speechJob ? `${speechMeta} · ${t('settings.common.offlineNote')}` : speechMeta"
+        :disabled="offline && !speech.installed && !speechJob"
+      >
         <span v-if="speech.installed" class="g-badge" data-tone="ok">{{ t("settings.recording.speechModelInstalled") }}</span>
         <button v-if="speech.installed" type="button" class="g-button" :disabled="!!speechJob" @click="removeSpeech">
           {{ t("settings.recording.speechModelRemove") }}
@@ -394,7 +401,7 @@ function swatchKey(event: KeyboardEvent): void {
         <button v-else-if="speechJob" type="button" class="g-button" :disabled="!speechJob.job" @click="cancelSpeech">
           {{ t("settings.common.cancel") }}
         </button>
-        <button v-else type="button" class="g-button" @click="downloadSpeech">{{ t("settings.recording.speechModelDownload") }}</button>
+        <button v-else type="button" class="g-button" :disabled="offline" @click="downloadSpeech">{{ t("settings.recording.speechModelDownload") }}</button>
       </FormRow>
     </template>
   </div>

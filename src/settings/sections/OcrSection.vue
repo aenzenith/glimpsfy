@@ -78,8 +78,11 @@ async function loadModels(): Promise<void> {
   }
 }
 
+/** Work offline keeps every download off; a model on disk still works and can be removed. */
+const offline = computed(() => props.settings.general.offline === true);
+
 async function download(model: ModelInfo): Promise<void> {
-  if (!ppOcrReady.value || downloads.has(model.id)) return;
+  if (offline.value || !ppOcrReady.value || downloads.has(model.id)) return;
   const job = `model-${model.id}-${Date.now()}`;
   downloads.set(model.id, { job, received: 0, total: model.bytes });
   modelProblem.value = null;
@@ -232,7 +235,13 @@ const languagesHelp = computed<{ text: string; tone: "warn" | "danger" | null }>
       <FormRow v-else-if="ocr.engine === 'ppOcr' && models.length && !models.some((m) => m.installed)" :help="t('settings.ocr.modelsNeeded')" tone="warn" />
       <FormRow v-if="modelProblem" :help="modelProblem" tone="danger" />
       <FormRow v-if="!models.length" :help="t('settings.ocr.modelsNone')" />
-      <FormRow v-for="model in models" :key="model.id" :label="model.title" :help="modelMeta(model)">
+      <FormRow
+        v-for="model in models"
+        :key="model.id"
+        :label="model.title"
+        :help="offline && !model.installed && !downloads.has(model.id) ? `${modelMeta(model)} · ${t('settings.common.offlineNote')}` : modelMeta(model)"
+        :disabled="offline && !model.installed && !downloads.has(model.id)"
+      >
         <span v-if="model.installed" class="g-badge" data-tone="ok">{{ t("settings.ocr.modelInstalled") }}</span>
         <button v-if="model.installed" type="button" class="g-button" :disabled="downloads.has(model.id)" @click="remove(model)">
           {{ t("settings.ocr.modelRemove") }}
@@ -240,7 +249,7 @@ const languagesHelp = computed<{ text: string; tone: "warn" | "danger" | null }>
         <button v-else-if="downloads.has(model.id)" type="button" class="g-button" @click="ocr_cancel(downloads.get(model.id)!.job)">
           {{ t("settings.common.cancel") }}
         </button>
-        <button v-else-if="ppOcrReady" type="button" class="g-button" @click="download(model)">{{ t("settings.ocr.modelDownload") }}</button>
+        <button v-else-if="ppOcrReady" type="button" class="g-button" :disabled="offline" @click="download(model)">{{ t("settings.ocr.modelDownload") }}</button>
       </FormRow>
     </template>
   </div>

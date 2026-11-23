@@ -94,6 +94,7 @@ import {
 import { PERMISSIONS_CHANGED, SETTINGS_CHANGED } from "../lib/events";
 import { language, t, tp, type Key } from "../lib/i18n";
 import { capsOf, capsText, chord, type ShortcutAction } from "../lib/keys";
+import { uploadsAllowed } from "../lib/network";
 import { can, isMac } from "../lib/platform";
 import type { IntervalPlan, Settings, Shortcuts } from "../lib/settings";
 import { useUpdate } from "../lib/update";
@@ -568,7 +569,7 @@ function actionsFor(entry: Entry): Act[] {
   else if (entry.kind !== "textCopy" && pathOf(entry)) ids.push("path");
   if (uploads.has(entry.id)) ids.push("cancel");
   else if (entry.hosted) ids.push("link");
-  else if (entry.kind !== "textCopy" && defaultProvider.value && pathOf(entry)) ids.push("upload");
+  else if (entry.kind !== "textCopy" && uploadsAllowed.value && defaultProvider.value && pathOf(entry)) ids.push("upload");
   if (entry.kind === "screenshot") ids.push("pin", "editor");
   // A recording offers Trim where a screenshot offers the editor (DESIGN.md, Popover).
   if (entry.kind === "recording") ids.push("trim");

@@ -8,6 +8,7 @@ import GIcon from "../components/GIcon.vue";
 import { entryName, fileUrl, thumbUrl, videoUrl, type Entry, type HistoryItem } from "../lib/api/history";
 import type { HistoryRetention } from "../lib/settings";
 import { t, tp } from "../lib/i18n";
+import { uploadsAllowed } from "../lib/network";
 import { can } from "../lib/platform";
 import AppIcon from "./AppIcon.vue";
 import { HISTORY, type HistoryContext } from "./context";
@@ -239,7 +240,7 @@ const preview = computed(() => (linkOnly.value ? null : (thumbUrl(entry.value) ?
         <button v-if="kind !== 'textCopy'" type="button" class="g-btn" :aria-label="t('history.action.saveAs')" :data-tip="t('history.action.saveAs')" data-key="⇧⌘S" @click="ctx.act.saveAs(id)">
           <GIcon name="save-as" />
         </button>
-        <button v-if="kind !== 'textCopy'" type="button" class="g-btn" :aria-label="t('history.action.upload')" :data-tip="t('history.action.upload')" data-key="⌘U" @click="ctx.act.upload([id])">
+        <button v-if="kind !== 'textCopy' && uploadsAllowed" type="button" class="g-btn" :aria-label="t('history.action.upload')" :data-tip="t('history.action.upload')" data-key="⌘U" @click="ctx.act.upload([id])">
           <GIcon name="upload" />
         </button>
         <button v-if="kind === 'screenshot'" type="button" class="g-btn" :aria-label="t('history.action.pinToScreen')" :data-tip="t('history.action.pinToScreen')" data-key="⌘P" @click="ctx.act.pinToScreen(id)">
@@ -336,7 +337,7 @@ const preview = computed(() => (linkOnly.value ? null : (thumbUrl(entry.value) ?
             </button>
           </div>
           <div class="hv-linkmeta"><span>{{ uploadedLine }}</span></div>
-          <div style="margin-top: 10px">
+          <div v-if="uploadsAllowed" style="margin-top: 10px">
             <button type="button" class="g-button" data-variant="destructive" @click="ctx.act.deleteHosted(id)">
               <GIcon name="cloud" :size="16" />{{ t("history.action.deleteHosted") }}
             </button>
@@ -346,7 +347,7 @@ const preview = computed(() => (linkOnly.value ? null : (thumbUrl(entry.value) ?
           <div class="hv-sec-head"><span class="hv-sec-title">{{ t("history.link.title") }}</span></div>
           <div class="hv-linkmeta">
             <span>{{ tp("history.link.notUploaded") }}</span>
-            <button type="button" class="g-button" :data-tip="t('history.action.upload')" data-key="⌘U" @click="ctx.act.upload([id])">
+            <button v-if="uploadsAllowed" type="button" class="g-button" :data-tip="t('history.action.upload')" data-key="⌘U" @click="ctx.act.upload([id])">
               <GIcon name="upload" :size="16" />{{ t("history.action.upload") }}
             </button>
           </div>

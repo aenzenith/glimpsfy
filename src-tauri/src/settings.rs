@@ -120,6 +120,12 @@ pub struct General {
     pub delay_seconds: u32,
     pub shutter_sound: bool,
     pub check_for_updates: bool,
+    /// Whether anything may go to an upload host: uploads, connection tests and deletions from
+    /// the host. Off hides the Upload buttons; `network::gate` enforces it (on by default).
+    pub allow_uploads: bool,
+    /// Keeps Glimpsfy from opening any network connection: no upload, model download or update
+    /// check. It wins over `allow_uploads` (off by default).
+    pub offline: bool,
     /// Whether the user finished the first-run window. Until then it opens at every launch, and
     /// it opens anyway whenever the screen recording permission is missing.
     pub first_run_done: bool,
@@ -242,6 +248,8 @@ impl Default for General {
             delay_seconds: 5,
             shutter_sound: true,
             check_for_updates: true,
+            allow_uploads: true,
+            offline: false,
             first_run_done: false,
             saved_sizes: Vec::new(),
             interval: IntervalPlan::default(),
@@ -1099,6 +1107,12 @@ impl SettingsStore {
 
     pub fn get(&self) -> Settings {
         self.current.read().unwrap_or_else(|poisoned| poisoned.into_inner()).clone()
+    }
+
+    /// Reads the current settings without copying them. The network gate asks it before every
+    /// request and every 64 KB of a body, where a whole copy each time would be waste.
+    pub fn read<T>(&self, look: impl FnOnce(&Settings) -> T) -> T {
+        look(&self.current.read().unwrap_or_else(|poisoned| poisoned.into_inner()))
     }
 
     /// Saves `settings` and makes them current. The file is written first, so the app never runs

@@ -1,7 +1,8 @@
 <script setup lang="ts">
 // Settings › General: language and appearance, the menu bar (the tray elsewhere), what a capture
-// does, and updates. A row this platform cannot honour (the icon's click where the tray reports
-// none, the shutter sound where the system has none) is left out.
+// does, the network switches and updates. A row this platform cannot honour (the icon's click
+// where the tray reports none, the shutter sound where the system has none) is left out. Work
+// offline wins over Allow uploads, so that switch shows off and greyed while the app is offline.
 import { computed } from "vue";
 
 import FormRow from "../../components/FormRow.vue";
@@ -22,7 +23,7 @@ const props = defineProps<{ settings: Settings }>();
 const g = computed(() => props.settings.general);
 
 
-const ids = { language: uid("lang"), appearance: uid("app"), login: uid("login"), icon: uid("icon"), click: uid("click"), after: uid("after"), pointer: uid("ptr"), delay: uid("delay"), shutter: uid("shut"), updates: uid("upd") };
+const ids = { language: uid("lang"), appearance: uid("app"), login: uid("login"), icon: uid("icon"), click: uid("click"), after: uid("after"), pointer: uid("ptr"), delay: uid("delay"), shutter: uid("shut"), updates: uid("upd"), uploads: uid("uploads"), offline: uid("offline") };
 
 const languages = computed(() => [
   { value: "system" as Language, label: t("settings.common.system") },
@@ -97,10 +98,20 @@ const loginRefused = (): Banner => ({
     </FormRow>
   </div>
 
+  <SectionHead :title="t('settings.general.headNetwork')" />
+  <div class="g-group">
+    <FormRow :label="t('settings.general.allowUploads')" :for="ids.uploads" :help="g.offline ? t('settings.common.offlineNote') : t('settings.general.allowUploadsHelp')" :disabled="g.offline">
+      <SwitchControl :id="ids.uploads" :disabled="g.offline" :model-value="g.allowUploads && !g.offline" @update:model-value="(v) => update((s) => (s.general.allowUploads = v))" />
+    </FormRow>
+    <FormRow :label="t('settings.general.offline')" :for="ids.offline" :help="t('settings.general.offlineHelp')">
+      <SwitchControl :id="ids.offline" :model-value="g.offline" @update:model-value="(v) => update((s) => (s.general.offline = v))" />
+    </FormRow>
+  </div>
+
   <SectionHead :title="t('settings.general.headUpdates')" />
   <div class="g-group">
-    <FormRow :label="t('settings.general.checkUpdates')" :for="ids.updates" :help="t('settings.general.checkUpdatesHelp')">
-      <SwitchControl :id="ids.updates" :model-value="g.checkForUpdates" @update:model-value="(v) => update((s) => (s.general.checkForUpdates = v))" />
+    <FormRow :label="t('settings.general.checkUpdates')" :for="ids.updates" :help="g.offline ? t('settings.common.offlineNote') : t('settings.general.checkUpdatesHelp')" :disabled="g.offline">
+      <SwitchControl :id="ids.updates" :disabled="g.offline" :model-value="g.checkForUpdates && !g.offline" @update:model-value="(v) => update((s) => (s.general.checkForUpdates = v))" />
     </FormRow>
     <UpdateRow />
   </div>

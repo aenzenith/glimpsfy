@@ -103,6 +103,9 @@ const GENERAL: Partial<Record<ErrorCode, Key>> = {
   not_implemented: "record.error.not_implemented",
   not_found: "record.error.not_found",
   invalid_argument: "record.error.invalid_argument",
+  // A switch of Settings › General stopped an upload or the speech model's download.
+  uploads_off: "error.uploads_off",
+  offline: "error.offline",
 };
 
 /** The code of a failure; anything that is not an `ApiError` counts as `internal`. */

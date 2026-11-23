@@ -14,6 +14,8 @@ const REASON: Partial<Record<ErrorCode, Key>> = {
   provider: "toast.reason.provider",
   not_confirmed: "error.not_confirmed",
   keychain: "error.keychain",
+  uploads_off: "error.uploads_off",
+  offline: "error.offline",
   invalid_argument: "toast.reason.invalid_argument",
   cancelled: "toast.reason.cancelled",
 };
@@ -34,9 +36,10 @@ export function reasonText(code: ErrorCode | null | undefined): string {
   return tp(key ?? "error.other");
 }
 
-/** One sentence that says what to do next, or `null` when nothing helps (not implemented yet). */
+/** One sentence that says what to do next, or `null` when nothing helps (not implemented yet), or
+ * when the reason already says it (a switch of Settings stopped the request). */
 export function fixText(code: ErrorCode | null | undefined): string | null {
-  if (code === "not_implemented" || code === "cancelled") return null;
+  if (code === "not_implemented" || code === "cancelled" || code === "uploads_off" || code === "offline") return null;
   const key = code ? FIX[code] : undefined;
   return tp(key ?? "toast.fix.other");
 }

@@ -1212,6 +1212,7 @@ fn recognize(app: &AppHandle, path: &Path) -> Result<(String, RecognizedText), T
         | OcrError::LanguageUnavailable(_)
         | OcrError::ModelMissing(_)
         | OcrError::Download(_)
+        | OcrError::Offline
         | OcrError::Cancelled => TextFailure::Unavailable(error.to_string()),
         OcrError::InvalidImage(_) => TextFailure::Unreadable(error.to_string()),
         OcrError::Io(ref io) if io.kind() == std::io::ErrorKind::NotFound => TextFailure::Unreadable(error.to_string()),
@@ -1491,6 +1492,8 @@ pub enum HostedDeletion {
 /// and its files stay. When the host refuses, the link is kept and the error says why.
 #[tauri::command]
 pub async fn history_delete_hosted(app: AppHandle, entry_id: EntryId) -> CommandResult<HostedDeletion> {
+    // `uploads_off` or `offline` before anything; the upload client's gate stops the request too.
+    crate::network::admit(&app, crate::network::Traffic::Upload)?;
     let entry = with_store(&app, move |store| store.get(&entry_id)).await?;
     if entry.hosted.is_none() {
         return Err(CommandError::invalid("this capture has no hosted copy"));

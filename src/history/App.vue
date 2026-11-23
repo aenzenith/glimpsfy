@@ -47,6 +47,7 @@ import { app_copy_text, app_open_url, pin_open, popover_drag_out, window_open, w
 import { SETTINGS_CHANGED } from "../lib/events";
 import { language, t, tp } from "../lib/i18n";
 import { ariaKeys, capsText, chord, commandHeld } from "../lib/keys";
+import { uploadsAllowed } from "../lib/network";
 import { can, isMac } from "../lib/platform";
 import type { Settings } from "../lib/settings";
 import AppIcon from "./AppIcon.vue";
@@ -255,6 +256,9 @@ function failed(error: unknown, what: string): void {
     if (error.code === "cancelled") return;
     if (error.code === "not_implemented") return toast(t("history.toast.unavailable", { what }), undefined, "warn");
     if (error.code === "not_found") return toast(t("history.toast.missing"), error.message, "warn");
+    // A switch of Settings › General stopped it; the sentence says which, and nothing was sent.
+    if (error.code === "uploads_off") return toast(t("error.uploads_off"), undefined, "warn");
+    if (error.code === "offline") return toast(t("error.offline"), undefined, "warn");
     return toast(t("history.toast.failed", { what }), error.message, "warn");
   }
   toast(t("history.toast.failed", { what }), String(error), "warn");
@@ -538,6 +542,8 @@ const act: Actions = {
       .catch((e) => failed(e, t("history.action.copyLink")));
   },
   upload(ids) {
+    // ⌘U does nothing while Settings keep uploads off and every Upload is hidden.
+    if (!uploadsAllowed.value) return;
     const provider = settings.value?.upload.defaultProvider ?? null;
     for (const id of ids) {
       const entry = entryOf(id);
@@ -607,6 +613,7 @@ const act: Actions = {
     if (url) app_open_url(url).catch((e) => failed(e, t("history.action.openLink")));
   },
   deleteHosted(id) {
+    if (!uploadsAllowed.value) return;
     confirming.value = { kind: "deleteHosted", id };
   },
   setPinned(id, pinned) {
@@ -689,7 +696,7 @@ function menuItems(): MenuItem[] {
     const links = ids.filter((id) => entryOf(id)?.hosted).length;
     return [
       { label: links === 1 ? t("history.bulk.copyLink") : t("history.bulk.copyLinks", { n: links }), icon: "link", keys: "⇧⌘L", disabled: !links, run: () => copyLinks(ids) },
-      { label: t("history.action.upload"), icon: "upload", keys: "⌘U", run: () => act.upload(ids) },
+      ...(uploadsAllowed.value ? [{ label: t("history.action.upload"), icon: "upload", keys: "⌘U", run: () => act.upload(ids) }] : []),
       { label: t("history.bulk.combine"), icon: "combine", keys: "⌘J", disabled: !combineOn.value, run: () => openCombine(ids) },
       { label: t("history.action.export"), icon: "save", keys: "⌘E", run: () => exportSelected(ids) },
       "separator",
@@ -723,7 +730,7 @@ function menuItems(): MenuItem[] {
   if (entry.kind !== "textCopy") own.push({ label: t("send.copyPath"), icon: "path", keys: "⌥⌘C", run: () => act.copyPath(id) });
   if (can("sendToApp")) own.push({ label: t("send.send"), icon: "send", children: sendItems(id) });
   if (entry.hosted) own.push({ label: t("history.action.copyLink"), icon: "link", keys: "⇧⌘L", run: () => act.copyLink(id) });
-  else if (entry.kind !== "textCopy") own.push({ label: t("history.action.upload"), icon: "upload", keys: "⌘U", run: () => act.upload([id]) });
+  else if (entry.kind !== "textCopy" && uploadsAllowed.value) own.push({ label: t("history.action.upload"), icon: "upload", keys: "⌘U", run: () => act.upload([id]) });
   own.push("separator");
   own.push({ label: entry.pinned ? t("history.action.unpin") : t("history.action.pin"), icon: "pin", run: () => act.setPinned(id, !entry.pinned) });
   if (entry.kind === "screenshot") own.push({ label: t("history.action.pinToScreen"), icon: "pin", keys: "⌘P", run: () => act.pinToScreen(id) });
@@ -1308,10 +1315,10 @@ const zoomPercent = computed(() => `${(((zoom.value - 140) / 140) * 100).toFixed
             <button type="button" class="g-button" :disabled="!linkCount" :data-tip="t('history.bulk.copyLinksTip')" data-key="⇧⌘L" @click="copyLinks(selection.ids)">
               <GIcon name="link" :size="16" />{{ linkCount === 1 ? t("history.bulk.copyLink") : t("history.bulk.copyLinks", { n: linkCount }) }}
             </button>
-            <button v-if="squeeze >= 2" type="button" class="g-btn" :aria-label="t('history.action.upload')" :data-tip="t('history.action.upload')" data-key="⌘U" @click="act.upload(selection.ids)">
+            <button v-if="uploadsAllowed && squeeze >= 2" type="button" class="g-btn" :aria-label="t('history.action.upload')" :data-tip="t('history.action.upload')" data-key="⌘U" @click="act.upload(selection.ids)">
               <GIcon name="upload" />
             </button>
-            <button v-else type="button" class="g-button" :data-tip="t('history.action.upload')" data-key="⌘U" @click="act.upload(selection.ids)">
+            <button v-else-if="uploadsAllowed" type="button" class="g-button" :data-tip="t('history.action.upload')" data-key="⌘U" @click="act.upload(selection.ids)">
               <GIcon name="upload" :size="16" />{{ t("history.action.upload") }}
             </button>
             <button

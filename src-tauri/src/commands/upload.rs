@@ -6,6 +6,8 @@
 //! these commands, which a user action calls, and the engine refuses each one until the user has
 //! confirmed the provider's destination once (`upload_confirm_provider`, called by
 //! `src/upload/FirstUploadDialog.vue`). No provider is the default until the user picks one.
+//! Settings › General › Network wins over all of it: the client's gate is `network::gate`, so
+//! with Allow uploads off or Work offline on every call ends with `uploads_off` or `offline`.
 //!
 //! An upload runs on a thread of its own. The starting command returns its id at once
 //! ([`UploadStarted`]); `upload://progress` follows, then exactly one of `upload://done` and
@@ -31,8 +33,8 @@ use glimpsfy_upload::engine::{PendingUpload, Stored, SxcuImported};
 use glimpsfy_upload::http::HttpClient;
 use glimpsfy_upload::secrets::SecretStore;
 use glimpsfy_upload::{
-    DeleteOutcome, DeletionHandle, Issue, ProviderDescription, ProviderId, ProviderTestResult, UploadData, UploadError,
-    UploadId, UploadProgress, Uploader,
+    DeleteOutcome, DeletionHandle, Issue, ProviderDescription, ProviderId, ProviderTestResult, SwitchedOff, UploadData,
+    UploadError, UploadId, UploadProgress, Uploader,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -40,6 +42,7 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use crate::commands::capture::{CloseReason, Selection};
 use crate::commands::error::{CommandError, CommandResult, ErrorCode};
+use crate::network::{self, Traffic};
 use crate::output::{file_stem_titled, Naming, Origin};
 use crate::settings::{CopyAfterUpload, RetinaScale, Settings, SettingsStore};
 use crate::{session, trace, AppState};
@@ -62,6 +65,8 @@ impl From<UploadError> for CommandError {
             | UploadError::HostNotAllowed { .. } => ErrorCode::Provider,
             UploadError::Cancelled => ErrorCode::Cancelled,
             UploadError::Keychain(_) => ErrorCode::Keychain,
+            UploadError::SwitchedOff(SwitchedOff::Uploads) => ErrorCode::UploadsOff,
+            UploadError::SwitchedOff(SwitchedOff::Offline) => ErrorCode::Offline,
             UploadError::Io(io) if io.kind() == std::io::ErrorKind::NotFound => ErrorCode::NotFound,
             UploadError::Io(_) => ErrorCode::Io,
         };
@@ -116,7 +121,7 @@ pub mod events {
         pub error: CommandError,
         /// The failure in one word, for the page's sentence: `cancelled`, `provider`, `network`,
         /// `fileTooLarge`, `hostNotAllowed`, `notConfirmed`, `missingSecret`, `invalidConfig`,
-        /// `keychain`, `io` or `other`.
+        /// `keychain`, `uploadsOff`, `offline`, `io` or `other`.
         pub kind: &'static str,
         /// The HTTP status of the host's refusal, when it answered.
         pub status: Option<u16>,
@@ -140,8 +145,8 @@ pub fn setup(app: &AppHandle) {
     let _ = APP.set(app.clone());
 }
 
-/// The one engine, with the system keychain and the shared HTTP client. It is made on first use,
-/// so the app starts without touching the keychain.
+/// The one engine, with the system keychain and the shared HTTP client, whose gate is the app's
+/// switches. It is made on first use, so the app starts without touching the keychain.
 fn uploader() -> CommandResult<&'static Uploader> {
     UPLOADER
         .get_or_init(|| {
@@ -151,7 +156,12 @@ fn uploader() -> CommandResult<&'static Uploader> {
             if let Some(prefix) = crate::paths::keychain_prefix() {
                 secrets = secrets.with_service_prefix(&prefix);
             }
-            let client = HttpClient::new(env!("CARGO_PKG_VERSION"));
+            // Asked before every request and every 64 KB of a body; without the app handle (it is
+            // set at launch) the gate stays closed.
+            let client = HttpClient::new(env!("CARGO_PKG_VERSION")).with_gate(Arc::new(|| match APP.get() {
+                Some(app) => network::gate(app, Traffic::Upload).map(SwitchedOff::from),
+                None => Some(SwitchedOff::Offline),
+            }));
             Ok(Uploader::new(glimpsfy_upload::builtin_providers(), secrets, client))
         })
         .as_ref()
@@ -211,9 +221,11 @@ pub struct UploadPreflight {
 
 /// The provider an upload would use now (the named one, or the default), what its first-upload
 /// confirmation says, and what stops it. Fails with `invalid_argument` when no provider is named
-/// and none is the default yet.
+/// and none is the default yet, and with `uploads_off` or `offline` before the keychain is read
+/// when Settings › General › Network stops uploads, so a page's upload flow ends at its first step.
 #[tauri::command]
 pub async fn upload_preflight(app: AppHandle, provider_id: Option<ProviderId>) -> CommandResult<UploadPreflight> {
+    network::admit(&app, Traffic::Upload)?;
     off_main(move || {
         let settings = app.state::<AppState>().settings.get();
         let provider = chosen(provider_id, &settings)?;
@@ -692,6 +704,8 @@ fn failure_kind(error: &UploadError) -> &'static str {
         UploadError::MissingSecret { .. } => "missingSecret",
         UploadError::InvalidConfig { .. } => "invalidConfig",
         UploadError::Keychain(_) => "keychain",
+        UploadError::SwitchedOff(SwitchedOff::Uploads) => "uploadsOff",
+        UploadError::SwitchedOff(SwitchedOff::Offline) => "offline",
         UploadError::Io(_) => "io",
         _ => "other",
     }

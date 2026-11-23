@@ -36,6 +36,10 @@ pub enum ErrorCode {
     NotConfirmed,
     /// The system keychain could not be opened, or refused to read, write or delete a secret.
     Keychain,
+    /// Settings › General › Network turned uploads off, so nothing was sent to an upload host.
+    UploadsOff,
+    /// Settings › General › Network keeps Glimpsfy offline, so no connection was opened.
+    Offline,
     /// The user cancelled.
     Cancelled,
     Internal,

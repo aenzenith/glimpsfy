@@ -12,8 +12,13 @@
 //!
 //! **A connection** is the client bound to the origins of one confirmed destination. It refuses
 //! any URL outside them before a socket opens, and only `engine` can open one.
+//!
+//! **The gate** is the app's switches (Allow uploads, Work offline) as the client sees them. It is
+//! asked before every request and before every 64 KB of a streamed body, so a switch turned off in
+//! the middle of an upload stops it too. A client without a gate (`for_tests`) is always open.
 
 use std::io::{self, Cursor, Read};
+use std::sync::Arc;
 use std::time::Duration;
 
 use ureq::http::{HeaderName, HeaderValue, Method};
@@ -21,17 +26,22 @@ use ureq::tls::{RootCerts, TlsConfig};
 use ureq::{Agent, SendBody};
 use url::Url;
 
-use crate::{CancelToken, ProviderId, Result, UploadData, UploadError};
+use crate::{CancelToken, ProviderId, Result, SwitchedOff, UploadData, UploadError};
 
 /// The answer is read up to this size; a link or an error never needs more.
 const MAX_RESPONSE_BYTES: u64 = 1024 * 1024;
 /// Progress is reported at most this often, by bytes.
 const PROGRESS_STEP: u64 = 64 * 1024;
 
-/// The shared client. Clone it freely; clones share the connection pool.
+/// The app's switches as the client asks them: `Some` names the switch that keeps a request
+/// from leaving now. It reads the live settings each time and answers closed when it cannot.
+pub type Gate = Arc<dyn Fn() -> Option<SwitchedOff> + Send + Sync>;
+
+/// The shared client. Clone it freely; clones share the connection pool and the gate.
 #[derive(Clone)]
 pub struct HttpClient {
     agent: Agent,
+    gate: Option<Gate>,
 }
 
 impl HttpClient {
@@ -66,7 +76,26 @@ impl HttpClient {
             .timeout_recv_response(Some(Duration::from_secs(120)))
             .timeout_recv_body(Some(Duration::from_secs(60)))
             .build();
-        HttpClient { agent: config.new_agent() }
+        HttpClient { agent: config.new_agent(), gate: None }
+    }
+
+    /// The client that asks `gate` before every request and every 64 KB of a body.
+    pub fn with_gate(mut self, gate: Gate) -> HttpClient {
+        self.gate = Some(gate);
+        self
+    }
+
+    /// The switch that keeps requests from leaving now, if one does.
+    pub(crate) fn switched_off(&self) -> Option<SwitchedOff> {
+        self.gate.as_ref().and_then(|gate| gate())
+    }
+
+    /// Fails with [`UploadError::SwitchedOff`] while a switch keeps requests from leaving.
+    pub(crate) fn admit(&self) -> Result<()> {
+        match self.switched_off() {
+            Some(off) => Err(UploadError::SwitchedOff(off)),
+            None => Ok(()),
+        }
     }
 }
 
@@ -136,6 +165,8 @@ impl Connection {
     /// Sends one request and reads the answer. A URL outside the confirmed origins is refused
     /// before anything is sent; a cancelled body ends with [`UploadError::Cancelled`].
     pub fn send(&self, request: Request<'_>) -> Result<Response> {
+        // The switches come first: with uploads off or the app offline nothing is even checked.
+        self.client.admit()?;
         let url = request.url;
         let origin = Origin::of(&url).ok_or_else(|| UploadError::HostNotAllowed {
             provider: self.provider.clone(),
@@ -168,8 +199,14 @@ impl Connection {
                 self.client.agent.run(req)
             }
             Body::Stream { reader, length, progress } => {
-                let mut counting =
-                    CountingReader { inner: reader, sent: 0, reported: 0, cancel: self.cancel.clone(), progress };
+                let mut counting = CountingReader {
+                    inner: reader,
+                    sent: 0,
+                    reported: 0,
+                    cancel: self.cancel.clone(),
+                    client: self.client.clone(),
+                    progress,
+                };
                 let req = builder
                     .header("content-length", length)
                     .body(SendBody::from_reader(&mut counting))
@@ -185,7 +222,11 @@ impl Connection {
         let mut response = match result {
             Ok(response) => response,
             Err(_) if self.cancel.is_cancelled() => return Err(UploadError::Cancelled),
-            Err(error) => return Err(UploadError::Network(network_reason(&error))),
+            Err(error) => {
+                // A body the gate stopped reads as a broken connection to ureq.
+                self.client.admit()?;
+                return Err(UploadError::Network(network_reason(&error)));
+            }
         };
         let status = response.status().as_u16();
         let headers = response
@@ -281,12 +322,14 @@ impl Response {
     }
 }
 
-/// Counts what the client reads from the body, reports it and stops when the upload is cancelled.
+/// Counts what the client reads from the body, reports it, and stops when the upload is
+/// cancelled or a switch closes the gate.
 struct CountingReader<'a> {
     inner: Box<dyn Read + Send + 'a>,
     sent: u64,
     reported: u64,
     cancel: CancelToken,
+    client: HttpClient,
     progress: Option<&'a dyn Fn(u64)>,
 }
 
@@ -294,6 +337,10 @@ impl Read for CountingReader<'_> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         if self.cancel.is_cancelled() {
             return Err(io::Error::other("the upload was cancelled"));
+        }
+        // Every read of the body asks, so a switch turned off mid-upload stops it within one chunk.
+        if let Some(off) = self.client.switched_off() {
+            return Err(io::Error::other(off.to_string()));
         }
         let n = self.inner.read(buf)?;
         self.sent += n as u64;

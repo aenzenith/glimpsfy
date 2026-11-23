@@ -97,6 +97,7 @@ import { read as readColor } from "../lib/color";
 import { cssColor, drawLens, ensureContext, hex, loadFrame, pixelAt } from "./frame";
 import { place, placeLoupe, type Placement, type Rect } from "./layout";
 import { ACTIONS, TOOLS, WORKING_ACTIONS, actionForChord, toolForKey, type ActionId, type ToolId } from "./tools";
+import { uploadsAllowed } from "../lib/network";
 import FirstUploadDialog from "../upload/FirstUploadDialog.vue";
 import { modelsMissing } from "../ocr/models";
 import { jobName } from "../ocr/text";
@@ -179,10 +180,11 @@ const savedSizes = ref<SavedSize[]>([]);
 const sendList = shallowRef<SendTargets | null>(null);
 const sendAt = ref<Point>({ x: -9999, y: -9999 });
 /** The action bar's buttons; Send only where the core can press keys in another app, Copy
- * subject only where Vision lifts subjects (macOS 14). */
+ * subject only where Vision lifts subjects (macOS 14), Upload only while Settings allow uploads. */
 const actions = computed(() =>
   ACTIONS.filter(
     (a) => (a?.id !== "send" || can("sendToApp")) && (a?.id !== "copy-subject" || can("subjectLift")) &&
+      (a?.id !== "upload" || uploadsAllowed.value) &&
       (a?.id !== "beautify" || beautifiable.value) &&
       (a?.id !== "scroll" || can("scrollCapture")),
   ),
@@ -899,7 +901,8 @@ async function act(id: ActionId): Promise<void> {
   if (id === "record") return record();
   if (id === "scroll") return startScroll();
   if (id === "upload") {
-    if (frame.value && sel.value && !busy && mode.value === "sel") void uploads.start();
+    // ⌘U does nothing while the button is hidden.
+    if (uploadsAllowed.value && frame.value && sel.value && !busy && mode.value === "sel") void uploads.start();
     return;
   }
   if (!WORKING_ACTIONS.includes(id)) return say(t("overlay.notReady"));

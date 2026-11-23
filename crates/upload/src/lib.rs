@@ -19,6 +19,9 @@
 //!   serialised, and are cut out of every error message before it leaves the engine.
 //! - **Blocking.** Every network method blocks until the host answers, the time-outs of
 //!   [`http::HttpClient`] run out or the upload is cancelled. Call them on a worker thread.
+//! - **The switches win.** The app's switches (Allow uploads, Work offline) reach the client as
+//!   its gate (`HttpClient::with_gate`), which every request and every 64 KB of a body ask first.
+//!   A closed gate ends the call with [`UploadError::SwitchedOff`] before a socket opens.
 
 pub mod consent;
 pub mod engine;
@@ -83,6 +86,9 @@ pub enum UploadError {
     /// The system keychain refused to read, write or delete a secret.
     #[error("the keychain failed: {0}")]
     Keychain(String),
+    /// A switch of the app stopped the call before a request left, or in the middle of a body.
+    #[error("{0}")]
+    SwitchedOff(SwitchedOff),
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }
@@ -94,6 +100,24 @@ impl UploadError {
 
     pub(crate) fn refused(provider: &ProviderId, status: Option<u16>, reason: impl Into<String>) -> UploadError {
         UploadError::Provider { provider: provider.clone(), status, reason: shorten(&reason.into()) }
+    }
+}
+
+/// Which switch of the app keeps a request from leaving.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SwitchedOff {
+    /// Allow uploads is off: nothing goes to an upload host.
+    Uploads,
+    /// Work offline is on: no connection opens at all.
+    Offline,
+}
+
+impl fmt::Display for SwitchedOff {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            SwitchedOff::Uploads => "uploads are turned off in Settings, so nothing was sent",
+            SwitchedOff::Offline => "Glimpsfy is offline, so it opened no connection",
+        })
     }
 }
 

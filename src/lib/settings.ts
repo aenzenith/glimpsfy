@@ -21,6 +21,11 @@ export type General = Extra & {
   delaySeconds: number;
   shutterSound: boolean;
   checkForUpdates: boolean;
+  /** Whether anything may go to an upload host; off hides every Upload button and ⌘U. */
+  allowUploads: boolean;
+  /** No network connection at all: no upload, model download or update check. It wins over
+   * `allowUploads`. */
+  offline: boolean;
   /** Whether the user finished the first-run window; until then it opens at every launch. */
   firstRunDone: boolean;
   /** The sizes saved from the selection's size menu, oldest first, at most 12. An entry this

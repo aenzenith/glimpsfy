@@ -33,6 +33,7 @@ mod frames;
 mod i18n;
 #[cfg(target_os = "macos")]
 mod macos;
+mod network;
 mod output;
 mod paths;
 mod permissions;

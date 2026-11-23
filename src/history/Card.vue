@@ -7,6 +7,7 @@ import GIcon from "../components/GIcon.vue";
 import { entryName, fileUrl, thumbUrl, type HistoryItem } from "../lib/api/history";
 import { t } from "../lib/i18n";
 import { commandHeld } from "../lib/keys";
+import { uploadsAllowed } from "../lib/network";
 import { HISTORY, type HistoryContext } from "./context";
 import Marked from "./Marked.vue";
 import { copyable, formatBytes, formatDuration, formatTime, GRID } from "./model";
@@ -204,7 +205,7 @@ function more(event: MouseEvent): void {
           <GIcon name="link" :size="16" />
         </button>
         <button
-          v-else-if="entry.kind !== 'textCopy'"
+          v-else-if="entry.kind !== 'textCopy' && uploadsAllowed"
           type="button"
           class="g-btn"
           data-size="small"

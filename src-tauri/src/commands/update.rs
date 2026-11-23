@@ -12,10 +12,11 @@ pub fn update_state(update: State<'_, Update>) -> UpdateView {
     update.view()
 }
 
-/// Asks for a new version now (Settings' "Check now"). The answer arrives as events.
+/// Asks for a new version now (Settings' "Check now"). The answer arrives as events. Fails with
+/// `offline` while Settings › General keeps the app offline, and nothing changes then.
 #[tauri::command]
-pub fn update_check(app: AppHandle, update: State<'_, Update>) {
-    update.check(&app);
+pub fn update_check(app: AppHandle, update: State<'_, Update>) -> CommandResult<()> {
+    Ok(update.check(&app)?)
 }
 
 /// Installs the downloaded update and restarts. It returns only when the install failed.

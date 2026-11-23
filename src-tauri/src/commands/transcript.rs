@@ -15,6 +15,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 
 use crate::commands::error::{CommandError, CommandResult, ErrorCode};
+use crate::network::Traffic;
 use crate::recording::transcript::{self as work, TranscriptState};
 
 /// Events this area owns. The TypeScript copy is in `src/lib/api/transcript.ts`.
@@ -35,7 +36,8 @@ impl From<SpeechError> for CommandError {
         let code = match &error {
             SpeechError::Cancelled | SpeechError::Model(ModelError::Cancelled) => ErrorCode::Cancelled,
             SpeechError::Model(ModelError::Missing(_)) => ErrorCode::NotFound,
-            SpeechError::Model(ModelError::Download(_) | ModelError::Offline) => ErrorCode::Provider,
+            SpeechError::Model(ModelError::Download(_)) => ErrorCode::Provider,
+            SpeechError::Model(ModelError::Offline) => ErrorCode::Offline,
             SpeechError::Model(ModelError::ChecksumMismatch { .. } | ModelError::Io(_)) | SpeechError::Io(_) => {
                 ErrorCode::Io
             }
@@ -65,7 +67,8 @@ pub async fn transcript_model(app: AppHandle) -> CommandResult<SpeechModelInfo> 
 
 /// Downloads the speech model from the reviewed table, reporting `transcript://model-progress`.
 /// Only a user's click calls this (the trim window's panel, Settings › Recording); nothing in the
-/// app downloads the model on its own. Cancelling deletes the partial file.
+/// app downloads the model on its own. Cancelling deletes the partial file. Fails with `offline`
+/// while Settings › General keeps the app offline.
 #[tauri::command]
 pub async fn transcript_model_download(app: AppHandle, job: Option<String>) -> CommandResult<SpeechModelInfo> {
     let (name, cancel) = work::begin_download(&app, job)?;
@@ -86,8 +89,8 @@ pub async fn transcript_model_download(app: AppHandle, job: Option<String>) -> C
             });
             let _ = emitter.emit(transcript_events::MODEL_PROGRESS, ModelProgress { received, total, remaining_ms });
         };
-        // The offline switch (card A8) is not in the app yet, so the download is always allowed.
-        let outcome = store.download(&mut progress, &cancel, &|| true);
+        // Work offline is asked before the first connection and again at every hop and chunk.
+        let outcome = store.download(&mut progress, &cancel, &|| crate::network::online(&app, Traffic::ModelDownload));
         work::end_download(&app, &name);
         outcome?;
         Ok(store.info())

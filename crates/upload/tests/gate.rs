@@ -5,15 +5,21 @@
 //! host and to no other, even when the host's answer names another one (a link, a deletion link,
 //! a redirect). Each public host is moved to a local test server; a second local server, the
 //! canary, stands for every other host on the Internet and must never hear a thing.
+//!
+//! The app's switches win over a confirmation: with Allow uploads off or Work offline on, nothing
+//! is sent to any host, and a switch turned off during an upload stops it.
 
 mod support;
 
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 
 use glimpsfy_upload::engine::Stored;
-use glimpsfy_upload::http::HttpClient;
+use glimpsfy_upload::http::{Gate, HttpClient};
 use glimpsfy_upload::secrets::SecretStore;
-use glimpsfy_upload::{providers, DeleteOutcome, DeletionHandle, ProviderId, UploadData, UploadError, Uploader};
+use glimpsfy_upload::{
+    providers, DeleteOutcome, DeletionHandle, ProviderId, SwitchedOff, UploadData, UploadError, Uploader,
+};
 use serde_json::{json, Value};
 use support::{Reply, TestServer};
 
@@ -24,6 +30,10 @@ struct Fixture {
 }
 
 fn fixture() -> Fixture {
+    fixture_with(HttpClient::for_tests())
+}
+
+fn fixture_with(client: HttpClient) -> Fixture {
     let canary = TestServer::canary();
     let elsewhere = canary.origin();
     let server = TestServer::start(move |request| {
@@ -49,11 +59,8 @@ fn fixture() -> Fixture {
         }
     });
     let store = keyring_core::mock::Store::new().expect("the mock keychain");
-    let uploader = Uploader::new(
-        glimpsfy_upload::builtin_providers_at(&server.url),
-        SecretStore::with_store(store),
-        HttpClient::for_tests(),
-    );
+    let uploader =
+        Uploader::new(glimpsfy_upload::builtin_providers_at(&server.url), SecretStore::with_store(store), client);
     uploader.set_secret(&id(providers::IMGBB), "apiKey", "imgbb-key-0001").expect("a stored key");
     uploader.set_secret(&id(providers::S3), "secretAccessKey", "s3-secret-0001").expect("a stored secret");
     uploader
@@ -222,5 +229,76 @@ fn confirmed_requests_reach_the_chosen_host_and_no_other() {
         assert!(agent.starts_with("Glimpsfy/") && !agent.contains(' '), "the user agent says more: {agent}");
         assert!(request.header("cookie").is_none() && request.header("referer").is_none());
     }
+    assert!(f.canary.requests().is_empty(), "another host heard {:?}", f.canary.requests());
+}
+
+/// The switches as the app sets them: 0 open, 1 Allow uploads off, 2 Work offline on.
+fn switches() -> (Arc<AtomicU8>, Gate) {
+    let switch = Arc::new(AtomicU8::new(0));
+    let read = switch.clone();
+    let gate: Gate = Arc::new(move || match read.load(Ordering::SeqCst) {
+        0 => None,
+        1 => Some(SwitchedOff::Uploads),
+        _ => Some(SwitchedOff::Offline),
+    });
+    (switch, gate)
+}
+
+#[test]
+fn no_request_leaves_while_uploads_or_the_network_are_off() {
+    let (switch, gate) = switches();
+    let f = fixture_with(HttpClient::for_tests().with_gate(gate));
+    let off = |result: &str, expected: SwitchedOff, outcome: Result<(), UploadError>| match outcome {
+        Err(UploadError::SwitchedOff(found)) if found == expected => {}
+        other => panic!("{result} went ahead with {expected:?}: {other:?}"),
+    };
+    for provider in providers::BUILTIN {
+        let values = values(&f.server, provider);
+        let pid = id(provider);
+        // Confirmed, so only the switches stand between the call and the host.
+        let confirmed = [f.uploader.consent_key(&pid, Some(&values)).expect("a consent key")];
+        let stored = Stored { values: Some(&values), confirmed: &confirmed };
+        for (position, expected) in [(1, SwitchedOff::Uploads), (2, SwitchedOff::Offline)] {
+            switch.store(position, Ordering::SeqCst);
+            let begun = f.uploader.begin(&pid, stored, png(), "shot.png", "image/png").map(drop);
+            off(&format!("{provider}'s upload"), expected, begun);
+            off(&format!("{provider}'s test"), expected, f.uploader.test(&pid, stored).map(drop));
+            let deleted = f.uploader.delete(&pid, stored, &handle(&f.server, provider)).map(drop);
+            off(&format!("{provider}'s deletion"), expected, deleted);
+
+            // Admitted while the switches allowed it, switched off before its thread sent it.
+            switch.store(0, Ordering::SeqCst);
+            let pending = f.uploader.begin(&pid, stored, png(), "shot.png", "image/png").expect("an admitted upload");
+            switch.store(position, Ordering::SeqCst);
+            off(&format!("{provider}'s admitted upload"), expected, f.uploader.run(pending, &|_| {}).map(drop));
+        }
+    }
+    assert!(f.server.requests().is_empty(), "the host heard {:?}", f.server.requests());
+    assert!(f.canary.requests().is_empty(), "another host heard {:?}", f.canary.requests());
+
+    // Switched off in the middle of the body: the rest of the file never leaves.
+    let big = || UploadData::Bytes(Arc::from(vec![0x42u8; 4 * 1024 * 1024]));
+    for provider in providers::BUILTIN {
+        let values = values(&f.server, provider);
+        let pid = id(provider);
+        let confirmed = [f.uploader.consent_key(&pid, Some(&values)).expect("a consent key")];
+        let stored = Stored { values: Some(&values), confirmed: &confirmed };
+        switch.store(0, Ordering::SeqCst);
+        let pending = f.uploader.begin(&pid, stored, big(), "big.png", "image/png").expect("an admitted upload");
+        let flip = switch.clone();
+        let ran = f.uploader.run(pending, &move |progress| {
+            if progress.sent_bytes > 0 {
+                flip.store(2, Ordering::SeqCst);
+            }
+        });
+        off(&format!("{provider}'s upload in flight"), SwitchedOff::Offline, ran.map(drop));
+    }
+    let heard = f.server.requests();
+    assert!(!heard.is_empty(), "no upload got as far as its body");
+    assert!(
+        heard.iter().all(|r| !r.complete),
+        "a body went out whole after the switch: {:?}",
+        heard.iter().map(|r| (&r.method, &r.target, r.body.len())).collect::<Vec<_>>()
+    );
     assert!(f.canary.requests().is_empty(), "another host heard {:?}", f.canary.requests());
 }

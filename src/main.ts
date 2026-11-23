@@ -9,6 +9,7 @@ import { settings_get } from "./lib/api/settings";
 import { app_log } from "./lib/api/windows";
 import { SETTINGS_CHANGED } from "./lib/events";
 import { setLanguage } from "./lib/i18n";
+import { followNetwork } from "./lib/network";
 import { loadPlatform } from "./lib/platform";
 import type { Settings } from "./lib/settings";
 import "./styles/tokens.css";
@@ -61,8 +62,10 @@ function followTheme(): void {
 /** The last language asked for, which the page waits for before its first paint. */
 let languageSet: Promise<void> = Promise.resolve();
 
-/** Every window follows the language, and ordinary windows and the popover the theme too. */
+/** Every window follows the language and the network switches, and ordinary windows and the
+ * popover the theme too. */
 function follow(settings: Settings): void {
+  followNetwork(settings.general);
   languageSet = setLanguage(settings.general.language);
   appearance = settings.general.appearance;
   themeApply?.();

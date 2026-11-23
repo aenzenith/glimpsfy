@@ -1,7 +1,8 @@
 //! The engine: the only code that runs a provider's network methods, after the checks that must
 //! come first.
 //!
-//! Every upload, test and deletion goes through [`Uploader`], in this order: the provider's
+//! Every upload, test and deletion goes through [`Uploader`], in this order: the app's switches
+//! must allow it (the client's gate, asked again by every request), the provider's
 //! configuration is built from the settings and the keychain, its destination is worked out, the
 //! consent recorded in the settings must cover that destination, the configuration must have no
 //! errors, and only then is a [`Connection`] opened, bound to the destination's origins. An error
@@ -196,9 +197,12 @@ impl Uploader {
         Ok(consent::consent_key(id, &destination))
     }
 
-    /// The checks every network call passes: a destination, consent to it, and no error in the
-    /// configuration. Returns what the call needs to open its connection.
+    /// The checks every network call passes: the switches, a destination, consent to it, and no
+    /// error in the configuration. Returns what the call needs to open its connection.
     fn admit(&self, id: &ProviderId, stored: Stored) -> Result<(Arc<dyn Provider>, ProviderConfig, Destination)> {
+        // Before the keychain is read: a switched-off upload has no reason to touch a secret. The
+        // connection asks again before each request; this is only the early refusal.
+        self.client.admit()?;
         let provider = self.provider(id)?;
         let config = self.config(provider.as_ref(), stored.values)?;
         let destination = provider.destination(&config).map_err(|e| scrub(e, &config))?;
@@ -307,6 +311,8 @@ impl Uploader {
     /// Deletes an upload from its host. A deletion page is never requested here: its URL comes
     /// back as [`DeleteOutcome::OpenPage`], for the browser.
     pub fn delete(&self, id: &ProviderId, stored: Stored, deletion: &DeletionHandle) -> Result<DeleteOutcome> {
+        // With uploads off nothing about a hosted copy happens, not even its page in the browser.
+        self.client.admit()?;
         if let DeletionHandle::Url { url } = deletion {
             return match crate::http::parse_http_url(url) {
                 Some(url) => Ok(DeleteOutcome::OpenPage { url: url.to_string() }),

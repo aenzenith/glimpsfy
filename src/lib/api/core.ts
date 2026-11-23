@@ -17,6 +17,8 @@ export type ErrorCode =
   | "provider"
   | "not_confirmed"
   | "keychain"
+  | "uploads_off"
+  | "offline"
   | "cancelled"
   | "internal";
 

@@ -4,12 +4,16 @@
 //! Nothing is installed until the user restarts for it from Settings or the popover: Glimpsfy
 //! never restarts by itself, because a restart could end a recording or close a capture.
 //!
-//! The request carries the plugin's user agent and nothing of the user's.
+//! The request carries the plugin's user agent and nothing of the user's. Work offline
+//! (`network::gate`) is asked before the ask, before the download and at every chunk of either,
+//! so turning it on drops a running download with its connection.
 
+use std::future::Future;
 #[cfg(target_os = "macos")]
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+use std::task::Poll;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -17,6 +21,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_updater::{Error, UpdaterExt};
 
+use crate::network::{self, Blocked, Traffic};
 use crate::{trace, AppState};
 
 /// To every window: the update's state changed. Payload: [`UpdateView`].
@@ -142,6 +147,20 @@ fn writable(path: &Path) -> bool {
     allowed(path) && path.parent().is_some_and(allowed)
 }
 
+/// Runs `work` while Work offline stays off, and drops it (its connection with it) at the first
+/// wake after the switch turned on; a download wakes for every chunk it receives. `None` means
+/// the switch stopped it.
+async fn while_online<T>(app: &AppHandle, work: impl Future<Output = T>) -> Option<T> {
+    let mut work = std::pin::pin!(work);
+    std::future::poll_fn(|cx| {
+        if !network::online(app, Traffic::UpdateCheck) {
+            return Poll::Ready(None);
+        }
+        work.as_mut().poll(cx).map(Some)
+    })
+    .await
+}
+
 /// Which step a failed download failed at.
 fn download_error(error: &Error) -> &'static str {
     match error {
@@ -189,11 +208,12 @@ impl Update {
         thread::spawn(move || {
             thread::sleep(FIRST);
             loop {
-                let allowed =
-                    app.try_state::<AppState>().is_some_and(|state| state.settings.get().general.check_for_updates);
-                if allowed {
+                let allowed = app
+                    .try_state::<AppState>()
+                    .is_some_and(|state| state.settings.read(|s| s.general.check_for_updates));
+                if allowed && network::online(&app, Traffic::UpdateCheck) {
                     if let Some(update) = app.try_state::<Update>() {
-                        update.check(&app);
+                        let _ = update.check(&app);
                     }
                 }
                 thread::sleep(EVERY);
@@ -202,10 +222,13 @@ impl Update {
     }
 
     /// Asks for a new version now and downloads one that is there. The answer arrives as
-    /// `update://changed` events.
-    pub fn check(&self, app: &AppHandle) {
+    /// `update://changed` events. While Work offline is on it changes nothing and says so.
+    pub fn check(&self, app: &AppHandle) -> Result<(), Blocked> {
+        if let Some(blocked) = network::gate(app, Traffic::UpdateCheck) {
+            return Err(blocked);
+        }
         if lock(&self.view).status == "off" || self.busy.swap(true, Ordering::SeqCst) {
-            return;
+            return Ok(());
         }
         // An update that waits stays in sight while a newer one is asked for.
         self.set(app, |view| {
@@ -222,13 +245,33 @@ impl Update {
                 update.busy.store(false, Ordering::SeqCst);
             }
         });
+        Ok(())
+    }
+
+    /// Puts back what the pages showed before a check that Work offline stopped: the update that
+    /// waits, a version this copy can't install, or nothing.
+    fn stand_down(&self, app: &AppHandle) {
+        let waiting = lock(&self.ready).as_ref().map(|(update, _)| update.version.clone());
+        self.set(app, |view| {
+            if view.status == "available" {
+                return;
+            }
+            (view.status, view.version) = match waiting {
+                Some(version) => ("ready", Some(version)),
+                None => ("idle", None),
+            };
+        });
     }
 
     async fn ask(&self, app: &AppHandle) {
-        let found = match app.updater() {
-            Ok(updater) => updater.check().await,
-            Err(error) => Err(error),
+        if network::gate(app, Traffic::UpdateCheck).is_some() {
+            return self.stand_down(app);
+        }
+        let asked = match app.updater() {
+            Ok(updater) => while_online(app, updater.check()).await,
+            Err(error) => Some(Err(error)),
         };
+        let Some(found) = asked else { return self.stand_down(app) };
         let waiting = lock(&self.ready).as_ref().map(|(update, _)| update.version.clone());
         // What the status falls back to: an update already downloaded still waits.
         let rest = |view: &mut UpdateView| {
@@ -272,6 +315,9 @@ impl Update {
             });
         }
 
+        if network::gate(app, Traffic::UpdateCheck).is_some() {
+            return self.stand_down(app);
+        }
         self.set(app, |view| {
             view.status = "downloading";
             view.version = Some(version.clone());
@@ -295,7 +341,10 @@ impl Update {
             }
         };
 
-        match update.download(progress, || {}).await {
+        let Some(downloaded) = while_online(app, update.download(progress, || {})).await else {
+            return self.stand_down(app);
+        };
+        match downloaded {
             Ok(bytes) => {
                 *lock(&self.ready) = Some((update, bytes));
                 self.set(app, |view| view.status = "ready");

@@ -108,6 +108,9 @@ pub enum OcrError {
     /// A model download failed; the text names the host's or the network's reason.
     #[error("the model download failed: {0}")]
     Download(String),
+    /// The app is set to work offline, so no model was downloaded.
+    #[error("the app is offline, so the model was not downloaded")]
+    Offline,
     /// A downloaded or stored model did not have the bytes the reviewed table names. The file
     /// was deleted and is never loaded.
     #[error("the model {model} failed its checksum and was deleted")]

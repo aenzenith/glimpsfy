@@ -19,6 +19,8 @@ const props = defineProps<{ settings: Settings }>();
 const emit = defineEmits<{ open: [provider: Provider] }>();
 
 const u = computed(() => props.settings.upload);
+/** Settings › General's switches: with uploads off or the app offline nothing reaches these hosts. */
+const uploadsOn = computed(() => props.settings.general.allowUploads !== false && !props.settings.general.offline);
 const ids = { copy: uid("copy"), open: uid("open") };
 
 const providers = ref<Provider[] | null>(null);
@@ -66,6 +68,10 @@ const copies = computed(() => [
 </script>
 
 <template>
+  <div v-if="!uploadsOn" class="g-group">
+    <FormRow :help="t(settings.general.offline ? 'settings.upload.offlineNote' : 'settings.upload.offNote')" tone="warn" />
+  </div>
+
   <template v-if="loadError">
     <div class="g-group">
       <div class="g-empty">
