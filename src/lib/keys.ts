@@ -24,6 +24,7 @@ export const SHORTCUT_GROUPS = [
       "copyText",
       "measureScreen",
       "pickColor",
+      "intervalCapture",
       "scrollCapture",
     ],
   },

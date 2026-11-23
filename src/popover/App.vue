@@ -25,17 +25,23 @@ import { mediaPath } from "../history/model";
 import { sendMenuItems } from "../history/send";
 import {
   CAPTURE_COUNTDOWN,
+  CAPTURE_INTERVAL,
   capture_cancel_delay,
   capture_delay,
+  capture_interval,
   capture_set_delay,
   capture_start,
+  capture_start_interval,
+  capture_stop_interval,
   type CaptureMode,
   type DelayState,
+  type IntervalState,
 } from "../lib/api/capture";
 import { on } from "../lib/api/core";
 import {
   DEFAULT_HISTORY_QUERY,
   entryName,
+  frameUrl,
   history_copy,
   history_get,
   history_list,
@@ -87,12 +93,14 @@ import {
 } from "../lib/api/windows";
 import { PERMISSIONS_CHANGED, SETTINGS_CHANGED } from "../lib/events";
 import { language, t, type Key } from "../lib/i18n";
-import { capsOf, type ShortcutAction } from "../lib/keys";
+import { capsOf, capsText, type ShortcutAction } from "../lib/keys";
 import { can } from "../lib/platform";
-import type { Settings, Shortcuts } from "../lib/settings";
+import type { IntervalPlan, Settings, Shortcuts } from "../lib/settings";
 import { useUpdate } from "../lib/update";
 import { codeOf, reasonText } from "../toast/reason";
 import FirstUploadDialog, { type DialogFile } from "../upload/FirstUploadDialog.vue";
+import IntervalForm from "./IntervalForm.vue";
+import IntervalRun from "./IntervalRun.vue";
 import { prepareUpload } from "../upload/flow";
 
 /** How many captures the strip shows. */
@@ -126,6 +134,13 @@ const sel = ref(0);
 const permissions = ref<Permissions | null>(null);
 const delay = ref<DelayState>({ pendingSeconds: 0, remainingSeconds: null, mode: null });
 const recording = ref<RecordingState>({ kind: "idle" });
+/** The interval series that runs (`capture://interval`), its form, and the plan the form starts
+ * from (Settings › general.interval). */
+const interval = ref<IntervalState | null>(null);
+const intervalPlan = ref<IntervalPlan | null>(null);
+const formOpen = ref(false);
+const startingInterval = ref(false);
+const intervalRun = ref<InstanceType<typeof IntervalRun> | null>(null);
 /** The take's time to the whole second, which is all the clock shows (`duration`). */
 const elapsedMs = ref(0);
 /** The core ticks four times a second through the whole take, and this page lives (mostly hidden)
@@ -146,6 +161,7 @@ const blocked = computed(() => {
   return state !== undefined && state !== "granted" && state !== "notRequired";
 });
 const recordingNow = computed(() => recording.value.kind !== "idle");
+const intervalNow = computed(() => interval.value?.running === true);
 const selected = computed<Entry | null>(() => entries.value[sel.value] ?? null);
 const slots = computed(() => Array.from({ length: RECENT }, (_, i) => entries.value[i] ?? null));
 
@@ -175,6 +191,7 @@ async function loadSettings(settings?: Settings): Promise<void> {
     const s = settings ?? (await settings_get());
     shortcuts.value = s.shortcuts;
     defaultProvider.value = s.upload.defaultProvider;
+    intervalPlan.value = s.general.interval;
   } catch (error) {
     console.warn("settings_get", error);
   }
@@ -219,17 +236,28 @@ async function loadRecording(): Promise<void> {
   }
 }
 
+async function loadInterval(): Promise<void> {
+  try {
+    interval.value = await capture_interval();
+  } catch (error) {
+    console.warn("capture_interval", error);
+  }
+}
+
 async function opened(): Promise<void> {
   quietUntil = performance.now() + 400;
   notice.value = null;
   // A question or a menu left open when the panel closed is not shown again on its own.
   asking.value = null;
   delayOpen.value = false;
+  formOpen.value = false;
   pointMode.value = null;
   sel.value = 0;
-  await Promise.all([loadSettings(), loadHistory(), loadPermissions(), loadDelay(), loadRecording()]);
+  await Promise.all([loadSettings(), loadHistory(), loadPermissions(), loadDelay(), loadRecording(), loadInterval()]);
   await nextTick();
   root.value?.focus({ preventScroll: true });
+  // A series that runs takes the modes' place, and Return on the panel stops it.
+  if (intervalNow.value) intervalRun.value?.focus();
 }
 
 let historyTimer: ReturnType<typeof setTimeout> | null = null;
@@ -367,6 +395,76 @@ function closeDelayMenu(refocus = false): void {
 function pressOutside(event: PointerEvent): void {
   if (delayOpen.value && !(event.target as Element | null)?.closest(".s-delay-pick")) closeDelayMenu();
 }
+
+// ------------------------------------------------------------------------- the interval series
+
+const intervalKeys = computed(() => capsText(shortcuts.value?.intervalCapture));
+
+function openIntervalForm(): void {
+  closeDelayMenu();
+  if (blocked.value || recordingNow.value || intervalNow.value || !intervalPlan.value) return;
+  formOpen.value = true;
+}
+
+function closeIntervalForm(): void {
+  formOpen.value = false;
+  void nextTick(() => delayToggle.value?.focus());
+}
+
+/** The area target opens the overlay and the series starts with its selection; the others start
+ * at once. Either way the panel goes, as after a capture mode. */
+async function startInterval(plan: IntervalPlan): Promise<void> {
+  if (startingInterval.value) return;
+  startingInterval.value = true;
+  try {
+    interval.value = await capture_start_interval(plan);
+    intervalPlan.value = plan;
+    formOpen.value = false;
+    hide();
+  } catch (error) {
+    fail(error);
+  } finally {
+    startingInterval.value = false;
+  }
+}
+
+async function stopInterval(): Promise<void> {
+  try {
+    await capture_stop_interval();
+    await loadInterval();
+  } catch (error) {
+    fail(error);
+  }
+}
+
+const seriesCount = (state: IntervalState) => (state.manual ? String(state.taken) : `${state.taken}/${state.total}`);
+const clockOf = (ms: number, seconds = true) =>
+  new Date(ms).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", second: seconds ? "2-digit" : undefined });
+const seriesFrame = computed(() => {
+  const state = interval.value;
+  return state?.entryId && state.latestIndex !== null ? frameUrl(state.entryId, state.latestIndex) : null;
+});
+const seriesTag = computed(() => {
+  const state = interval.value;
+  if (!state) return "";
+  return state.latestAtMs !== null ? `${seriesCount(state)} · ${clockOf(state.latestAtMs)}` : seriesCount(state);
+});
+const seriesSub = computed(() => {
+  const state = interval.value;
+  if (!state) return "";
+  if (state.skipped === 1) return t("popover.interval.runningSkipped.one");
+  if (state.skipped > 1) return t("popover.interval.runningSkipped.many", { n: state.skipped });
+  return t("popover.interval.since", { time: clockOf(state.startedAtMs, false) });
+});
+/** What the hero says while it has no frame to show: the first one is on its way, or the history
+ * is off and the frames go to the folder alone. */
+const seriesWaiting = computed(() => {
+  const state = interval.value;
+  if (state?.latestIndex !== null && state?.entryId === null) {
+    return t("popover.interval.noHistory", { folder: state.folderName ?? "" });
+  }
+  return t("popover.interval.waiting");
+});
 
 async function cancelDelay(): Promise<void> {
   try {
@@ -808,13 +906,15 @@ function onKey(event: KeyboardEvent): void {
 
   if (event.key === "Escape") {
     event.preventDefault();
-    hide();
+    if (formOpen.value) closeIntervalForm();
+    else hide();
     return;
   }
 
   if (mod) {
     const k = event.key.toLowerCase();
-    const entry = selected.value;
+    // The form and a running series hide the picked capture, so its keys rest with it.
+    const entry = formOpen.value || intervalNow.value ? null : selected.value;
     const offered = (id: ActId) => (entry && actionsFor(entry).some((a) => a.id === id) ? entry : null);
     let handled = true;
     if (k === "y" && !event.shiftKey) void openWindow("history");
@@ -888,6 +988,7 @@ onMounted(async () => {
     await on<Settings>(SETTINGS_CHANGED, (settings) => void loadSettings(settings)),
     await on<Permissions>(PERMISSIONS_CHANGED, (next) => (permissions.value = next)),
     await on<DelayState>(CAPTURE_COUNTDOWN, (state) => (delay.value = state)),
+    await on<IntervalState>(CAPTURE_INTERVAL, (state) => (interval.value = state)),
     await onHistoryChanged(historyChanged),
     await onRecordState((state) => {
       recording.value = state;
@@ -1027,6 +1128,11 @@ const emptyParts = computed(() => {
         </p>
       </div>
 
+      <!-- the interval series that runs: its count, Stop, its bar and its next frame -->
+      <div v-else-if="intervalNow && interval" class="g-popover-section">
+        <IntervalRun ref="intervalRun" :state="interval" @stop="stopInterval" />
+      </div>
+
       <!-- the capture modes, the line that names one, and the one-shot delay -->
       <div v-else class="g-popover-section">
         <div class="s-modes" role="menu" :aria-label="t('popover.capture.label')" @pointerleave="pointMode = null">
@@ -1086,6 +1192,12 @@ const emptyParts = computed(() => {
                   <span class="g-menu-check"><GIcon name="check" :size="16" /></span>
                   <span>{{ delayName(seconds) }}</span>
                 </button>
+                <div class="g-menu-separator" role="separator" />
+                <button type="button" class="g-menu-item" role="menuitem" @click="openIntervalForm">
+                  <span class="g-menu-check" />
+                  <span>{{ t("popover.interval.open") }}</span>
+                  <span v-if="intervalKeys" class="g-menu-key">{{ intervalKeys }}</span>
+                </button>
               </div>
             </Transition>
           </div>
@@ -1094,7 +1206,36 @@ const emptyParts = computed(() => {
 
       <!-- the picked capture large, the five latest under it, and the picked one's actions -->
       <div class="g-popover-section" @pointermove="thumbMove" @pointerup="thumbUp" @pointercancel="thumbUp">
-        <p v-if="historyState === 'unavailable'" class="s-empty-note">
+        <IntervalForm
+          v-if="formOpen && intervalPlan"
+          :plan="intervalPlan"
+          :accelerator="shortcuts?.intervalCapture"
+          :busy="startingInterval"
+          @cancel="closeIntervalForm"
+          @start="startInterval"
+        />
+        <!-- a running series shows its newest frame in the hero, without the strip and the actions -->
+        <template v-else-if="intervalNow && interval">
+          <div
+            class="s-hero"
+            data-kind="series"
+            :data-empty="seriesFrame ? undefined : ''"
+            role="img"
+            :aria-label="`${interval.name ?? ''}, ${seriesTag}`"
+          >
+            <img v-if="seriesFrame" :src="seriesFrame" alt="" draggable="false" />
+            <div v-else class="s-empty-note">
+              <GIcon name="grid" :size="24" />
+              <span>{{ seriesWaiting }}</span>
+            </div>
+            <span v-if="seriesFrame" class="g-tag s-hero-dur"><GIcon name="grid" :size="12" />{{ seriesTag }}</span>
+          </div>
+          <div class="s-info">
+            <span class="s-info-title">{{ interval.name ?? interval.folderName }}</span>
+            <span class="s-info-sub">{{ seriesSub }}</span>
+          </div>
+        </template>
+        <p v-else-if="historyState === 'unavailable'" class="s-empty-note">
           <span>{{ t("popover.recent.unavailable") }}</span>
         </p>
         <div v-else-if="historyState === 'failed'" class="s-empty-note s-row">

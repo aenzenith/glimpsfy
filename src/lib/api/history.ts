@@ -12,7 +12,21 @@ import type { DeletionHandle, ProviderId, UploadResult } from "./upload";
 
 export type EntryId = string;
 
-export type EntryKind = "screenshot" | "recording" | "textCopy";
+/** `series`: an interval capture, one entry whose `savedPath` is the folder of its frames. */
+export type EntryKind = "screenshot" | "recording" | "textCopy" | "series";
+
+/** What a series entry holds besides its folder. */
+export type SeriesInfo = {
+  /** The time between two frames the series was started with. */
+  intervalMs: number;
+  /** The frames so far, skipped ones included. */
+  count: number;
+  /** Frames the system did not deliver in time, which have no file. */
+  skipped: number;
+};
+
+/** One frame of a series: `file` is its name in the series' folder, `null` for a skipped one. */
+export type SeriesFrame = { index: number; takenAtMs: EpochMs; file: string | null };
 
 export type PixelSize = { width: number; height: number };
 
@@ -65,6 +79,8 @@ export type Entry = {
   textState: TextState;
   hosted: HostedCopy | null;
   pinned: boolean;
+  /** The interval and the frame counts of a series; `null` for every other kind. */
+  series: SeriesInfo | null;
 };
 
 /** The name an entry shows. The core stores no made-up words ("Text from Safari", "Capture"), so
@@ -74,6 +90,7 @@ export function entryName(entry: Pick<Entry, "name" | "kind" | "source">): strin
   if (own) return own;
   const app = entry.source.appName?.trim();
   if (entry.kind === "textCopy") return app ? t("history.name.textFrom", { app }) : t("history.name.text");
+  if (entry.kind === "series") return t("history.name.series");
   return entry.kind === "recording" ? t("history.name.recording") : t("history.name.capture");
 }
 
@@ -130,6 +147,7 @@ export type Facets = {
   screenshots: number;
   recordings: number;
   textCopies: number;
+  series: number;
   uploaded: number;
   pinned: number;
   apps: AppCount[];
@@ -198,8 +216,14 @@ export const HISTORY_CHANGED = "history://changed";
 const SCHEME = "glimpsfy-history";
 const onWindows = typeof navigator !== "undefined" && /Windows/.test(navigator.userAgent);
 
-function mediaUrl(kind: "thumb" | "file", id: EntryId): string {
-  return onWindows ? `http://${SCHEME}.localhost/${kind}/${id}` : `${SCHEME}://${kind}/${id}`;
+function mediaUrl(kind: "thumb" | "file" | "frame", id: EntryId, rest = ""): string {
+  return onWindows ? `http://${SCHEME}.localhost/${kind}/${id}${rest}` : `${SCHEME}://${kind}/${id}${rest}`;
+}
+
+/** One frame of a series, served from inside the series' folder; a skipped frame has none. A
+ * frame's file is never written again, so the core serves it as immutable. */
+export function frameUrl(id: EntryId, index: number): string {
+  return mediaUrl("frame", id, `/${index}`);
 }
 
 /** The entry's thumbnail, or `null` while it is being made. The core serves thumbnails as
@@ -289,6 +313,19 @@ export type ExportReport = { folder: string; exported: number; skipped: EntryId[
 /** Copies the captures into a folder the user picks, never replacing a file that exists. */
 export function history_export(entryIds: EntryId[]): Promise<ExportReport> {
   return call("history_export", { entryIds });
+}
+
+/** The frames of a series in order, skipped ones included, for the history's frame band. */
+export function history_series_frames(entryId: EntryId): Promise<SeriesFrame[]> {
+  return call("history_series_frames", { entryId });
+}
+
+export type SeriesExportFormat = "mp4" | "gif";
+
+/** Writes a timelapse of a series (an MP4 or a GIF) beside its folder, never replacing a file,
+ * and answers the file's path; a toast reports it as saved, with Show in Finder. */
+export function history_series_export(entryId: EntryId, format: SeriesExportFormat): Promise<string> {
+  return call("history_series_export", { entryId, format });
 }
 
 export function onHistoryChanged(handler: (change: HistoryChanged) => void) {

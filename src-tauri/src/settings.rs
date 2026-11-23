@@ -126,8 +126,85 @@ pub struct General {
     /// The sizes saved from the selection's size menu (the overlay and the recording setup),
     /// oldest first. The pages keep at most 12.
     pub saved_sizes: Vec<Kept<SavedSize>>,
+    /// The last interval capture's plan, which the popover's form starts from.
+    pub interval: IntervalPlan,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
+}
+
+/// What an interval capture takes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum IntervalTarget {
+    /// An area selected in the overlay first.
+    Area,
+    /// The frontmost window when the series starts, followed until it closes.
+    #[default]
+    Window,
+    /// The display under the pointer when the series starts.
+    Display,
+}
+
+/// When an interval series ends on its own.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum IntervalEnd {
+    /// After `end_value` frames.
+    #[default]
+    Frames,
+    /// After `end_value` minutes.
+    Minutes,
+    /// When the user stops it, and at the latest after [`IntervalPlan::MAX_MINUTES`].
+    Manual,
+}
+
+/// An interval capture's plan: the target, the time between frames and the end.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct IntervalPlan {
+    pub target: IntervalTarget,
+    pub every_seconds: u32,
+    pub end: IntervalEnd,
+    /// Frames or minutes, as `end` says; a manual end ignores it.
+    pub end_value: u32,
+}
+
+impl IntervalPlan {
+    /// A series never holds more frames than this, whatever its end says.
+    pub const MAX_FRAMES: u32 = 2000;
+    /// Nor runs longer than this (12 hours).
+    pub const MAX_MINUTES: u32 = 12 * 60;
+    /// The longest time between two frames (1 hour).
+    pub const MAX_EVERY_SECONDS: u32 = 60 * 60;
+
+    /// The plan with every number inside what a series allows.
+    pub fn clamped(self) -> IntervalPlan {
+        let every_seconds = self.every_seconds.clamp(1, Self::MAX_EVERY_SECONDS);
+        let end_value = match self.end {
+            IntervalEnd::Frames => self.end_value.clamp(1, Self::MAX_FRAMES),
+            IntervalEnd::Minutes => self.end_value.clamp(1, Self::MAX_MINUTES),
+            IntervalEnd::Manual => self.end_value,
+        };
+        IntervalPlan { every_seconds, end_value, ..self }
+    }
+
+    /// How many frames the series takes at most.
+    pub fn frame_limit(self) -> u32 {
+        let plan = self.clamped();
+        let by_time = |minutes: u32| (minutes as u64 * 60 / plan.every_seconds as u64) as u32 + 1;
+        let planned = match plan.end {
+            IntervalEnd::Frames => plan.end_value,
+            IntervalEnd::Minutes => by_time(plan.end_value),
+            IntervalEnd::Manual => by_time(Self::MAX_MINUTES),
+        };
+        planned.clamp(1, Self::MAX_FRAMES)
+    }
+}
+
+impl Default for IntervalPlan {
+    fn default() -> Self {
+        IntervalPlan { target: IntervalTarget::Window, every_seconds: 5, end: IntervalEnd::Frames, end_value: 60 }
+    }
 }
 
 /// A size saved from the size menu, in frame pixels, as the size label counts them.
@@ -167,6 +244,7 @@ impl Default for General {
             check_for_updates: true,
             first_run_done: false,
             saved_sizes: Vec::new(),
+            interval: IntervalPlan::default(),
             extra: Map::new(),
         }
     }
@@ -206,6 +284,9 @@ pub struct Shortcuts {
     /// it there.
     pub draw_on_screen: Option<String>,
     pub spotlight: Option<String>,
+    /// Starts or stops an interval capture. It comes after the older actions in `known_mut`, so a
+    /// file from before it that gave ⌥⇧⌘K to another action keeps it there.
+    pub interval_capture: Option<String>,
     /// Selects an area and goes straight into the scrolling capture; macOS only. It comes last
     /// in `known_mut`, so a file from before it that gave ⌥⇧⌘S to another action keeps it there.
     pub scroll_capture: Option<String>,
@@ -238,6 +319,7 @@ impl Default for Shortcuts {
             pick_color: key("Alt+Shift+CommandOrControl+I"),
             draw_on_screen: key("Alt+Shift+CommandOrControl+D"),
             spotlight: key("Alt+Shift+CommandOrControl+L"),
+            interval_capture: key("Alt+Shift+CommandOrControl+K"),
             scroll_capture: if mac { key("Alt+Shift+Command+S") } else { None },
             extra: Map::new(),
         }
@@ -266,10 +348,11 @@ impl Shortcuts {
     }
 
     /// The known actions by their names in the file, in the order of the shortcut table and then
-    /// the actions added since (the ruler, the colour picker, drawing, the spotlight and the
-    /// scrolling capture), so a newer action's default never takes the keys an older file gave
-    /// another row. On a clash that no earlier holder decides, the earlier row keeps the key.
-    fn known_mut(&mut self) -> [(&'static str, &mut Option<String>); 18] {
+    /// the actions added since (the ruler, the colour picker, drawing, the spotlight, the
+    /// interval capture and the scrolling capture), so a newer action's default never takes the
+    /// keys an older file gave another row. On a clash that no earlier holder decides, the earlier
+    /// row keeps the key.
+    fn known_mut(&mut self) -> [(&'static str, &mut Option<String>); 19] {
         [
             ("captureArea", &mut self.capture_area),
             ("captureWindow", &mut self.capture_window),
@@ -288,6 +371,7 @@ impl Shortcuts {
             ("pickColor", &mut self.pick_color),
             ("drawOnScreen", &mut self.draw_on_screen),
             ("spotlight", &mut self.spotlight),
+            ("intervalCapture", &mut self.interval_capture),
             ("scrollCapture", &mut self.scroll_capture),
         ]
     }
@@ -684,6 +768,9 @@ pub struct Recording {
     /// Whether drawings on a take fade 3 s after the last stroke. The Presentation card sets it,
     /// and the next take starts with the same choice.
     pub ink_fades: bool,
+    /// A take stops and saves itself after this many minutes of recording (pauses do not
+    /// count); `None` records until the user stops. 1 to 240.
+    pub time_limit_minutes: Option<u32>,
     /// The language the trim window's text panel reads a recording's speech in, as the speech
     /// model's code ("tr", "en"…), or "auto" to let the model detect it.
     pub transcript_language: String,
@@ -722,6 +809,7 @@ impl Default for Recording {
             gif_fps: 15,
             gif_width: Some(640),
             ink_fades: false,
+            time_limit_minutes: None,
             transcript_language: "auto".into(),
             silence_threshold_ms: 1000,
             silence_shorten: true,
@@ -1372,6 +1460,13 @@ mod tests {
         assert_eq!(older.shortcuts.open_history.as_deref(), Some("Alt+Shift+CommandOrControl+D"));
         assert_eq!(older.shortcuts.draw_on_screen, None);
         assert_eq!(older.shortcuts.spotlight.as_deref(), Some("Alt+Shift+CommandOrControl+L"));
+
+        // And for the interval capture's ⌥⇧⌘K, held by the colour picker in a file from before it.
+        fs::write(&path, br#"{ "shortcuts": { "pickColor": "Alt+Shift+CommandOrControl+K" } }"#).unwrap();
+        let older = SettingsStore::open_with(path.clone(), SecretFields::new()).get();
+        assert!(clashes_on_disk(&path).is_empty(), "the interval capture's default clashed with a key on disk");
+        assert_eq!(older.shortcuts.pick_color.as_deref(), Some("Alt+Shift+CommandOrControl+K"));
+        assert_eq!(older.shortcuts.interval_capture, None);
 
         // And for the scrolling capture's ⌥⇧⌘S (macOS only), held by the history row in a file
         // from before it.

@@ -20,6 +20,7 @@
 //! that is stuck (no overlay ready 1.5 s after it opened): the trigger closes it and starts anew.
 
 pub mod delay;
+pub mod interval;
 
 use std::collections::HashMap;
 use std::hash::BuildHasher;
@@ -183,6 +184,9 @@ pub struct CaptureSession {
     holder: Mutex<Option<DisplayId>>,
     /// Closed by the measurement loop once painted (`GLIMPSFY_AUTOCAPTURE`).
     pub auto: bool,
+    /// The plan of the interval series whose area this capture selects
+    /// (`capture_interval_area`); the overlay then hands its selection to the series.
+    pub interval: Option<settings::IntervalPlan>,
     /// The agent request whose area this capture lets the user select (`agents_take_selection`);
     /// closing it any other way denies the request.
     pub agent: Option<u64>,
@@ -538,7 +542,8 @@ fn capture_frozen(
     let pointer = pointer();
     let pointer_display = displays.iter().find(|d| d.frame.contains(pointer)).map(|d| d.id);
     let front = front_window(&all_windows);
-    let agent = if mode == CaptureMode::Area { crate::agents::take_pick() } else { None };
+    let interval = if mode == CaptureMode::Area { interval::take_area_plan() } else { None };
+    let agent = if mode == CaptureMode::Area && interval.is_none() { crate::agents::take_pick() } else { None };
 
     let entries = frames
         .into_iter()
@@ -575,15 +580,21 @@ fn capture_frozen(
         front,
         taken_at,
         opened: Instant::now(),
-        after: match agent {
-            Some(_) => AfterSelection::Agent,
-            None => after_for(mode, settings.general.after_selection),
+        after: match (&interval, agent) {
+            (Some(_), _) => AfterSelection::Interval,
+            (None, Some(_)) => AfterSelection::Agent,
+            (None, None) => after_for(mode, settings.general.after_selection),
         },
         all_windows,
         picked: Mutex::new(None),
-        beautify: Mutex::new(if agent.is_some() { None } else { automatic_beautify(mode, &settings) }),
+        beautify: Mutex::new(if interval.is_some() || agent.is_some() {
+            None
+        } else {
+            automatic_beautify(mode, &settings)
+        }),
         holder: Mutex::new(None),
         auto,
+        interval,
         agent,
     })
 }

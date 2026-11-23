@@ -1,6 +1,6 @@
-// The trim window's size estimate: how large the exported file will be for the chosen format and
-// trim. It is a pure model with named constants, so the recording engineer can calibrate them
-// against real exports without touching the page.
+// The size estimates: how large the trim window's export will be for the chosen format and trim,
+// and how much a take writes before its time limit. It is a pure model with named constants, so
+// the recording engineer can calibrate them against real exports without touching the page.
 
 import type { PhysicalSize } from "../lib/api/capture";
 import type { ExportFormat, Mp4Quality } from "../lib/api/record";
@@ -85,4 +85,47 @@ export function estimateExport(input: EstimateInput): Estimate {
   const audio =
     input.audioSources <= 0 ? 0 : input.audioSources === 1 ? AUDIO_BYTES_PER_SECOND.one : AUDIO_BYTES_PER_SECOND.both;
   return { bytes: (video + audio) * seconds, width: out.width, height: out.height, fps: input.fps, passThrough: false };
+}
+
+/** Bits per pixel and frame a take is written with: the writers' target (`bit_rate` in
+ * `crates/record/src/platform/*`), the same on every platform. A still screen stays below it, so
+ * the take estimate is an upper bound. */
+export const TAKE_BPP = { h264: 0.08, hevc: 0.05 } as const;
+/** The writers keep a take's video bit rate between these, in bits per second. */
+export const TAKE_MIN_BITS = 2_000_000;
+export const TAKE_MAX_BITS = 60_000_000;
+/** A take's audio, in bytes per second: the mix at 192 kbit/s and each source on its own track
+ * at 160 kbit/s, as the writers encode them. */
+export const TAKE_AUDIO_BYTES_PER_SECOND = { mix: 24_000, source: 20_000 } as const;
+
+export type TakeInput = {
+  size: PhysicalSize;
+  fps: number;
+  codec: "h264" | "hevc";
+  /** How many audio sources the take records (the microphone, the system audio). */
+  audioSources: number;
+  /** Each source on its own track besides the mix (Settings › Recording). */
+  separateTracks: boolean;
+};
+
+/** H.264 stops at 4096 × 2304 worth of macroblocks, so a larger take is written as HEVC
+ * (`codec_for` in `crates/record/src/session.rs`). */
+function takeCodec(input: TakeInput): "h264" | "hevc" {
+  const blocks = Math.ceil(input.size.width / 16) * Math.ceil(input.size.height / 16);
+  const tooLarge = blocks > 36_864 || input.size.width > 4096 || input.size.height > 4096;
+  return input.codec === "h264" && tooLarge ? "hevc" : input.codec;
+}
+
+/** About how many bytes a take writes in `ms` of recording, for the time limit's disk warning. */
+export function estimateTake(input: TakeInput, ms: number): number {
+  const bits = input.size.width * input.size.height * Math.max(1, input.fps) * TAKE_BPP[takeCodec(input)];
+  const video = Math.min(TAKE_MAX_BITS, Math.max(TAKE_MIN_BITS, bits)) / 8;
+  const sources = Math.max(0, input.audioSources);
+  const audio =
+    sources === 0
+      ? 0
+      : sources === 1
+        ? TAKE_AUDIO_BYTES_PER_SECOND.source
+        : TAKE_AUDIO_BYTES_PER_SECOND.mix + (input.separateTracks ? sources * TAKE_AUDIO_BYTES_PER_SECOND.source : 0);
+  return ((video + audio) * Math.max(0, ms)) / 1000;
 }

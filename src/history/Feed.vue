@@ -2,13 +2,14 @@
 // The grid of captures, virtualised: the layout (model.gridLayout) places every row, and only
 // the rows near the view are in the page, so ten thousand entries scroll like fifty. Day headers
 // stay at the top while their day scrolls under them, and the next one pushes the last away.
-import { computed, inject, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, inject, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 
 import type { EntryId, HistoryItem } from "../lib/api/history";
 import { t } from "../lib/i18n";
 import Card from "./Card.vue";
 import { HISTORY, type HistoryContext } from "./context";
-import { dayLabel, GRID, gridLayout, rowAt, type GridLayout } from "./model";
+import FrameBand from "./FrameBand.vue";
+import { dayLabel, GRID, gridLayout, rowAt, type GridLayout, type Row } from "./model";
 
 const props = defineProps<{
   items: readonly HistoryItem[];
@@ -46,7 +47,48 @@ function scrolled(): void {
 }
 
 const layout = computed<GridLayout>(() =>
-  gridLayout(props.items, { width: width.value, zoom: props.zoom, grouped: props.grouped, results: !!props.results, extraBottom: props.extraBottom }),
+  gridLayout(props.items, {
+    width: width.value,
+    zoom: props.zoom,
+    grouped: props.grouped,
+    results: !!props.results,
+    extraBottom: props.extraBottom,
+    open: ctx.openSeries.value,
+  }),
+);
+
+/** The band's notch, under the middle of its card's column and inside the band's corners. */
+function notch(col: number): number {
+  const l = layout.value;
+  const x = col * (l.cardW + GRID.gap) + l.cardW / 2 - 8;
+  return Math.max(12, Math.min(x, width.value - 2 * GRID.padX - 28));
+}
+
+/** "4 captures · 1 series" on a day that has a series, the count alone on the others. */
+function dayCount(row: Row): string | number {
+  if (row.kind !== "head") return "";
+  if (!row.series) return row.count;
+  const captures = row.count === 1 ? t("history.captures.one") : t("history.captures.other", { n: row.count });
+  const series = row.series === 1 ? t("history.series.count.one") : t("history.series.count.other", { n: row.series });
+  return `${captures} · ${series}`;
+}
+
+// An opened band below the view scrolls up into it, as far as its card's row stays in view.
+watch(
+  () => ctx.openSeries.value,
+  async (id) => {
+    if (!id) return;
+    await nextTick();
+    const el = scroller.value;
+    const rows = layout.value.rows;
+    const at = rows.findIndex((row) => row.kind === "band");
+    if (!el || at < 1) return;
+    const band = rows[at];
+    const card = rows[at - 1];
+    const bottom = band.y + band.h - el.clientHeight;
+    if (bottom > el.scrollTop) el.scrollTop = Math.min(bottom, card.y - (props.grouped ? GRID.headH : 0));
+    top.value = el.scrollTop;
+  },
 );
 
 const OVERSCAN = 600;
@@ -116,7 +158,7 @@ defineExpose({ layout, reveal, toTop });
       <div class="hv-day" :style="{ top: `${stuck.offset}px` }">
         <span class="hv-day-title">{{ day(stuck.row.kind === "head" ? stuck.row.dayMs : 0).title }}</span>
         <span class="hv-day-meta">{{ day(stuck.row.kind === "head" ? stuck.row.dayMs : 0).meta }}</span>
-        <span class="hv-day-count">{{ stuck.row.kind === "head" ? stuck.row.count : "" }}</span>
+        <span class="hv-day-count">{{ dayCount(stuck.row) }}</span>
       </div>
     </div>
     <div class="hv-sizer" :style="{ height: `${layout.height}px` }">
@@ -124,10 +166,13 @@ defineExpose({ layout, reveal, toTop });
         <div v-if="row.kind === 'head'" class="hv-row hv-day" role="presentation" :style="{ top: `${row.y}px` }">
           <span class="hv-day-title">{{ day(row.dayMs).title }}</span>
           <span class="hv-day-meta">{{ day(row.dayMs).meta }}</span>
-          <span class="hv-day-count">{{ row.count }}</span>
+          <span class="hv-day-count">{{ dayCount(row) }}</span>
         </div>
         <div v-else-if="row.kind === 'results'" class="hv-row hv-results" role="status" :style="{ top: `${row.y}px` }">
           <b>{{ total === 1 ? t("history.results.one") : t("history.results.other", { n: total }) }}</b><span>{{ t("history.results.where", { query: results ?? "" }) }}</span>
+        </div>
+        <div v-else-if="row.kind === 'band'" class="hv-row hv-bandrow" role="presentation" :style="{ top: `${row.y}px` }">
+          <FrameBand :item="row.item" :notch="notch(row.col)" :width="width - 2 * GRID.padX" />
         </div>
         <div v-else class="hv-row hv-cards" role="presentation" :style="{ top: `${row.y}px`, gridTemplateColumns: `repeat(${layout.cols}, minmax(0, 1fr))` }">
           <Card

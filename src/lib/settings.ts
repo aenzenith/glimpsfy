@@ -27,7 +27,16 @@ export type General = Extra & {
    * version cannot read stays in the list as it is (`Kept` in settings.rs), so the pages read the
    * list through `readSavedSizes` (`src/lib/sizes.ts`) and write it back whole. */
   savedSizes: unknown[];
+  /** The last interval capture's plan, which the popover's form starts from. */
+  interval: IntervalPlan;
 };
+
+export type IntervalTarget = "area" | "window" | "display";
+export type IntervalEnd = "frames" | "minutes" | "manual";
+/** An interval capture's plan (`IntervalPlan` in settings.rs): `endValue` is frames or minutes as
+ * `end` says, and a manual end ignores it. A series holds at most 2000 frames and runs at most
+ * 12 hours. */
+export type IntervalPlan = { target: IntervalTarget; everySeconds: number; end: IntervalEnd; endValue: number };
 
 /** A size saved from the size menu, in frame pixels, as the size label counts them. */
 export type SavedSize = Extra & { name: string; width: number; height: number };
@@ -52,6 +61,7 @@ export type Shortcuts = Extra & {
   /** Drawing mode and the spotlight; registered only while a take records or pauses. */
   drawOnScreen: string | null;
   spotlight: string | null;
+  intervalCapture: string | null;
   /** Selects an area and goes straight into the scrolling capture; macOS only. */
   scrollCapture: string | null;
 };
@@ -137,6 +147,9 @@ export type Recording = Extra & {
   gifWidth: number | null;
   /** Whether drawings on a take fade 3 s after the last stroke; the Presentation card sets it. */
   inkFades: boolean;
+  /** A take stops and saves itself after this many minutes (1 to 240), pauses not counted;
+   * `null` records until the user stops. */
+  timeLimitMinutes: number | null;
   /** The language the trim window reads a recording's speech in: a model code ("tr", "en") or
    * "auto" to detect it. The Text panel's language pop-up sets it. */
   transcriptLanguage: string;

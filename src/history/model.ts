@@ -3,6 +3,7 @@
 
 import type { Entry, EntryId, EntryKind, HistoryItem, HistoryQuery, SortOrder, TextBox } from "../lib/api/history";
 import type { Language } from "../lib/i18n";
+import { platform } from "../lib/platform";
 
 // ------------------------------------------------------------------------------------ filters
 
@@ -59,6 +60,38 @@ export function formatDuration(ms: number | null | undefined): string {
 
 export function formatTime(ms: number, lang: Language): string {
   return new Intl.DateTimeFormat(lang, { hour: "numeric", minute: "2-digit" }).format(ms);
+}
+
+/** A time with its seconds, such as 14:32:05, for the frames of a series. */
+export function formatClock(ms: number, lang: Language): string {
+  return new Intl.DateTimeFormat(lang, { hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(ms);
+}
+
+/** When a series ran, "14:32–14:37", or its start alone while it has one frame. */
+export function seriesSpan(entry: Pick<Entry, "createdAtMs" | "durationMs">, lang: Language): string {
+  const start = formatTime(entry.createdAtMs, lang);
+  return entry.durationMs ? `${start}–${formatTime(entry.createdAtMs + entry.durationMs, lang)}` : start;
+}
+
+/** A series' folder as the user knows it: the folders under the home folder joined with "›", the
+ * middle ones folded into "…" when there are more than three, so the series' own folder stays in
+ * view ("Documents › … › Glimpsfy › Interval 2026-11-22 14.32"). */
+export function folderTrail(path: string, home: string | null): string {
+  const separator = platform.os === "windows" ? /[\\/]/ : /\//;
+  const trailing = platform.os === "windows" ? /[\\/]+$/ : /\/+$/;
+  let rest = path.replace(trailing, "");
+  if (home) {
+    const base = home.replace(trailing, "");
+    if (rest.startsWith(base) && separator.test(rest.charAt(base.length))) rest = rest.slice(base.length + 1);
+  }
+  const parts = rest.split(separator).filter(Boolean);
+  return (parts.length > 3 ? [parts[0], "…", ...parts.slice(-2)] : parts).join(" › ");
+}
+
+/** The path of a series frame's file inside the series' folder. */
+export function framePath(folder: string, file: string): string {
+  const separator = platform.os === "windows" && folder.includes("\\") ? "\\" : "/";
+  return `${folder.replace(/[\\/]+$/, "")}${separator}${file}`;
 }
 
 export function dayKey(ms: number): string {
@@ -130,13 +163,23 @@ export const GRID = {
   chromeH: 46,
   /** The quoted line under a search result: 4 gap, 4 padding and two 16 px lines. */
   snippetH: 40,
+  /** An open series' frame band under its row: 4 for the notch, 10 + 28 + 10 + 55 + 17 + 12 for
+   * the band (padding, head, gap, tile, time, padding) and the grid's gap. */
+  bandH: 144,
+  /** A frame tile of the band and the gap between two. */
+  tileW: 88,
+  tileGap: 8,
+  /** The room a series card gives its deck above the thumbnail. */
+  deckH: 10,
   bottom: 28,
 } as const;
 
 export type Row =
-  | { kind: "head"; key: string; y: number; h: number; dayMs: number; count: number }
+  | { kind: "head"; key: string; y: number; h: number; dayMs: number; count: number; series: number }
   | { kind: "results"; key: string; y: number; h: number }
-  | { kind: "cards"; key: string; y: number; h: number; items: HistoryItem[]; start: number };
+  | { kind: "cards"; key: string; y: number; h: number; items: HistoryItem[]; start: number }
+  /** The frames of the open series, under the row of its card; `col` is the card's column. */
+  | { kind: "band"; key: string; y: number; h: number; item: HistoryItem; col: number };
 
 export type GridLayout = {
   rows: Row[];
@@ -145,12 +188,17 @@ export type GridLayout = {
   cardH: number;
   /** The card's media box, which the thumbnails are placed in. */
   media: { w: number; h: number };
+  /** A card's width, which places the notch of a series' band under its card. */
+  cardW: number;
   /** For each entry in view order: its row index and column. */
   where: Map<EntryId, { row: number; col: number; index: number }>;
   order: EntryId[];
 };
 
-export function gridLayout(items: readonly HistoryItem[], o: { width: number; zoom: number; grouped: boolean; results: boolean; extraBottom: number }): GridLayout {
+export function gridLayout(
+  items: readonly HistoryItem[],
+  o: { width: number; zoom: number; grouped: boolean; results: boolean; extraBottom: number; open?: EntryId | null },
+): GridLayout {
   const avail = Math.max(1, o.width - 2 * GRID.padX);
   const cols = Math.max(1, Math.floor((avail + GRID.gap) / (o.zoom + GRID.gap)));
   const cardW = (avail - GRID.gap * (cols - 1)) / cols;
@@ -176,6 +224,11 @@ export function gridLayout(items: readonly HistoryItem[], o: { width: number; zo
       });
       rows.push({ kind: "cards", key: `${key}:${i}`, y, h: cardH + GRID.gap, items: slice, start: order.length - slice.length });
       y += cardH + GRID.gap;
+      const open = o.open ? slice.findIndex((item) => item.entry.id === o.open && item.entry.kind === "series") : -1;
+      if (open >= 0) {
+        rows.push({ kind: "band", key: `band:${o.open}`, y, h: GRID.bandH, item: slice[open], col: open });
+        y += GRID.bandH;
+      }
     }
   };
   if (o.grouped) {
@@ -184,7 +237,8 @@ export function gridLayout(items: readonly HistoryItem[], o: { width: number; zo
       const key = dayKey(items[i].entry.createdAtMs);
       let j = i + 1;
       while (j < items.length && dayKey(items[j].entry.createdAtMs) === key) j++;
-      rows.push({ kind: "head", key: `head:${key}`, y, h: GRID.headH, dayMs: items[i].entry.createdAtMs, count: j - i });
+      const series = items.slice(i, j).filter((item) => item.entry.kind === "series").length;
+      rows.push({ kind: "head", key: `head:${key}`, y, h: GRID.headH, dayMs: items[i].entry.createdAtMs, count: j - i, series });
       y += GRID.headH;
       pushCards(items.slice(i, j) as HistoryItem[], key);
       i = j;
@@ -192,7 +246,7 @@ export function gridLayout(items: readonly HistoryItem[], o: { width: number; zo
   } else {
     pushCards(items as HistoryItem[], "all");
   }
-  return { rows, height: y + GRID.bottom + o.extraBottom, cols, cardH, media: { w: cardW - 8, h: mediaH }, where, order };
+  return { rows, height: y + GRID.bottom + o.extraBottom, cols, cardH, media: { w: cardW - 8, h: mediaH }, cardW, where, order };
 }
 
 /** The first row whose bottom is below `y` (rows are sorted by `y`). */

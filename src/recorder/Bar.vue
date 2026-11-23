@@ -65,6 +65,7 @@ import type { Recording, Settings } from "../lib/settings";
 import ControlBar, { type ControlAction } from "./ControlBar.vue";
 import DeviceMenu from "./DeviceMenu.vue";
 import { clamp } from "./geometry";
+import { estimateTake } from "./estimate";
 import { clock, codeOf, errorText, type ErrorPlace } from "./format";
 import OptionsPop from "./OptionsPop.vue";
 import PermissionPop from "./PermissionPop.vue";
@@ -142,7 +143,16 @@ const setupModel = computed(() => ({
 }));
 
 // The take: the clock runs on between the core's ticks and never goes backwards while it runs.
-const take = reactive({ id: "", ms: 0, at: 0, running: false, shown: 0, micLevel: 0 });
+// `limit` is the take's time limit as its ticks report it; `undefined` until the first tick.
+const take = reactive({
+  id: "",
+  ms: 0,
+  at: 0,
+  running: false,
+  shown: 0,
+  micLevel: 0,
+  limit: undefined as number | null | undefined,
+});
 let clockTimer = 0;
 
 const paused = computed(() => state.value.kind === "paused");
@@ -153,10 +163,37 @@ const takeHasMic = computed(() => (state.value.kind === "recording" || state.val
 /** The clock as it reads, to the second. The ticks and the timer move `take.shown` eight times a
  * second; Vue passes a computed on only when its value changed, so the bar draws once a second
  * for the clock (and on each tick for a live microphone meter). */
-const time = computed(() => clock(take.shown));
+const limitMs = computed(() => {
+  if (take.limit !== undefined) return take.limit;
+  const minutes = rec.value?.timeLimitMinutes;
+  return minutes ? minutes * 60_000 : null;
+});
+/** With a time limit the clock counts down what is left, to the second rounded up, so it starts
+ * at the limit and reads 0:00 when the take stops. */
+const left = computed(() => (limitMs.value === null ? null : Math.ceil(Math.max(0, limitMs.value - take.shown) / 1000)));
+const time = computed(() => (left.value === null ? clock(take.shown) : `−${clock(left.value * 1000)}`));
+/** About how many bytes a take with these choices writes per minute, for the limit's disk warning. */
+const bytesPerMinute = computed(() =>
+  setup.value && rec.value
+    ? estimateTake(
+        {
+          size: setup.value.outputSize,
+          fps: rec.value.fps,
+          codec: rec.value.codec,
+          audioSources: (micOn.value ? 1 : 0) + (systemOn.value ? 1 : 0),
+          separateTracks: rec.value.separateTracks,
+        },
+        60_000,
+      )
+    : 0,
+);
 
 const controlModel = computed(() => ({
   time: time.value,
+  remaining:
+    limitMs.value === null
+      ? null
+      : { warn: (left.value ?? 0) <= 10, tip: t("record.remaining.tip", { time: clock(limitMs.value) }) },
   paused: paused.value,
   finishing: state.value.kind === "finishing" || stopping.value,
   mic: { recorded: takeHasMic.value, live: !muted.value, level: !muted.value && state.value.kind === "recording" ? take.micLevel : 0 },
@@ -189,6 +226,7 @@ watch(
       take.ms = 0;
       take.shown = 0;
       take.micLevel = 0;
+      take.limit = undefined;
     }
     if (s.kind === "recording" || s.kind === "paused") {
       take.ms = s.elapsedMs;
@@ -750,6 +788,7 @@ onMounted(async () => {
         take.ms = tick.elapsedMs;
         take.at = performance.now();
         take.micLevel = tick.microphoneLevel ?? 0;
+        take.limit = tick.limitMs;
         tickClock();
       }),
     );
@@ -798,6 +837,7 @@ onUnmounted(() => {
 const onFps = (fps: number) => persist((r) => void (r.fps = fps));
 const onResolution = (resolution: Resolution) => persist((r) => void (r.resolution = resolution));
 const onClicks = (on: boolean) => persist((r) => void (r.highlightClicks = on));
+const onLimit = (minutes: number | null) => persist((r) => void (r.timeLimitMinutes = minutes));
 </script>
 
 <template>
@@ -833,10 +873,14 @@ const onClicks = (on: boolean) => persist((r) => void (r.highlightClicks = on));
         :output-size="setup.outputSize"
         :clicks="rec.highlightClicks"
         :keys="rec.showKeys"
+        :limit-minutes="rec.timeLimitMinutes ?? null"
+        :bytes-per-minute="bytesPerMinute"
+        :free-bytes="setup.freeBytes ?? null"
         @fps="onFps"
         @resolution="onResolution"
         @clicks="onClicks"
         @keys="setShowKeys"
+        @limit="onLimit"
       />
       <DeviceMenu
         v-else-if="drawn.kind === 'mic'"

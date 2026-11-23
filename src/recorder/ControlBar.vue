@@ -1,5 +1,6 @@
 <script setup lang="ts">
-// The control bar (design `controlBar`): Discard · the elapsed time · the microphone with its
+// The control bar (design `controlBar`): Discard · the elapsed time (with a time limit, the time
+// left, amber in its last 10 seconds) · the microphone with its
 // meter · Presentation, which opens the card for drawing and the spotlight · pause or resume ·
 // stop. After Discard the core pauses the take and the bar turns into
 // the question: the time, "Discard this recording?", Keep recording (focused, with its ring kept
@@ -14,6 +15,9 @@ export type ControlAction = "discard" | "mute" | "present" | "pause" | "stop" | 
 
 const props = defineProps<{
   time: string;
+  /** With a time limit, `time` is the time left: `warn` in the last 10 seconds, and `tip` says
+   * when the take stops. */
+  remaining: { warn: boolean; tip: string } | null;
   paused: boolean;
   /** The file is being completed after Stop: every control waits. */
   finishing: boolean;
@@ -47,7 +51,12 @@ const level = (v: number) => Math.max(0, Math.min(1, v));
 
 <template>
   <div v-if="asked" class="g-bar" role="toolbar" :aria-label="t('record.discard.question')" data-bar="control" data-confirm>
-    <span class="g-timecode" role="timer" :aria-label="t('record.elapsed')">
+    <span
+      class="g-timecode"
+      role="timer"
+      :aria-label="remaining ? t('record.remaining') : t('record.elapsed')"
+      :data-tone="remaining?.warn ? 'warn' : undefined"
+    >
       <span class="g-rec-dot" data-state="paused" /><span>{{ time }}</span>
     </span>
     <span class="g-divider" role="separator" />
@@ -83,7 +92,13 @@ const level = (v: number) => Math.max(0, Math.min(1, v));
       <GIcon name="trash" />
     </button>
     <span class="g-divider" role="separator" />
-    <span class="g-timecode" role="timer" :aria-label="t('record.elapsed')">
+    <span
+      class="g-timecode"
+      role="timer"
+      :aria-label="remaining ? t('record.remaining') : t('record.elapsed')"
+      :data-tone="remaining?.warn ? 'warn' : undefined"
+      :data-tip="remaining?.tip"
+    >
       <span class="g-rec-dot" :data-state="paused || finishing ? 'paused' : undefined" /><span>{{ time }}</span>
     </span>
     <span class="g-divider" role="separator" />
@@ -152,6 +167,8 @@ const level = (v: number) => Math.max(0, Math.min(1, v));
 </template>
 
 <style>
+/* the time left in a take's last 10 seconds */
+.g-timecode[data-tone="warn"] > span:last-child { color: var(--warn); }
 /* text inside a bar, such as the discard question */
 .r-bar-text { display: inline-flex; align-items: center; gap: var(--space-6); padding: 0 var(--space-12) 0 var(--space-6); font: var(--type-label); color: var(--text); white-space: nowrap; }
 </style>

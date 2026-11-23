@@ -203,6 +203,25 @@ pub fn copy_named(folder: &Path, stem: &str, extension: &str, source: &Path) -> 
     write_unique(folder, extension, false, |_| stem.clone(), |file| io::copy(&mut from, file).map(|_| ()))
 }
 
+/// Makes a new folder named `name` (made safe) in `parent`, or `name (2)`, `name (3)`… when the
+/// name is taken, and answers it. A folder that exists, even an empty one, is never reused: an
+/// interval series writes into a folder of its own, so two series never mix their frames.
+pub fn create_unique_dir(parent: &Path, name: &str) -> io::Result<PathBuf> {
+    fs::create_dir_all(parent)?;
+    let name = sanitize(name);
+    for n in 1..=MAX_ATTEMPTS {
+        let path = if n == 1 { parent.join(&name) } else { parent.join(format!("{name} ({n})")) };
+        // `create_dir` fails on any existing entry, folder or file, so claiming the name and
+        // making the folder are one step.
+        match fs::create_dir(&path) {
+            Ok(()) => return Ok(path),
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    Err(io::Error::new(ErrorKind::AlreadyExists, "every folder name for this series is taken"))
+}
+
 /// The one writer: tries `stem(1)`, `stem(2)`… (a counting template) or `stem(1)`,
 /// `stem(1) (2)`… (any other), each with `create_new`, until a name is free, and lets `fill`
 /// write the one file it made.
@@ -369,6 +388,20 @@ mod tests {
             assert_eq!(saved.file_name().unwrap().to_string_lossy(), format!("Report (2).{extension}"));
             assert_eq!(fs::read(&picked).unwrap(), b"original");
         }
+
+        // An interval series never writes into a folder that exists, empty or not, nor over a
+        // file of the same name.
+        let parent = dir.path().join("series");
+        let first = create_unique_dir(&parent, "Aralıklı 2026-11-22 14.32").unwrap();
+        fs::write(first.join("001 14.32.00.png"), b"first series").unwrap();
+        let second = create_unique_dir(&parent, "Aralıklı 2026-11-22 14.32").unwrap();
+        fs::write(parent.join("Aralıklı 2026-11-22 14.32 (3)"), b"a file").unwrap();
+        let third = create_unique_dir(&parent, "Aralıklı 2026-11-22 14.32").unwrap();
+        assert_eq!(second.file_name().unwrap().to_string_lossy(), "Aralıklı 2026-11-22 14.32 (2)");
+        assert_eq!(third.file_name().unwrap().to_string_lossy(), "Aralıklı 2026-11-22 14.32 (4)");
+        assert_eq!(fs::read(first.join("001 14.32.00.png")).unwrap(), b"first series");
+        assert!(fs::read_dir(&second).unwrap().next().is_none() && third.is_dir());
+        assert_eq!(fs::read(parent.join("Aralıklı 2026-11-22 14.32 (3)")).unwrap(), b"a file");
     }
 
     /// Whatever an app calls itself or its window, and whatever the template holds, the name is

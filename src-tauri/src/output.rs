@@ -496,6 +496,52 @@ fn write_in_folder(
     }
 }
 
+// ------------------------------------------------------------------------- interval series
+
+/// The folder a new interval series writes into: a new folder named `name` in the save folder of
+/// Settings › Output, or in the default folder when that one cannot take it (unmounted, gone,
+/// read-only). An existing folder is never reused (`naming::create_unique_dir`).
+pub(crate) fn series_folder(output: &Output, name: &str) -> CommandResult<PathBuf> {
+    let attempt = |parent: &Path| -> Result<PathBuf, String> {
+        naming::check_folder(parent).map_err(|problem| problem.to_string())?;
+        naming::create_unique_dir(parent, name).map_err(|error| error.to_string())
+    };
+    let chosen = &output.save_folder;
+    match attempt(chosen) {
+        Ok(folder) => Ok(folder),
+        Err(first) => {
+            let default = Output::default().save_folder;
+            if &default == chosen {
+                return Err(folder_error(chosen, &first));
+            }
+            attempt(&default).map_err(|_| folder_error(chosen, &first))
+        }
+    }
+}
+
+/// Writes one frame of an interval series into its folder: scaled to 1× when Settings › Output
+/// says so, encoded in the format of Settings › Output, named `stem` and never replacing a file.
+/// A series passes through none of `deliver`: no toast, no shutter, no clipboard. The folder is
+/// not made again when it is gone (the series was deleted, which moved it to the Trash); the
+/// write then fails with `NotFound`. Answers the file, its bytes and its pixel size.
+pub(crate) fn write_series_frame(
+    output: &Output,
+    folder: &Path,
+    stem: &str,
+    frame: Frame,
+) -> std::io::Result<(PathBuf, u64, glimpsfy_capture::PhysicalSize)> {
+    if !folder.is_dir() {
+        return Err(std::io::Error::new(std::io::ErrorKind::NotFound, "the series' folder is gone"));
+    }
+    let frame = match output.retina {
+        RetinaScale::ScaleTo1x => frame.at_1x().unwrap_or(frame),
+        RetinaScale::Keep2x => frame,
+    };
+    let bytes = frame.encode(encoding(output, output.format)).map_err(std::io::Error::other)?;
+    let path = naming::save_named(folder, stem, output.format.extension(), &bytes)?;
+    Ok((path, bytes.len() as u64, frame.size))
+}
+
 fn folder_error(folder: &Path, reason: &str) -> CommandError {
     CommandError::new(
         ErrorCode::Io,

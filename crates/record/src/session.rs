@@ -758,12 +758,26 @@ impl Recorder {
 
     /// Recording or paused → finishing → saved (or failed, keeping what was written).
     pub fn stop(&self) -> Result<RecordingOutcome> {
+        self.stop_with(None)
+    }
+
+    /// [`Recorder::stop`] on the app's own initiative (the time limit): the take is saved the
+    /// same way, and its result says why it stopped. A disk that filled meanwhile stays the
+    /// reason, because that is what the user has to act on.
+    pub fn stop_because(&self, reason: StopReason) -> Result<RecordingOutcome> {
+        self.stop_with(Some(reason))
+    }
+
+    fn stop_with(&self, reason: Option<StopReason>) -> Result<RecordingOutcome> {
         let take = {
             let mut inside = lock(&self.inside);
             inside.machine.stop()?;
             inside.take.take()
         };
-        let outcome = self.close_take(take, Ending::Save);
+        let mut outcome = self.close_take(take, Ending::Save);
+        if let (Some(reason), RecordingOutcome::Saved { result }) = (reason, &mut outcome) {
+            result.stopped_because.get_or_insert(reason);
+        }
         lock(&self.inside).machine.finish(outcome)
     }
 
@@ -1057,6 +1071,17 @@ mod tests {
             other => panic!("expected a saved take, got {other:?}"),
         }
 
+        // The time limit stops a take the way Stop does: the file is saved and says why.
+        let limited = rig.start("limited.mp4");
+        match rig.recorder.stop_because(StopReason::TimeLimit).unwrap() {
+            RecordingOutcome::Saved { result } => {
+                assert_eq!(result.path, limited);
+                assert_eq!(result.file_bytes, 31);
+                assert_eq!(result.stopped_because, Some(StopReason::TimeLimit));
+            }
+            other => panic!("expected a saved take, got {other:?}"),
+        }
+
         let discarded = rig.start("discarded.mp4");
         assert!(rig.recorder.discard().is_err(), "a discard without the question is refused");
         rig.recorder.ask_discard().unwrap();
@@ -1088,7 +1113,7 @@ mod tests {
         }
         assert!(rig.recorder.finish_fault().is_none(), "a take ends once");
 
-        assert_eq!(rig.files(), vec!["Trash/discarded.mp4", "failed.mp4", "faulted.mp4", "saved.mp4"]);
+        assert_eq!(rig.files(), vec!["Trash/discarded.mp4", "failed.mp4", "faulted.mp4", "limited.mp4", "saved.mp4"]);
         assert!(rig.recorder.state() == RecordingState::Idle);
     }
 

@@ -98,6 +98,9 @@ pub mod events {
         /// The system audio's peak since the last tick, when it is recorded.
         pub system_level: Option<f32>,
         pub file_bytes: u64,
+        /// Recording › Time limit as the take started with it; the take stops and saves itself
+        /// when `elapsed_ms` reaches it.
+        pub limit_ms: Option<u64>,
     }
 }
 

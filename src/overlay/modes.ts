@@ -1,12 +1,21 @@
 // What the overlay does once a selection is finished, by the capture's mode and Settings ›
 // General › After a selection: stay with the bars for annotation, copy and close, save and close,
-// copy the text in it ("Copy text from area"), hand it to the agent that asked the user to select
-// it, or scroll through it (the scrolling capture). A clicked window is first captured on its own,
-// so Copy and Save deliver the window with its real transparency instead of the crop.
+// copy the text in it ("Copy text from area"), hand it to an interval series as its area, hand it
+// to the agent that asked the user to select it, or scroll through it (the scrolling capture). A
+// clicked window is first captured on its own, so Copy and Save deliver the window with its real
+// transparency instead of the crop.
 // Owner: capture (milestone 1); the page wires it in `App.vue`.
 
 import { agents_take_selection } from "../lib/api/agents";
-import { capture_close, capture_pick_window, overlay_failed, type OverlayFrame, type PickedWindow, type Selection } from "../lib/api/capture";
+import {
+  capture_close,
+  capture_interval_area,
+  capture_pick_window,
+  overlay_failed,
+  type OverlayFrame,
+  type PickedWindow,
+  type Selection,
+} from "../lib/api/capture";
 import { ocr_copy_text } from "../lib/api/ocr";
 import { output_copy, output_save } from "../lib/api/output";
 
@@ -56,6 +65,10 @@ export async function finish(
       await capture_close(frame.captureId);
       return "done";
     }
+    case "interval":
+      // The core closes the capture and starts the series on this area.
+      await capture_interval_area(selection);
+      return "done";
     case "agent":
       // An agent asked for an area the user selects; the core sends what lies in it and closes
       // the capture.

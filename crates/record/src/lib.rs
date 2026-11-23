@@ -330,6 +330,8 @@ pub struct TrackInfo {
 pub enum StopReason {
     /// The disk ran low, so the take was finished while there was room to finish it.
     DiskFull,
+    /// The take reached Recording › Time limit (paused time does not count) and was saved.
+    TimeLimit,
 }
 
 /// Describes a finished recording.

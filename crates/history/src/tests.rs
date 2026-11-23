@@ -375,6 +375,54 @@ fn a_delete_removes_what_it_was_asked_to_and_keeps_the_link_when_the_host_fails(
     assert!(f.store.get(&b.id).is_ok() && b.file.as_ref().unwrap().exists());
 }
 
+/// A series lives in a folder of the user's: deleting it leaves no frame rows and moves the whole
+/// folder to the Trash, never unlinking a frame, and no frame name can lead out of the folder.
+#[test]
+fn a_deleted_series_goes_to_the_trash_as_one_folder() {
+    let f = fixture(false);
+    let folder = f.user.join("Aralıklı 2026-11-22 14.32");
+    fs::create_dir_all(&folder).unwrap();
+    let mut new = screenshot("Aralıklı 2026-11-22 14.32", NOW);
+    new.kind = Some(EntryKind::Series);
+    new.saved_path = Some(folder.clone());
+    new.series_interval_ms = Some(5000);
+    let series = f.store.add(new, OwnFile::None).unwrap();
+    for (index, file) in [Some("001 14.32.00.png"), None, Some("003 14.32.10.png")].into_iter().enumerate() {
+        if let Some(file) = file {
+            fs::write(folder.join(file), b"png").unwrap();
+        }
+        let frame =
+            SeriesFrame { index: index as u32, taken_at_ms: NOW + index as i64 * 5000, file: file.map(String::from) };
+        f.store.add_series_frame(&series.id, &frame, file.map(|_| 3), None).unwrap();
+    }
+    assert!(f.store.media(&series.id, Media::Frame(0)).unwrap().is_some());
+    assert_eq!(f.store.media(&series.id, Media::Frame(1)).unwrap(), None, "a skipped frame has no file");
+
+    // A frame name that leads out of the folder is refused, and so is a link that does.
+    let outside = f.user.join("secret.png");
+    fs::write(&outside, b"user's").unwrap();
+    let escape = SeriesFrame { index: 3, taken_at_ms: NOW + 15_000, file: Some("../secret.png".into()) };
+    assert!(f.store.add_series_frame(&series.id, &escape, None, None).is_err());
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(&outside, folder.join("004 link.png")).unwrap();
+        let link = SeriesFrame { index: 3, taken_at_ms: NOW + 15_000, file: Some("004 link.png".into()) };
+        f.store.add_series_frame(&series.id, &link, None, None).unwrap();
+        assert_eq!(f.store.media(&series.id, Media::Frame(3)).unwrap(), None);
+    }
+
+    // Deleting asks for nothing but still moves the folder, whole, to the Trash.
+    let report = f.store.delete(std::slice::from_ref(&series.id), &DeleteOptions::default(), &NoHostedCopies).unwrap();
+    assert_eq!(report.removed(), vec![series.id.clone()]);
+    assert_eq!(*f.trash.moved.lock().unwrap(), vec![folder.clone()]);
+    assert!(!folder.exists() && outside.exists());
+    let trashed = f.trash.folder.join("0-Aralıklı 2026-11-22 14.32");
+    assert!(trashed.join("001 14.32.00.png").is_file() && trashed.join("003 14.32.10.png").is_file());
+    assert!(f.store.series_frames(&series.id).unwrap().is_empty(), "no frame row outlives its series");
+    let missing = SeriesFrame { index: 9, taken_at_ms: NOW + 60_000, file: None };
+    assert!(matches!(f.store.add_series_frame(&series.id, &missing, None, None), Err(HistoryError::NotFound(_))));
+}
+
 /// Every frozen database of an older (or the current) schema opens, migrates and keeps every row
 /// with its fields, and its text stays searchable.
 #[test]
@@ -392,7 +440,7 @@ fn every_older_schema_migrates_without_losing_rows() {
         "the current schema has its fixture"
     );
 
-    type Row = (String, String, String, i64, bool, Option<String>, Option<String>);
+    type Row = (i64, String, String, String, i64, bool, Option<String>, Option<String>);
     for fixture in fixtures {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("history");
@@ -401,12 +449,27 @@ fn every_older_schema_migrates_without_losing_rows() {
         let before: Vec<Row> = {
             let conn = Connection::open(root.join("history.sqlite3")).unwrap();
             let mut statement = conn
-                .prepare("SELECT id, kind, name, created_at_ms, pinned, text, hosted_url FROM entries ORDER BY id")
+                .prepare("SELECT seq, id, kind, name, created_at_ms, pinned, text, hosted_url FROM entries ORDER BY id")
                 .unwrap();
             let rows = statement
-                .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?)))
+                .query_map([], |r| {
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?))
+                })
                 .unwrap();
             rows.collect::<rusqlite::Result<_>>().unwrap()
+        };
+        let frames_before: Vec<(String, u32, Option<String>)> = {
+            let conn = Connection::open(root.join("history.sqlite3")).unwrap();
+            let frames = match conn.prepare("SELECT entry_id, idx, file FROM series_frames ORDER BY entry_id, idx") {
+                Ok(mut statement) => statement
+                    .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+                    .unwrap()
+                    .collect::<rusqlite::Result<_>>()
+                    .unwrap(),
+                // A schema older than the series has no frames.
+                Err(_) => Vec::new(),
+            };
+            frames
         };
         assert!(before.len() >= 5, "{} holds a row of every kind", fixture.display());
 
@@ -418,7 +481,8 @@ fn every_older_schema_migrates_without_losing_rows() {
         assert_eq!(version, SCHEMA_VERSION);
         let page = store.list(&HistoryQuery { limit: 1000, ..HistoryQuery::default() }).unwrap();
         assert_eq!(page.total as usize, before.len(), "{}", fixture.display());
-        for (id, kind, name, created, pinned, text, url) in &before {
+        let conn = Connection::open(root.join("history.sqlite3")).unwrap();
+        for (seq, id, kind, name, created, pinned, text, url) in &before {
             let entry = store.get(&EntryId(id.clone())).unwrap();
             assert_eq!(
                 (entry.kind.as_str(), &entry.name, entry.created_at_ms, entry.pinned),
@@ -426,6 +490,19 @@ fn every_older_schema_migrates_without_losing_rows() {
             );
             assert_eq!(&entry.text, text);
             assert_eq!(entry.hosted.map(|h| h.url), *url);
+            // The search index is keyed by `seq`, so a rebuilt table keeps every row's own.
+            let after: i64 = conn.query_row("SELECT seq FROM entries WHERE id = ?1", [id], |r| r.get(0)).unwrap();
+            assert_eq!(after, *seq, "{}", fixture.display());
+        }
+        for (id, index, file) in &frames_before {
+            let frames = store.series_frames(&EntryId(id.clone())).unwrap();
+            assert_eq!(frames.iter().find(|f| f.index == *index).map(|f| &f.file), Some(file));
+        }
+        if !frames_before.is_empty() {
+            let series =
+                store.list(&HistoryQuery { kinds: vec![EntryKind::Series], ..HistoryQuery::default() }).unwrap();
+            let info = series.items[0].entry.series.unwrap();
+            assert_eq!((info.count, info.skipped), (3, 1), "{}", fixture.display());
         }
         // The fixture's recognised text is still found, through the rebuilt index if need be.
         assert!(store.search("ışık", &HistoryQuery::default()).unwrap().total >= 1, "{}", fixture.display());
@@ -487,6 +564,23 @@ fn write_schema_fixture() {
     store.add(text, OwnFile::None).unwrap();
 
     store.add(screenshot("Plain", NOW), OwnFile::None).unwrap();
+
+    let mut series = screenshot("Aralıklı 2026-11-22 14.32", NOW - 4 * DAY);
+    series.kind = Some(EntryKind::Series);
+    series.saved_path = Some("/Users/someone/Desktop/Glimpsfy/Aralıklı 2026-11-22 14.32".into());
+    series.series_interval_ms = Some(5000);
+    series.source.app_name = Some("Grafana".into());
+    let series = store.add(series, OwnFile::None).unwrap();
+    for (index, file) in [Some("001 14.32.00.png"), None, Some("003 14.32.10.png")].into_iter().enumerate() {
+        let frame = SeriesFrame {
+            index: index as u32,
+            taken_at_ms: NOW - 4 * DAY + index as i64 * 5000,
+            file: file.map(String::from),
+        };
+        store
+            .add_series_frame(&series.id, &frame, file.map(|_| 1200), Some(PixelSize { width: 40, height: 20 }))
+            .unwrap();
+    }
     drop(store);
 
     let conn = Connection::open(root.join("history.sqlite3")).unwrap();

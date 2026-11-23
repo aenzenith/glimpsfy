@@ -80,6 +80,9 @@ struct Take {
     has_system: bool,
     /// Whether the take came from the setup, which returns when the countdown is cancelled.
     from_setup: bool,
+    /// Recording › Time limit as the take started with it: the take stops and saves itself once
+    /// this much has been recorded (pauses do not count).
+    limit_ms: Option<u64>,
     /// Return was pressed while the stream still opened, when the recorder cannot start yet: the
     /// take starts the moment the stream is open instead of counting down.
     skip: bool,
@@ -488,6 +491,7 @@ pub fn open_setup(app: &AppHandle, request: SetupRequest) -> CommandResult<Recor
     let resolution = setup::resolution(&app.state::<AppState>().settings.get().recording);
     let mut next = RecordSetup::new(mode, described, windows, request.rect, request.window_id, camera, microphone);
     next.settle(resolution);
+    next.free_bytes = glimpsfy_record::files::free_bytes(&recording.recordings_folder).ok();
     lock(&rec.inner).setup = Some(next.clone());
     show_setup(app);
     emit_setup(app);
@@ -1120,6 +1124,7 @@ pub async fn start(app: AppHandle, config: Option<RecordingConfig>) -> CommandRe
         has_system: config.audio.system,
         config: config.clone(),
         from_setup,
+        limit_ms: settings.recording.time_limit_minutes.map(|m| m.clamp(1, 240) as u64 * 60_000),
         skip: false,
     };
 
@@ -1289,10 +1294,11 @@ fn on_keys(app: &AppHandle, caps: Vec<String>) {
     }
 }
 
-/// Sends `record://tick` four times a second while the take records or pauses, and keeps the
-/// tray's time current.
+/// Sends `record://tick` four times a second while the take records or pauses, keeps the
+/// tray's time current, and stops the take once when it reaches its time limit.
 fn ticks(app: &AppHandle, id: RecordingId) {
     let app = app.clone();
+    let mut limit_reached = false;
     std::thread::spawn(move || loop {
         std::thread::sleep(Duration::from_millis(250));
         let rec = state(&app);
@@ -1300,13 +1306,13 @@ fn ticks(app: &AppHandle, id: RecordingId) {
         if progress.id != id {
             return;
         }
-        let (mic, system, muted) = {
+        let (mic, system, limit_ms) = {
             let inner = lock(&rec.inner);
             let take = inner.take.as_ref();
-            (take.is_some_and(|t| t.has_microphone), take.is_some_and(|t| t.has_system), rec.recorder.state())
+            (take.is_some_and(|t| t.has_microphone), take.is_some_and(|t| t.has_system), take.and_then(|t| t.limit_ms))
         };
         let muted = matches!(
-            muted,
+            rec.recorder.state(),
             RecordingState::Recording { microphone_muted: true, .. }
                 | RecordingState::Paused { microphone_muted: true, .. }
         );
@@ -1316,9 +1322,21 @@ fn ticks(app: &AppHandle, id: RecordingId) {
             microphone_level: (mic && !muted).then_some(progress.microphone_level),
             system_level: system.then_some(progress.system_level),
             file_bytes: progress.file_bytes,
+            limit_ms,
         };
         let _ = app.emit(events::TICK, &tick);
         tray(&app, &rec.recorder.state(), Some(progress.elapsed_ms));
+        // The elapsed time leaves pauses out, so a paused take never reaches its limit.
+        if !limit_reached && limit_ms.is_some_and(|limit| progress.elapsed_ms >= limit) {
+            limit_reached = true;
+            let app = app.clone();
+            tauri::async_runtime::spawn(async move {
+                // Stop may have won the race; then there is nothing left to stop.
+                if let Err(error) = stop_because(app, Some(StopReason::TimeLimit)).await {
+                    trace::log(format!("[glimpsfy] the time limit did not stop the take: {}", error.message));
+                }
+            });
+        }
     });
 }
 
@@ -1361,6 +1379,12 @@ pub async fn cancel_countdown(app: AppHandle) -> CommandResult<()> {
 
 /// Stops the take and resolves when the file is complete.
 pub async fn stop(app: AppHandle) -> CommandResult<glimpsfy_record::RecordingResult> {
+    stop_because(app, None).await
+}
+
+/// [`stop`], saying why the app stopped the take on its own (the time limit), which the toast
+/// then reports.
+async fn stop_because(app: AppHandle, reason: Option<StopReason>) -> CommandResult<glimpsfy_record::RecordingResult> {
     let recorder = state(&app).recorder.clone();
     let _ending = Ending::new(&app);
     let id = match recorder.state() {
@@ -1376,9 +1400,12 @@ pub async fn stop(app: AppHandle) -> CommandResult<glimpsfy_record::RecordingRes
     };
     // Finishing a long take takes a moment; the bar shows it.
     let _ = app.emit(events::STATE, RecordingState::Finishing { id });
-    let outcome = tauri::async_runtime::spawn_blocking(move || recorder.stop())
-        .await
-        .map_err(|e| CommandError::internal(e.to_string()))??;
+    let outcome = tauri::async_runtime::spawn_blocking(move || match reason {
+        Some(reason) => recorder.stop_because(reason),
+        None => recorder.stop(),
+    })
+    .await
+    .map_err(|e| CommandError::internal(e.to_string()))??;
     finished(&app, outcome.clone());
     match outcome {
         RecordingOutcome::Saved { result } => Ok(result),
@@ -1615,9 +1642,18 @@ fn keep_take(
             toast_failure(app, display, &error);
         }
         None => {
-            // A take the full disk stopped is saved all the same: one toast says both.
-            let disk_full = result.stopped_because == Some(StopReason::DiskFull);
-            let mut saved = Toast::new(if disk_full { ToastKind::DiskFull } else { ToastKind::Saved });
+            // A take the full disk stopped is saved all the same: one toast says both. A take
+            // that reached its time limit says so, with its length.
+            let kind = match result.stopped_because {
+                Some(StopReason::DiskFull) => ToastKind::DiskFull,
+                Some(StopReason::TimeLimit) => ToastKind::TimeUp,
+                None => ToastKind::Saved,
+            };
+            let mut saved = Toast::new(kind);
+            if kind == ToastKind::TimeUp {
+                saved.duration_ms = Some(result.duration_ms);
+                saved.recording_id = Some(result.id.0.clone());
+            }
             saved.path = Some(result.path.display().to_string());
             saved.folder = result.path.parent().and_then(Path::file_name).map(|n| n.to_string_lossy().into_owned());
             saved.width = Some(result.size.width);

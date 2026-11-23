@@ -36,10 +36,11 @@ pub fn tray_event(app: &AppHandle, event: &TrayIconEvent) {
     let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event else {
         return;
     };
-    // ⌥-click stops a take (or ends its countdown) without opening anything over the screen
-    // being recorded. The click event carries no modifiers, so AppKit's current flags are read.
+    // ⌥-click stops a take (or ends its countdown), or else an interval series, without opening
+    // anything over the screen being captured. The click event carries no modifiers, so AppKit's
+    // current flags are read.
     #[cfg(target_os = "macos")]
-    if crate::macos::option_key_down() && crate::recording::stop_from_tray(app) {
+    if crate::macos::option_key_down() && (crate::recording::stop_from_tray(app) || session::interval::stop(app)) {
         return;
     }
     match app.state::<AppState>().settings.get().general.icon_click {

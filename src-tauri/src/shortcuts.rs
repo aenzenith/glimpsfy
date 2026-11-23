@@ -49,6 +49,8 @@ pub enum Action {
     DrawOnScreen,
     Spotlight,
     PickColor,
+    /// Starts an interval series with the plan of Settings, or stops the one that runs.
+    IntervalCapture,
     /// Selects an area and goes straight into the scrolling capture (macOS).
     ScrollCapture,
 }
@@ -56,7 +58,9 @@ pub enum Action {
 impl Action {
     /// Whether the action does something in this build.
     fn works(self) -> bool {
-        self.mode().is_some() || self == Action::OpenHistory || crate::recording::handles(self)
+        self.mode().is_some()
+            || matches!(self, Action::OpenHistory | Action::IntervalCapture)
+            || crate::recording::handles(self)
     }
 
     /// Whether the action's key is registered only while a take records or pauses (`bind_take`)
@@ -150,6 +154,13 @@ pub(crate) fn run(app: &AppHandle, action: Action, at: Instant) {
             windows::open(app, WindowKind::History);
             Ok(())
         }
+        (Action::IntervalCapture, None) => {
+            // Starting reads the window list and makes a folder, which the main thread (where
+            // shortcuts arrive) must not wait for.
+            let app = app.clone();
+            std::thread::spawn(move || session::interval::toggle(&app));
+            Ok(())
+        }
         (recording, None) if crate::recording::handles(recording) => {
             crate::recording::shortcut(app, recording);
             Ok(())
@@ -197,6 +208,7 @@ pub fn apply(app: &AppHandle, shortcuts: &Shortcuts) -> Vec<ShortcutProblem> {
         (Action::PickColor, &shortcuts.pick_color),
         (Action::DrawOnScreen, &shortcuts.draw_on_screen),
         (Action::Spotlight, &shortcuts.spotlight),
+        (Action::IntervalCapture, &shortcuts.interval_capture),
         (Action::ScrollCapture, &shortcuts.scroll_capture),
     ];
 

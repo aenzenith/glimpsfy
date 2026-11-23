@@ -8,6 +8,7 @@
 
 import { call } from "./core";
 import type { EditorImage } from "./render";
+import type { IntervalPlan, IntervalTarget } from "../settings";
 
 export type CaptureId = number;
 export type DisplayId = number;
@@ -75,10 +76,11 @@ export type CaptureMode =
 
 /** What the overlay does when a selection is finished or a window clicked: stay for annotation,
  * copy and close, save and close, or copy the text in it (`ocr_copy_text`).
+ * `interval`: the selection becomes the area of an interval series (`capture_interval_area`).
  * `agent`: an agent asked for an area the user selects, and the selection goes to it
  * (`agents_take_selection`). `scroll`: the selection becomes a scrolling capture
  * (`capture_start_scroll`). */
-export type AfterSelection = "annotate" | "copy" | "save" | "copyText" | "agent" | "scroll";
+export type AfterSelection = "annotate" | "copy" | "save" | "copyText" | "interval" | "agent" | "scroll";
 
 /** A window the overlay can snap to, display-local and logical. */
 export type OverlayWindow = {
@@ -132,8 +134,38 @@ export type CloseReason =
   | "editor"
   | "recording"
   | "pinned"
+  | "interval"
   /** The selection went to the agent that asked for it (`agents_take_selection`). */
   | "agent";
+
+/** The interval series that runs (`IntervalState` in commands/capture.rs), the payload of
+ * `capture://interval`. An idle state has `running` false and nothing else filled in. */
+export type IntervalState = {
+  running: boolean;
+  target: IntervalTarget | null;
+  /** What the series follows: the window's app, or the display's name. */
+  label: string | null;
+  /** The series' name in the history: the followed window, or its folder's name. */
+  name: string | null;
+  everyMs: number;
+  /** The frames due so far, skipped ones included. */
+  taken: number;
+  /** The frames the series takes at most: its end, or the cap of a manual end. */
+  total: number;
+  /** The series runs until it is stopped (and at most 12 hours). */
+  manual: boolean;
+  skipped: number;
+  lastSkippedAtMs: number | null;
+  startedAtMs: number;
+  nextAtMs: number | null;
+  /** The series' history entry, once its first frame is on disk and the history is on. */
+  entryId: string | null;
+  /** The newest frame on disk, for `frameUrl(entryId, latestIndex)`. */
+  latestIndex: number | null;
+  latestAtMs: number | null;
+  folder: string | null;
+  folderName: string | null;
+};
 
 /** The payload of `capture://closed`. */
 export type CaptureClosed = { captureId: CaptureId; reason: CloseReason };
@@ -169,6 +201,18 @@ export const capture_delay = () => call<DelayState>("capture_delay");
 export const capture_cancel_delay = () => call<boolean>("capture_cancel_delay");
 export const capture_displays = () => call<Display[]>("capture_displays");
 export const capture_windows = () => call<WindowInfo[]>("capture_windows");
+
+/** Starts an interval series with `plan` (kept in Settings for the next time), or the last
+ * series again without one. The area target opens the overlay first; `busy` while a series runs,
+ * `permission_denied` without the screen recording permission. */
+export const capture_start_interval = (plan: IntervalPlan | null) =>
+  call<IntervalState>("capture_start_interval", { plan });
+/** The overlay's selection becomes the area of the series it was opened for. */
+export const capture_interval_area = (selection: Selection) =>
+  call<IntervalState>("capture_interval_area", { selection });
+/** Stops the series that runs; its frames stay. Answers whether one ran. */
+export const capture_stop_interval = () => call<boolean>("capture_stop_interval");
+export const capture_interval = () => call<IntervalState>("capture_interval");
 
 /** The state of a scrolling capture, with `capture://scroll` and from every `capture_*_scroll`
  * command. Sizes are physical pixels of the result. */
@@ -224,3 +268,5 @@ export const capture_cover_scroll = (covers: LogicalRect[]) => call<void>("captu
 export const CAPTURE_SCROLL = "capture://scroll";
 /** A delayed capture's countdown started, ticked or ended. Payload: `DelayState`. */
 export const CAPTURE_COUNTDOWN = "capture://countdown";
+/** An interval series started, took or skipped a frame, or ended. Payload: `IntervalState`. */
+export const CAPTURE_INTERVAL = "capture://interval";

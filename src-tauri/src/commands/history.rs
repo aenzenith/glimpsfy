@@ -395,6 +395,7 @@ pub fn record_capture(app: &AppHandle, handoff: CaptureHandoff) -> CommandResult
         text_lines: None,
         recognize_text: kind == EntryKind::Screenshot,
         hosted: None,
+        series_interval_ms: None,
     };
     // A saved file is the user's and stays where it is; otherwise the history keeps its own copy.
     // The inbox file is moved out at once (output deletes inbox files after a day), and moved back
@@ -503,6 +504,7 @@ pub fn unnamed(app: &AppHandle, kind: EntryKind, source: Option<&str>) -> String
         (EntryKind::TextCopy, None) => crate::i18n::text(language, "history.name.text", &[]),
         (EntryKind::Recording, _) => crate::i18n::text(language, "history.name.recording", &[]),
         (EntryKind::Screenshot, _) => crate::i18n::text(language, "history.name.capture", &[]),
+        (EntryKind::Series, _) => crate::i18n::text(language, "history.name.series", &[]),
     }
 }
 
@@ -834,11 +836,15 @@ fn queue_thumbnail(app: &AppHandle, id: EntryId) {
 
 fn make_thumbnail(app: &AppHandle, store: &HistoryStore, id: &EntryId) {
     let Ok(entry) = store.get(id) else { return };
-    let Some(path) = entry.media_path().filter(|p| p.is_file()).map(Path::to_path_buf) else { return };
+    let path = match entry.kind {
+        EntryKind::Series => latest_frame(store, &entry),
+        _ => entry.media_path().filter(|p| p.is_file()).map(Path::to_path_buf),
+    };
+    let Some(path) = path else { return };
     let is_png = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("png"));
     let made = if is_png {
         glimpsfy_history::thumbnail::from_png(&path).map_err(|e| e.to_string())
-    } else if entry.kind == EntryKind::Screenshot {
+    } else if matches!(entry.kind, EntryKind::Screenshot | EntryKind::Series) {
         // JPEG, HEIC, WebP and the rest decode through the system, converted to sRGB.
         glimpsfy_ocr::load_image(&path).map_err(|e| e.to_string()).and_then(|frame| {
             let rgba = frame.to_rgba();
@@ -852,6 +858,271 @@ fn make_thumbnail(app: &AppHandle, store: &HistoryStore, id: &EntryId) {
         Ok(entry) => changed(app, HistoryChanged::Updated { entry: light(entry) }),
         Err(error) => trace::log(format!("[glimpsfy] history: no thumbnail for {id}: {error}")),
     }
+}
+
+/// The newest frame of a series that is on disk, which its card and its thumbnail show.
+fn latest_frame(store: &HistoryStore, entry: &Entry) -> Option<PathBuf> {
+    let frames = store.series_frames(&entry.id).ok()?;
+    frames
+        .iter()
+        .rev()
+        .filter(|frame| frame.file.is_some())
+        .find_map(|frame| store.media(&entry.id, Media::Frame(frame.index)).ok().flatten())
+}
+
+// ---------------------------------------------------------------------------------- series
+
+/// Opens the entry of an interval series, once its first frame is on disk (the crash invariant:
+/// the row never names a folder with nothing in it). `None` when the history is off; the frames
+/// are the user's files and stay in their folder all the same.
+pub fn record_series(app: &AppHandle, new: NewEntry) -> CommandResult<Option<Entry>> {
+    if !retention(app).records() {
+        return Ok(None);
+    }
+    let entry = store(app)?.add(new, OwnFile::None)?;
+    changed(app, HistoryChanged::Added { entry: light(entry.clone()) });
+    Ok(Some(entry))
+}
+
+/// Adds the next frame of a series to its entry, and makes its thumbnail again from the newest
+/// frame when `thumbnail` says the time has come. `NotFound` means the series was deleted.
+pub fn add_series_frame(
+    app: &AppHandle,
+    id: &EntryId,
+    frame: &glimpsfy_history::SeriesFrame,
+    bytes: Option<u64>,
+    size: Option<PixelSize>,
+    thumbnail: bool,
+) -> CommandResult<Entry> {
+    let entry = store(app)?.add_series_frame(id, frame, bytes, size)?;
+    changed(app, HistoryChanged::Updated { entry: light(entry.clone()) });
+    if thumbnail && frame.file.is_some() {
+        queue_thumbnail(app, id.clone());
+    }
+    Ok(entry)
+}
+
+/// The frames of a series, skipped ones included, for the history's frame band.
+#[tauri::command]
+pub async fn history_series_frames(
+    app: AppHandle,
+    entry_id: EntryId,
+) -> CommandResult<Vec<glimpsfy_history::SeriesFrame>> {
+    with_store(&app, move |store| store.series_frames(&entry_id)).await
+}
+
+/// What [`history_series_export`] writes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SeriesExportFormat {
+    Mp4,
+    Gif,
+}
+
+/// A timelapse plays ten frames a second, so a minute of five-second frames lasts 1.2 s.
+const TIMELAPSE_FPS: u64 = 10;
+/// A timelapse GIF is at most this wide; a wider series is scaled down to it.
+const TIMELAPSE_GIF_WIDTH: u32 = 800;
+
+/// Writes a series as a timelapse (an MP4 or a GIF) beside its folder, named after the folder,
+/// and answers the file's path. The file is written under a hidden working name first and then
+/// takes the first free name, so it never replaces a file. Every frame takes the first frame's
+/// size, and a skipped frame (or one whose file is gone) shows the picture before it, so the
+/// timelapse keeps the series' rhythm. A toast reports the saved file with Show in Finder.
+#[tauri::command]
+pub async fn history_series_export(
+    app: AppHandle,
+    entry_id: EntryId,
+    format: SeriesExportFormat,
+) -> CommandResult<String> {
+    let (entry, frames) = with_store(&app, move |store| {
+        let entry = store.get(&entry_id)?;
+        let frames = store.series_frames(&entry.id)?;
+        Ok((entry, frames))
+    })
+    .await?;
+    if entry.kind != EntryKind::Series {
+        return Err(CommandError::invalid("only a series has frames to export"));
+    }
+    let folder =
+        entry.saved_path.clone().filter(|p| p.is_dir()).ok_or_else(|| CommandError::not_found("the series' folder"))?;
+    tauri::async_runtime::spawn_blocking(move || -> CommandResult<String> {
+        let store = store(&app)?;
+        // `media` refuses a name that leads out of the folder, so the export reads only frames.
+        let paths: Vec<Option<PathBuf>> = frames
+            .iter()
+            .map(|frame| match frame.file {
+                Some(_) => store.media(&entry.id, Media::Frame(frame.index)).ok().flatten(),
+                None => None,
+            })
+            .collect();
+        let (extension, toast_format) = match format {
+            SeriesExportFormat::Mp4 => ("mp4", "mp4"),
+            SeriesExportFormat::Gif => ("gif", "gif"),
+        };
+        let parent = folder.parent().ok_or_else(|| CommandError::not_found("the folder around the series"))?;
+        let stem = folder.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "Glimpsfy".into());
+        let wanted = parent.join(format!("{stem}.{extension}"));
+        let job = format!("{}-{}", entry.id, now_ms());
+        let part = glimpsfy_record::files::part_path(&wanted, &job);
+        let written = match format {
+            SeriesExportFormat::Mp4 => write_timelapse_mp4(&paths, &part),
+            SeriesExportFormat::Gif => write_timelapse_gif(&paths, &part),
+        };
+        let (size, first) = match written {
+            Ok(done) => done,
+            Err(error) => {
+                let _ = std::fs::remove_file(&part);
+                return Err(error);
+            }
+        };
+        let path = match glimpsfy_record::files::place_without_replacing(&part, &wanted) {
+            Ok(path) => path,
+            Err(error) => {
+                let _ = std::fs::remove_file(&part);
+                return Err(error.into());
+            }
+        };
+        let mut saved = crate::windows::Toast::new(crate::windows::ToastKind::Saved);
+        saved.path = Some(path.display().to_string());
+        saved.folder = path.parent().and_then(Path::file_name).map(|n| n.to_string_lossy().into_owned());
+        saved.width = Some(size.width);
+        saved.height = Some(size.height);
+        saved.bytes = std::fs::metadata(&path).ok().map(|m| m.len());
+        saved.format = Some(toast_format);
+        saved.thumbnail = crate::output::thumbnail(&first);
+        crate::windows::toast(&app, None, saved);
+        Ok(path.to_string_lossy().into_owned())
+    })
+    .await
+    .map_err(|error| CommandError::internal(error.to_string()))?
+}
+
+/// The frames of a series one by one as tight RGBA pictures of one size: the first readable
+/// frame sets the size (`fit` may shrink it), a frame of another size is scaled to it, and a
+/// skipped or unreadable frame repeats the picture before it.
+struct Timelapse<'a> {
+    paths: &'a [Option<PathBuf>],
+    next: usize,
+    size: glimpsfy_capture::PhysicalSize,
+    last: Option<Vec<u8>>,
+}
+
+impl<'a> Timelapse<'a> {
+    /// Starts the pictures, or fails when no frame of the series can be read. Answers the first
+    /// frame as it was read too, for the toast's thumbnail.
+    fn open(
+        paths: &'a [Option<PathBuf>],
+        fit: impl Fn(glimpsfy_capture::PhysicalSize) -> glimpsfy_capture::PhysicalSize,
+    ) -> CommandResult<(Timelapse<'a>, Frame)> {
+        let first = paths
+            .iter()
+            .flatten()
+            .find_map(|path| glimpsfy_ocr::load_image(path).ok())
+            .ok_or_else(|| CommandError::not_found("a frame of the series"))?;
+        let size = fit(first.size);
+        Ok((Timelapse { paths, next: 0, size, last: None }, first))
+    }
+
+    fn picture(&mut self) -> Option<Vec<u8>> {
+        let path = self.paths.get(self.next)?;
+        self.next += 1;
+        let read = path.as_deref().and_then(|path| glimpsfy_ocr::load_image(path).ok());
+        if let Some(frame) = read {
+            let frame = if frame.size == self.size { frame } else { frame.resized(self.size) };
+            self.last = Some(frame.to_rgba());
+        }
+        // Before the first readable frame there is nothing to repeat: the first picture is black.
+        Some(self.last.clone().unwrap_or_else(|| vec![0; self.size.width as usize * self.size.height as usize * 4]))
+    }
+}
+
+/// Writes an H.264 (HEVC above H.264's size limit) timelapse at `part` through the system's
+/// writer, ten frames a second, and answers its size and the first frame.
+fn write_timelapse_mp4(
+    paths: &[Option<PathBuf>],
+    part: &Path,
+) -> CommandResult<(glimpsfy_capture::PhysicalSize, Frame)> {
+    use glimpsfy_capture::{ColorSpace, HostTime, PhysicalSize, StreamPixelFormat, VideoBuffer, VideoFrame};
+    use glimpsfy_record::session::{codec_for, WriterSpec};
+    use glimpsfy_record::VideoCodec;
+
+    // Video encoders take even sizes only.
+    let (mut pictures, first) =
+        Timelapse::open(paths, |size| PhysicalSize::new((size.width & !1).max(2), (size.height & !1).max(2)))?;
+    let size = pictures.size;
+    let spec = WriterSpec {
+        path: part.to_path_buf(),
+        size,
+        fps: TIMELAPSE_FPS as u32,
+        codec: codec_for(VideoCodec::H264, size),
+        color_space: ColorSpace::Srgb,
+        audio: Vec::new(),
+        fragment_interval_ms: 2000,
+        bits_per_second: None,
+        // An export: the encoder sets the pace, the index goes to the front, and a writer dropped
+        // on an error has closed its file, so the part can be removed.
+        offline: true,
+    };
+    let mut writer = glimpsfy_record::platform::create_writer(&spec)?;
+    let step_ns = 1_000_000_000 / TIMELAPSE_FPS;
+    let mut written = 0u64;
+    while let Some(rgba) = pictures.picture() {
+        let mut bgra = vec![0u8; rgba.len()];
+        glimpsfy_capture::frame::swizzle_bgra_rgba(&rgba, &mut bgra);
+        let frame = Frame::new(
+            size,
+            size.width as usize * 4,
+            glimpsfy_capture::PixelFormat::Bgra8,
+            glimpsfy_capture::ColorInfo::srgb(),
+            first.scale,
+            bgra,
+        )?;
+        let video = VideoFrame {
+            timestamp: HostTime(0),
+            size,
+            format: StreamPixelFormat::Bgra,
+            color_space: ColorSpace::Srgb,
+            buffer: VideoBuffer::Cpu(Arc::new(frame)),
+        };
+        // The writer was made for live frames and turns one away while its encoder is busy; a
+        // timelapse has time, so it waits and offers the frame again.
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !writer.append_video(&video, written * step_ns)? {
+            if std::time::Instant::now() > deadline {
+                return Err(CommandError::new(ErrorCode::Io, "the video encoder took no frame for 10 s"));
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        written += 1;
+    }
+    writer.finish(written * step_ns)?;
+    Ok((size, first))
+}
+
+/// Writes a looping timelapse GIF at `part`, at most [`TIMELAPSE_GIF_WIDTH`] wide, ten frames a
+/// second, and answers its size and the first frame.
+fn write_timelapse_gif(
+    paths: &[Option<PathBuf>],
+    part: &Path,
+) -> CommandResult<(glimpsfy_capture::PhysicalSize, Frame)> {
+    use glimpsfy_record::gif::{GifEncoder, Picture};
+
+    let (mut pictures, first) =
+        Timelapse::open(paths, |size| glimpsfy_record::export::gif_size(size, Some(TIMELAPSE_GIF_WIDTH)))?;
+    let size = pictures.size;
+    let file = std::fs::OpenOptions::new().write(true).create_new(true).open(part)?;
+    let mut gif = GifEncoder::new(std::io::BufWriter::new(file), size.width, size.height, true)?;
+    let step_ns = 1_000_000_000 / TIMELAPSE_FPS;
+    let mut written = 0u64;
+    while let Some(rgba) = pictures.picture() {
+        gif.push(Picture { rgba: &rgba }, written * step_ns)?;
+        written += 1;
+    }
+    let out = gif.finish(written * step_ns)?;
+    let file = out.into_inner().map_err(|error| CommandError::from(error.into_error()))?;
+    file.sync_all()?;
+    Ok((size, first))
 }
 
 // ------------------------------------------------------------------------- text recognition
@@ -1114,15 +1385,20 @@ pub async fn history_copy(app: AppHandle, entry_id: EntryId) -> CommandResult<()
             }
             return copy_to_clipboard(Clipboard::Text(text));
         }
-        let path = entry
-            .media_path()
-            .filter(|p| p.is_file())
-            .map(Path::to_path_buf)
-            .ok_or_else(|| CommandError::not_found("the capture's file"))?;
+        // A series copies its newest frame, the picture its card shows.
+        let path = match entry.kind {
+            EntryKind::Series => store(&app).ok().and_then(|store| latest_frame(&store, &entry)),
+            _ => entry.media_path().filter(|p| p.is_file()).map(Path::to_path_buf),
+        }
+        .ok_or_else(|| CommandError::not_found("the capture's file"))?;
         let extension = path.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
         match (entry.kind, extension.as_str()) {
-            (EntryKind::Screenshot, "png") => copy_to_clipboard(Clipboard::Png(&std::fs::read(&path)?)),
-            (EntryKind::Screenshot, "jpg" | "jpeg") => copy_to_clipboard(Clipboard::Jpeg(&std::fs::read(&path)?)),
+            (EntryKind::Screenshot | EntryKind::Series, "png") => {
+                copy_to_clipboard(Clipboard::Png(&std::fs::read(&path)?))
+            }
+            (EntryKind::Screenshot | EntryKind::Series, "jpg" | "jpeg") => {
+                copy_to_clipboard(Clipboard::Jpeg(&std::fs::read(&path)?))
+            }
             _ => copy_to_clipboard(Clipboard::File(&path)),
         }
     })
@@ -1318,19 +1594,26 @@ pub fn serve(context: UriSchemeContext<'_, tauri::Wry>, request: Request<Vec<u8>
     std::thread::spawn(move || responder.respond(respond(&app, &request)));
 }
 
-/// What a URL asks for: `glimpsfy-history://thumb/<id>` or `…/file/<id>`, in either form of the
-/// scheme (`http://glimpsfy-history.localhost/thumb/<id>` on Windows).
+/// What a URL asks for: `glimpsfy-history://thumb/<id>`, `…/file/<id>` or a series frame,
+/// `…/frame/<id>/<index>`, in either form of the scheme
+/// (`http://glimpsfy-history.localhost/thumb/<id>` on Windows).
 fn parse(uri: &tauri::http::Uri) -> Option<(Media, EntryId)> {
     let path = uri.path().trim_matches('/');
-    let (kind, id) = match uri.host() {
-        Some("thumb") | Some("file") => (uri.host()?, path),
-        _ => path.split_once('/')?,
+    let full = match uri.host() {
+        Some(host @ ("thumb" | "file" | "frame")) => format!("{host}/{path}"),
+        _ => path.to_string(),
     };
-    let media = match kind {
-        "thumb" => Media::Thumbnail,
-        "file" => Media::File,
+    let mut parts = full.split('/');
+    let (kind, id) = (parts.next()?, parts.next()?);
+    let media = match (kind, parts.next()) {
+        ("thumb", None) => Media::Thumbnail,
+        ("file", None) => Media::File,
+        ("frame", Some(index)) => Media::Frame(index.parse().ok()?),
         _ => return None,
     };
+    if parts.next().is_some() {
+        return None;
+    }
     EntryId::is_well_formed(id).then(|| (media, EntryId(id.to_string())))
 }
 
@@ -1380,7 +1663,9 @@ fn respond(app: &AppHandle, request: &Request<Vec<u8>>) -> Response<Cow<'static,
         return reply(StatusCode::NOT_FOUND);
     };
     let length = file.metadata().map(|m| m.len()).unwrap_or(0);
-    let cache = if media == Media::Thumbnail { "max-age=31536000, immutable" } else { "no-cache" };
+    // A thumbnail gets a new name when it changes, and a frame is never written again.
+    let cache =
+        if matches!(media, Media::Thumbnail | Media::Frame(_)) { "max-age=31536000, immutable" } else { "no-cache" };
     let kind = content_type(&path);
     // No CORS header: an <img> or a <video> needs none, and pages have no reason to read the
     // bytes with fetch().

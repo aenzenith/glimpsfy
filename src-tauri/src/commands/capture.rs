@@ -12,7 +12,9 @@ use tauri::{AppHandle, State};
 
 use super::error::{CommandError, CommandResult};
 use crate::frames::FrameFormat;
+use crate::settings::{IntervalPlan, IntervalTarget};
 use crate::{session, AppState};
+use glimpsfy_history::EntryId;
 
 /// One frozen capture: every display's frame taken at one moment, alive until the overlay closes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -91,6 +93,8 @@ pub enum AfterSelection {
     Save,
     /// Hands the selection to `ocr_copy_text` (the copy-text mode).
     CopyText,
+    /// Hands the selection to `capture_interval_area`: it becomes the area of an interval series.
+    Interval,
     /// Hands the selection to `agents_take_selection`: an agent asked for an area the user
     /// selects, and what lies in it goes to the agent.
     Agent,
@@ -154,6 +158,8 @@ pub enum CloseReason {
     Recording,
     /// The selection was pinned (⌘P).
     Pinned,
+    /// The selection became the area of an interval series (`capture_interval_area`).
+    Interval,
     /// The selection went to the agent that asked for it (`agents_take_selection`).
     Agent,
 }
@@ -188,11 +194,49 @@ pub struct DelayState {
     pub mode: Option<CaptureMode>,
 }
 
+/// The interval series that runs, with `capture://interval` and `capture_interval`. An idle
+/// state has `running` false and nothing else filled in.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IntervalState {
+    pub running: bool,
+    pub target: Option<IntervalTarget>,
+    /// What the series follows: the window's app, or the display's name.
+    pub label: Option<String>,
+    /// The series' name in the history: the followed window ("Title — App"), or its folder's.
+    pub name: Option<String>,
+    /// The time between two frames.
+    pub every_ms: u64,
+    /// The frames due so far, skipped ones included.
+    pub taken: u32,
+    /// The frames the series takes at most: its end, or the cap of a manual end.
+    pub total: u32,
+    /// The series runs until it is stopped (and at most 12 hours).
+    pub manual: bool,
+    pub skipped: u32,
+    /// When the last skipped frame was due, in ms since the Unix epoch.
+    pub last_skipped_at_ms: Option<i64>,
+    pub started_at_ms: i64,
+    /// When the next frame is due, until the last one.
+    pub next_at_ms: Option<i64>,
+    /// The series' history entry, once its first frame is on disk (and the history is on).
+    pub entry_id: Option<EntryId>,
+    /// The newest frame on disk, by its index in the series (`frameUrl(entryId, index)`).
+    pub latest_index: Option<u32>,
+    pub latest_at_ms: Option<i64>,
+    /// The series' folder and its own name.
+    pub folder: Option<String>,
+    pub folder_name: Option<String>,
+}
+
 /// Event names of the capture area and their payloads.
 pub mod events {
     /// A delayed capture's countdown started, ticked or ended (cancelled or captured), to every
     /// window. Payload: [`super::DelayState`].
     pub const COUNTDOWN: &str = "capture://countdown";
+    /// An interval series started, took (or skipped) a frame, or ended, to every window.
+    /// Payload: [`super::IntervalState`].
+    pub const INTERVAL: &str = "capture://interval";
     /// A scrolling capture's result grew, moved, lost its last movement or stopped scrolling by
     /// itself, to the overlay. Payload: [`super::ScrollProgress`].
     pub const SCROLL: &str = "capture://scroll";
@@ -322,6 +366,38 @@ pub fn capture_delay(app: AppHandle) -> DelayState {
 #[tauri::command]
 pub fn capture_cancel_delay(app: AppHandle) -> bool {
     session::delay::cancel(&app)
+}
+
+/// Starts an interval series with `plan` (kept in Settings › General for the next time), or,
+/// without one, the last series again. The Window and Display targets start at once; the Area
+/// target opens the overlay, whose selection comes back through [`capture_interval_area`].
+/// Fails with `busy` while a series runs and with `permission_denied` without the permission.
+#[tauri::command]
+pub async fn capture_start_interval(app: AppHandle, plan: Option<IntervalPlan>) -> CommandResult<IntervalState> {
+    tauri::async_runtime::spawn_blocking(move || session::interval::start(&app, plan))
+        .await
+        .map_err(|e| CommandError::internal(e.to_string()))?
+}
+
+/// The overlay's selection becomes the area of the interval series it was opened for; the
+/// capture closes as `interval` and the series starts.
+#[tauri::command]
+pub async fn capture_interval_area(app: AppHandle, selection: Selection) -> CommandResult<IntervalState> {
+    tauri::async_runtime::spawn_blocking(move || session::interval::start_area(&app, selection))
+        .await
+        .map_err(|e| CommandError::internal(e.to_string()))?
+}
+
+/// Stops the interval series that runs; the frames written so far stay. Answers whether one ran.
+#[tauri::command]
+pub fn capture_stop_interval(app: AppHandle) -> bool {
+    session::interval::stop(&app)
+}
+
+/// The interval series that runs, if any.
+#[tauri::command]
+pub fn capture_interval() -> IntervalState {
+    session::interval::state()
 }
 
 /// Turns the overlay's selection into a scrolling capture (`scroll.rs`): the selection streams

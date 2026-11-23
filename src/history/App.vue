@@ -23,6 +23,7 @@ import {
   history_rename,
   history_save_as,
   history_search,
+  history_series_export,
   history_set_pinned,
   history_usage,
   onHistoryChanged,
@@ -133,7 +134,9 @@ const confirming = ref<
   | { kind: "finishDelete"; ids: EntryId[]; host: string; options: DeleteOptions }
   | null
 >(null);
-const menu = ref<{ items: MenuItem[]; at: { x: number; y: number } } | null>(null);
+const menu = ref<{ items: MenuItem[]; at: { x: number; y: number }; label?: string } | null>(null);
+/** The series whose frames are open under its card in the grid. */
+const openSeries = ref<EntryId | null>(null);
 const toasts = ref<{ id: number; title: string; body?: string; tone: "ok" | "warn"; link?: boolean }[]>([]);
 const width = ref(window.innerWidth);
 
@@ -483,6 +486,12 @@ const act: Actions = {
     const entry = entryOf(id);
     if (!entry) return;
     if (entry.kind === "textCopy") return act.copyText(id);
+    // A series has no editor: the grid opens its frames, and the list shows its folder.
+    if (entry.kind === "series") {
+      if (view.value === "grid") openSeries.value = id;
+      else act.reveal(id);
+      return;
+    }
     if (entry.kind === "recording") {
       selection.value = selectOne(id);
       panelOpen.value = true;
@@ -498,6 +507,8 @@ const act: Actions = {
       .catch((e) => failed(e, t("history.action.copy")));
   },
   copyText(id) {
+    // A series' frames are not read for text.
+    if (entryOf(id)?.kind === "series") return;
     textOf(id)
       .then(async (text) => {
         if (!text) return toast(t("history.text.none"), undefined, "warn");
@@ -529,7 +540,7 @@ const act: Actions = {
     const provider = settings.value?.upload.defaultProvider ?? null;
     for (const id of ids) {
       const entry = entryOf(id);
-      if (entry && entry.kind !== "textCopy" && uploads.value.get(id)?.state !== "uploading") void uploadOne(id, provider);
+      if (entry && entry.kind !== "textCopy" && entry.kind !== "series" && uploads.value.get(id)?.state !== "uploading") void uploadOne(id, provider);
     }
   },
   cancelUpload(id) {
@@ -543,6 +554,8 @@ const act: Actions = {
     menu.value = { items: menuItems(), at };
   },
   dragOut(id) {
+    // A series is a folder of frames, not one file to drag out.
+    if (entryOf(id)?.kind === "series") return;
     popover_drag_out(id).catch((e) => failed(e, t("history.action.drag")));
   },
   wantPreview(id) {
@@ -559,11 +572,14 @@ const act: Actions = {
       .catch(() => {});
   },
   saveAs(id) {
+    // A series is already a folder of files the user picked; its timelapse is its export.
+    if (entryOf(id)?.kind === "series") return;
     history_save_as(id)
       .then((path) => toast(t("history.toast.saved"), path))
       .catch((e) => failed(e, t("history.action.saveAs")));
   },
   pinToScreen(id) {
+    if (entryOf(id)?.kind === "series") return;
     pin_open({ kind: "history", entryId: id }).catch((e) => failed(e, t("history.action.pinToScreen")));
   },
   reveal(id) {
@@ -601,7 +617,33 @@ const act: Actions = {
   trim(id, format) {
     record_open_trim({ entryId: id }, format).catch((e) => failed(e, format === "gif" ? t("history.action.gif") : t("history.action.trim")));
   },
+  toggleSeries(id) {
+    openSeries.value = openSeries.value === id ? null : id;
+  },
+  seriesMenu(id, at) {
+    if (!selection.value.ids.includes(id)) pick(id, "one");
+    menu.value = { items: seriesItems(id), at, label: t("history.series.exportMenu") };
+  },
+  exportSeries(id, format) {
+    // The core shows the saved file in its own note once the timelapse is written.
+    toast(t("history.series.exporting"));
+    history_series_export(id, format).catch((e) => failed(e, t("history.series.exportAction")));
+  },
+  revealPath(path) {
+    output_reveal(path).catch((e) => failed(e, t("history.action.reveal")));
+  },
 };
+
+/** What a series exports to: its folder, a timelapse MP4 or GIF, and deleting it. */
+function seriesItems(id: EntryId): MenuItem[] {
+  return [
+    { label: t("history.series.revealFolder"), icon: "folder", keys: "⌥⌘R", run: () => act.reveal(id) },
+    { label: t("history.series.mp4"), icon: "film", run: () => act.exportSeries(id, "mp4") },
+    { label: t("history.series.gif"), icon: "gif", run: () => act.exportSeries(id, "gif") },
+    "separator",
+    { label: t("history.series.delete"), icon: "trash", keys: "⌘⌫", destructive: true, run: () => act.remove([id]) },
+  ];
+}
 
 function copyLinks(ids: EntryId[]): void {
   const urls = ids.map((id) => entryOf(id)?.hosted?.url).filter((u): u is string => !!u);
@@ -656,6 +698,19 @@ function menuItems(): MenuItem[] {
   const id = ids[0];
   const entry = entryOf(id);
   if (!entry) return [];
+  if (entry.kind === "series") {
+    const open = openSeries.value === id;
+    const band: MenuItem[] =
+      view.value === "grid" ? [{ label: open ? t("history.series.close") : t("history.series.open"), icon: open ? "chevron-up" : "chevron-down", run: () => act.toggleSeries(id) }] : [];
+    return [
+      ...band,
+      { label: t("history.series.copyLast"), icon: "copy", keys: "⌘C", run: () => act.copy(id) },
+      "separator",
+      { label: entry.pinned ? t("history.action.unpin") : t("history.action.pin"), icon: "pin", run: () => act.setPinned(id, !entry.pinned) },
+      "separator",
+      ...seriesItems(id),
+    ];
+  }
   const own: MenuItem[] = [];
   if (entry.kind === "screenshot") own.push({ label: t("history.action.open"), icon: "external-link", keys: "⌘O", run: () => act.open(id) });
   if (entry.kind === "recording") {
@@ -829,6 +884,7 @@ function key(event: KeyboardEvent): void {
     if (target === search.value && searchText.value) return run(() => (searchText.value = ""));
     if (target === search.value) return run(() => search.value?.blur());
     if (overlay.value && showPanel.value) return run(() => (panelOpen.value = false));
+    if (openSeries.value && view.value === "grid") return run(() => (openSeries.value = null));
     if (multi.value) return run(clearSelection);
     if (searchText.value) return run(() => (searchText.value = ""));
     return;
@@ -997,7 +1053,7 @@ const hostNames = ref<ReadonlyMap<string, string>>(new Map());
 function hostName(provider: string): string {
   return hostNames.value.get(provider) ?? provider;
 }
-provide(HISTORY, { lang: language, query, selection, focusId, uploads, previews, now, act, hostName });
+provide(HISTORY, { lang: language, query, selection, focusId, uploads, previews, now, act, openSeries, hostName });
 
 const emptyKind = computed<"error" | "first" | "off" | "noResults" | "emptyFilter" | null>(() => {
   if (status.value === "error") return "error";
@@ -1321,7 +1377,7 @@ const zoomPercent = computed(() => `${(((zoom.value - 140) / 140) * 100).toFixed
       @confirm="confirmDialog"
       @cancel="confirming = null"
     />
-    <Menu v-if="menu" :items="menu.items" :at="menu.at" :label="t('history.action.more')" @close="menu = null" />
+    <Menu v-if="menu" :items="menu.items" :at="menu.at" :label="menu.label ?? t('history.action.more')" @close="menu = null" />
     <div v-if="tip" ref="tipEl" class="g-tip" role="tooltip" :style="{ position: 'fixed', left: 0, top: 0, zIndex: 60, transform: `translate(${tip.x}px, ${tip.y}px)`, pointerEvents: 'none' }">
       {{ tip.text }}<kbd v-if="tip.keys" class="g-kbd">{{ tip.keys }}</kbd>
     </div>

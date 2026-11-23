@@ -16,7 +16,11 @@ const emit = defineEmits<{ confirm: [options: DeleteOptions]; cancel: [] }>();
 
 const many = computed(() => props.entries.length > 1);
 const first = computed(() => props.entries[0]);
-const saved = computed(() => props.entries.filter((e) => e.savedPath));
+// A series' saved path is its folder of frames, which goes to the Trash with the series every
+// time (the store does that), so it is not one of the choices.
+const series = computed(() => props.entries.filter((e) => e.kind === "series"));
+const oneSeries = computed(() => !many.value && first.value?.kind === "series");
+const saved = computed(() => props.entries.filter((e) => e.savedPath && e.kind !== "series"));
 const uploaded = computed(() => props.entries.filter((e) => e.hosted));
 const host = computed(() => [...new Set(uploaded.value.map((e) => (e.hosted ? ctx.hostName(e.hosted.provider) : "")))].filter(Boolean).join(", "));
 
@@ -26,6 +30,12 @@ const fileOn = computed(() => saved.value.length > 0 && file.value);
 const hostOn = computed(() => uploaded.value.length > 0 && hosted.value);
 
 const summary = computed(() => {
+  if (oneSeries.value) return t("history.series.deleteSummary");
+  const rest = ownSummary.value;
+  return many.value && series.value.length ? `${rest} ${t("history.series.deleteSummaryMany", { n: series.value.length })}` : rest;
+});
+
+const ownSummary = computed(() => {
   const h = host.value;
   const n = props.entries.length;
   const s = saved.value.length > 0;
@@ -48,6 +58,7 @@ const summary = computed(() => {
 });
 
 const label = computed(() => {
+  if (oneSeries.value) return t("history.series.deleteLabel");
   const s = saved.value.length > 0;
   const u = uploaded.value.length > 0;
   if (fileOn.value && hostOn.value) return t("history.delete.label.everywhere");
@@ -88,8 +99,16 @@ function confirm(): void {
         <span v-if="!many && first && thumbUrl(first)" class="g-dialog-thumb"><img :src="thumbUrl(first) ?? ''" alt="" style="width: 100%; height: 100%; object-fit: cover" /></span>
         <span v-else class="g-dialog-icon" data-tone="danger"><GIcon name="trash" :size="24" /></span>
         <div>
-          <h2 :id="titleId" class="g-dialog-title">{{ many ? t("history.delete.titleMany", { n: entries.length }) : t("history.delete.title") }}</h2>
-          <p class="g-dialog-text">{{ many ? t("history.delete.leadMany", { n: entries.length }) : t("history.delete.lead", { name: first ? entryName(first) : "" }) }}</p>
+          <h2 :id="titleId" class="g-dialog-title">
+            {{ many ? t("history.delete.titleMany", { n: entries.length }) : oneSeries ? t("history.series.deleteTitle") : t("history.delete.title") }}
+          </h2>
+          <p class="g-dialog-text">
+            {{
+              many
+                ? t("history.delete.leadMany", { n: entries.length })
+                : t(oneSeries ? "history.series.deleteLead" : "history.delete.lead", { name: first ? entryName(first) : "" })
+            }}
+          </p>
         </div>
       </div>
       <div v-if="saved.length || uploaded.length" class="hv-choices">

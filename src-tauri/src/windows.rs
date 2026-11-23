@@ -248,6 +248,12 @@ pub enum ToastKind {
     /// The subjects of a selection reached the clipboard as a transparent PNG (Copy subject);
     /// `subjects` says how many.
     SubjectCopied,
+    /// An interval series stopped on its own: `series_stop` says why, `frames` how many frames
+    /// were written, and `path` and `folder` name the series' folder. It stays until dismissed.
+    SeriesStopped,
+    /// A recording reached Recording › Time limit and was saved at `path`; `duration_ms`,
+    /// `bytes` and `format` make its meta line.
+    TimeUp,
     /// A timed permission sent a capture to an agent; `agent` names it and the minutes left.
     AgentSent,
     /// An agent's request was not answered within 60 seconds and was denied; a quiet card that
@@ -255,6 +261,20 @@ pub enum ToastKind {
     AgentTimedOut,
     /// Requests that came while the screen was locked were refused; told once, after the unlock.
     AgentLocked,
+}
+
+/// Why an interval series stopped before its end, for a `SeriesStopped` toast.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SeriesStop {
+    /// The disk is full; the frames so far stay in the folder.
+    DiskFull,
+    /// The system's capture service answered no request for several frames in a row.
+    Stalled,
+    /// The screen recording permission was taken away while the series ran.
+    Permission,
+    /// The window the series followed was closed.
+    WindowGone,
 }
 
 /// One toast; the toast page words it in the user's language from `kind` and the details.
@@ -294,6 +314,14 @@ pub struct Toast {
     pub swatch: Option<String>,
     /// How many subjects a `SubjectCopied` toast's image holds.
     pub subjects: Option<u32>,
+    /// Why a `SeriesStopped` toast's series stopped.
+    pub series_stop: Option<SeriesStop>,
+    /// The frames a `SeriesStopped` toast's series wrote.
+    pub frames: Option<u32>,
+    /// The length of a `TimeUp` toast's recording.
+    pub duration_ms: Option<u64>,
+    /// The recording a `TimeUp` toast's trim button opens.
+    pub recording_id: Option<String>,
     /// What an agent's toast tells.
     pub agent: Option<crate::commands::agents::AgentToast>,
 }
@@ -320,6 +348,10 @@ impl Toast {
             temporary: false,
             swatch: None,
             subjects: None,
+            series_stop: None,
+            frames: None,
+            duration_ms: None,
+            recording_id: None,
             agent: None,
         }
     }

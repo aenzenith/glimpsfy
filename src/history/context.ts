@@ -4,7 +4,7 @@
 
 import type { InjectionKey, Ref } from "vue";
 
-import type { EntryId } from "../lib/api/history";
+import type { EntryId, SeriesExportFormat } from "../lib/api/history";
 import type { Language } from "../lib/i18n";
 import type { Selection } from "./model";
 
@@ -41,6 +41,14 @@ export type Actions = {
   rename(id: EntryId, name: string): void;
   /** Opens a recording in the trim window, set to export an MP4 (⌘T) or a GIF (⇧⌘E). */
   trim(id: EntryId, format: "mp4" | "gif"): void;
+  /** Opens a series' frame band under its card, or closes it when it is open. */
+  toggleSeries(id: EntryId): void;
+  /** The export menu of a series: its folder, a timelapse MP4 or GIF, and deleting it. */
+  seriesMenu(id: EntryId, at: { x: number; y: number }): void;
+  /** Writes a timelapse of a series beside its folder. */
+  exportSeries(id: EntryId, format: SeriesExportFormat): void;
+  /** Shows a file or a folder in the file manager, such as one frame of a series. */
+  revealPath(path: string): void;
 };
 
 export type HistoryContext = {
@@ -53,6 +61,8 @@ export type HistoryContext = {
   previews: Ref<ReadonlyMap<EntryId, string>>;
   now: Ref<number>;
   act: Actions;
+  /** The series whose frame band is open in the grid. */
+  openSeries: Ref<EntryId | null>;
   /** A host's product name ("ImgBB") for its provider id, or the id while the names load. */
   hostName(provider: string): string;
 };

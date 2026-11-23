@@ -12,6 +12,8 @@ import type { SentToast } from "./send";
 export type WindowKind = "editor" | "recorder" | "popover" | "history" | "settings" | "firstrun";
 
 /** `diskFull`: a recording stopped because the disk was almost full, and it is saved at `path`.
+ * `seriesStopped`: an interval series stopped on its own (`seriesStop`, `frames`, `path`).
+ * `timeUp`: a recording reached its time limit and was saved at `path`.
  * `subjectCopied`: the subjects of a selection reached the clipboard as a transparent PNG; `subjects` says how many.
  * `colorCopied`: the colour picker copied `text`, a colour in `format` or a contrast line, and `swatch` is the colour.
  * `agentSent`: a timed permission sent a capture to an agent; `agent` names it and the minutes left.
@@ -23,6 +25,8 @@ export type ToastKind =
   | "failed"
   | "textCopied"
   | "diskFull"
+  | "seriesStopped"
+  | "timeUp"
   | "pathCopied"
   | "sent"
   | "subjectCopied"
@@ -30,6 +34,9 @@ export type ToastKind =
   | "agentSent"
   | "agentTimedOut"
   | "agentLocked";
+
+/** Why an interval series stopped before its end. */
+export type SeriesStop = "diskFull" | "stalled" | "permission" | "windowGone";
 
 /** The payload of `toast://show`. The toast page words it in the user's language. */
 export type Toast = {
@@ -53,6 +60,14 @@ export type Toast = {
   format: "png" | "jpeg" | "webp" | "mp4" | "gif" | "HEX" | "RGB" | "HSL" | "P3" | null;
   /** The save folder that could not take the file, so it went to Pictures › Glimpsfy instead. */
   fallbackFrom: string | null;
+  /** Why a `seriesStopped` toast's series stopped. */
+  seriesStop?: SeriesStop | null;
+  /** The frames a `seriesStopped` toast's series wrote. */
+  frames?: number | null;
+  /** The length of a `timeUp` toast's recording. */
+  durationMs?: number | null;
+  /** The recording a `timeUp` toast's trim button opens. */
+  recordingId?: string | null;
   /** The capture a `copied` or `saved` toast reports, which its Send button sends; `null` for the
    * editor's images. */
   captureId?: CaptureId | null;

@@ -32,7 +32,7 @@ import { onWindow, type ErrorCode } from "../lib/api/core";
 import { history_get, thumbUrl } from "../lib/api/history";
 import { output_reveal } from "../lib/api/output";
 import { permissions_open_settings } from "../lib/api/permissions";
-import { onRecordExportProgress, record_export_cancel, type ExportProgress } from "../lib/api/record";
+import { onRecordExportProgress, record_export_cancel, record_open_trim, type ExportProgress } from "../lib/api/record";
 import {
   onSendState,
   send_cancel,
@@ -54,7 +54,7 @@ import {
   type UploadFailed,
   type UploadProgress,
 } from "../lib/api/upload";
-import type { LogicalPoint } from "../lib/api/capture";
+import { capture_start_interval, type LogicalPoint } from "../lib/api/capture";
 import {
   app_copy_text,
   toast_fit,
@@ -115,6 +115,8 @@ const NAME_CHARS = 25;
 const PATH_CHARS = 27;
 /** How many words of copied text the toast quotes. */
 const QUOTE_WORDS = 10;
+/** The skips in a row that stop a series (`STALL_AFTER` in session/interval.rs). */
+const SERIES_STALL = 5;
 /** An export that stops reporting for this long ended without a last report (a failure or a
  * cancel, which their own toasts or windows tell about). */
 const EXPORT_QUIET_MS = 5000;
@@ -620,7 +622,7 @@ function add(item: Item): void {
 }
 
 /** Toasts that stay until they are dismissed, because they ask for the user's attention. */
-const STAYS: ReadonlySet<Toast["kind"]> = new Set(["failed", "diskFull", "agentLocked"]);
+const STAYS: ReadonlySet<Toast["kind"]> = new Set(["failed", "diskFull", "seriesStopped", "agentLocked"]);
 
 function showCapture(toast: Toast): void {
   // An export's result (its saved file, or why it failed) takes the place of its progress.
@@ -1045,6 +1047,7 @@ function shortTitle(item: Item): string {
     if (toast.kind === "subjectCopied") return t("toast.subjectCopied");
     if (toast.kind === "pathCopied") return t("toast.short.pathCopied");
     if (toast.kind === "sent") return sentTitle(toast);
+    if (toast.kind === "timeUp") return t("toast.short.timeUp");
     return sentence(item);
   }
   if (item.export) return exportTitle(item.export);
@@ -1073,6 +1076,10 @@ function sentence(item: Item): string {
     if (toast.kind === "pathCopied") return t("toast.pathCopied");
     if (toast.kind === "sent") return sentTitle(toast);
     if (toast.kind === "diskFull") return t("toast.diskFull");
+    if (toast.kind === "timeUp") return t("toast.timeUp");
+    if (toast.kind === "seriesStopped") {
+      return toast.seriesStop === "diskFull" ? t("toast.series.diskFull") : t("toast.series.stopped");
+    }
     return t("toast.failed");
   }
   if (item.export) return exportTitle(item.export);
@@ -1086,6 +1093,38 @@ function sentence(item: Item): string {
 /** "Saved to Pictures › Glimpsfy." with the folder that could not be reached named under it. */
 function savedFallback(toast: Toast): string | null {
   return toast.fallbackFrom ? t("toast.savedFallback", { folder: fileName(toast.fallbackFrom) || toast.fallbackFrom }) : null;
+}
+
+/** Why a series stopped and what it left: the frames in their folder, or how many were kept. */
+function seriesBody(toast: Toast): string {
+  const n = toast.frames ?? 0;
+  const kept = n === 0 ? t("toast.series.kept.none") : n === 1 ? t("toast.series.kept.one") : t("toast.series.kept.many", { n });
+  if (toast.seriesStop === "diskFull") {
+    if (!toast.folder || n === 0) return kept;
+    return n === 1 ? t("toast.series.inFolder.one", { folder: toast.folder }) : t("toast.series.inFolder.many", { n, folder: toast.folder });
+  }
+  const why =
+    toast.seriesStop === "stalled"
+      ? t("toast.series.stalled", { n: SERIES_STALL })
+      : toast.seriesStop === "windowGone"
+        ? t("toast.series.windowGone")
+        : t("toast.series.permission");
+  return `${why} ${kept}`;
+}
+
+/** "5:00 · 48 MB · MP4" for a recording its time limit stopped. */
+function timeUpLine(toast: Toast): string {
+  const parts = [];
+  if (toast.durationMs != null) {
+    const total = Math.round(toast.durationMs / 1000);
+    const h = Math.floor(total / 3600);
+    const m = Math.floor((total % 3600) / 60);
+    const sec = String(total % 60).padStart(2, "0");
+    parts.push(h ? `${h}:${String(m).padStart(2, "0")}:${sec}` : `${m}:${sec}`);
+  }
+  if (toast.bytes) parts.push(bytes(toast.bytes));
+  parts.push("MP4");
+  return parts.join(" · ");
 }
 
 function lineCount(text: string | null): number {
@@ -1196,6 +1235,12 @@ function icons(item: Item): Action[] {
       const path = toast.path;
       list.push({ key: "reveal", icon: "folder", label: t("toast.showInFinder"), run: () => reveal(path) });
     }
+    if (toast.kind === "timeUp") {
+      const id = toast.recordingId;
+      if (id) list.push({ key: "trim", icon: "trim", label: t("popover.act.trim"), run: () => trimRecording(item, id) });
+      const path = toast.path;
+      if (path) list.push({ key: "reveal", icon: "folder", label: t("toast.showInFinder"), run: () => reveal(path) });
+    }
     // An app that is still opening has one button, which stops the wait.
     if (toast.kind === "sent" && toast.send?.phase === "opening") {
       const { sendId } = toast.send;
@@ -1228,6 +1273,7 @@ function foot(item: Item): Action[] {
       const path = toast.path;
       return [{ key: "reveal", label: t("toast.showInFinder"), run: () => reveal(path) }];
     }
+    if (toast.kind === "seriesStopped") return seriesFoot(item, toast);
     if (toast.kind === "sent" && toast.send?.phase === "noPermission") {
       const run = () => void permissions_open_settings("accessibility").catch((error) => console.warn("permissions_open_settings", error));
       return [{ key: "settings", label: t("toast.openSettings"), primary: true, run }];
@@ -1248,6 +1294,32 @@ function foot(item: Item): Action[] {
   return [];
 }
 
+/** A stalled series starts again, a lost permission opens its pane, and the others show where the
+ * frames went. */
+function seriesFoot(item: Item, toast: Toast): Action[] {
+  if (toast.seriesStop === "stalled") {
+    const run = () => {
+      dismiss(item.key);
+      capture_start_interval(null).catch((error) => console.warn("capture_start_interval", error));
+    };
+    return [{ key: "restart", label: t("toast.series.restart"), primary: true, run }];
+  }
+  if (toast.seriesStop === "permission") {
+    const run = () => void permissions_open_settings("screenRecording").catch((error) => console.warn("permissions_open_settings", error));
+    return [{ key: "settings", label: t("toast.openSettings"), primary: true, run }];
+  }
+  if (toast.path) {
+    const path = toast.path;
+    return [{ key: "reveal", label: t("toast.showInFinder"), run: () => reveal(path) }];
+  }
+  return [];
+}
+
+function trimRecording(item: Item, recordingId: string): void {
+  dismiss(item.key);
+  record_open_trim({ recordingId }).catch((error) => console.warn("record_open_trim", error));
+}
+
 function status(item: Item): "ok" | "warn" | "progress" {
   if (item.export) return "progress";
   if (item.capture?.kind === "sent" && item.capture.send?.phase === "opening") return "progress";
@@ -1265,6 +1337,7 @@ function placeholderIcon(item: Item): string {
   if (item.capture?.kind === "textCopied") return "ocr";
   if (item.capture?.kind === "pathCopied") return "path";
   if (item.capture?.kind === "sent") return "send";
+  if (item.capture?.kind === "seriesStopped") return "grid";
   if (item.export) return "record";
   return item.upload ? "upload" : "image";
 }
@@ -1384,6 +1457,10 @@ onUnmounted(() => {
           <div v-else-if="item.capture.kind === 'textCopied'" class="g-toast-body" :title="item.capture.text ?? undefined">
             {{ quote(item.capture.text) }}
           </div>
+          <div v-else-if="item.capture.kind === 'seriesStopped'" class="g-toast-body" data-kind="wrap" :title="item.capture.path ?? undefined">
+            {{ seriesBody(item.capture) }}
+          </div>
+          <div v-else-if="item.capture.kind === 'timeUp'" class="g-toast-body">{{ timeUpLine(item.capture) }}</div>
           <div v-else class="g-toast-body" data-kind="wrap" :title="item.capture.message ?? undefined">
             {{ failureText(item.capture.errorCode) }}
           </div>

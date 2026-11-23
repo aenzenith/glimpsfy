@@ -6,7 +6,8 @@
 //! delay, History, Settings and Quit, in the language of Settings › General. It is built again
 //! whenever the settings are saved (`settings://changed`) and when the delay changes, so its
 //! words, its shortcuts and its check marks are never stale. During a countdown the icon shows
-//! the seconds left and the menu offers to cancel.
+//! the seconds left and the menu offers to cancel; while an interval series runs, the icon shows
+//! its count ("12/60") and the menu offers to stop it.
 
 use tauri::image::Image;
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
@@ -27,6 +28,7 @@ const CAPTURE_DELAYED: &str = "capture-area-delayed";
 const COPY_TEXT: &str = "copy-text";
 const PICK_COLOR: &str = "pick-color";
 const SCROLL_CAPTURE: &str = "scroll-capture";
+const INTERVAL: &str = "interval-capture";
 const CANCEL_DELAY: &str = "cancel-delay";
 const DELAY_PREFIX: &str = "delay-";
 const HISTORY: &str = "history";
@@ -72,9 +74,17 @@ pub fn refresh(app: &AppHandle) {
     }
 }
 
-/// What the text beside the icon says: a countdown's seconds or the minutes of an agent's timed
-/// permission (`agents`). Each owner sets its own part, so one never wipes out another's.
+/// Shows the count of a running interval series beside the icon ("12/60"), or nothing.
+pub fn show_series(app: &AppHandle, count: Option<String>) {
+    *SERIES.lock().unwrap_or_else(|p| p.into_inner()) = count;
+    show_title(app);
+}
+
+/// What the text beside the icon says: a countdown's seconds, an interval series' count, or the
+/// minutes of an agent's timed permission (`agents`). Each owner sets its own part, so one never
+/// wipes out another's.
 static COUNTDOWN: std::sync::Mutex<Option<u32>> = std::sync::Mutex::new(None);
+static SERIES: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 static GRANT_MINUTES: std::sync::Mutex<Option<u32>> = std::sync::Mutex::new(None);
 
 /// Shows the seconds left of a countdown beside the icon, or nothing.
@@ -95,12 +105,13 @@ pub fn show_grant(app: &AppHandle, minutes: Option<u32>) {
 }
 
 /// The text beside the icon. A countdown comes first: it ends within seconds and is what the user
-/// is waiting for; a timed permission, which goes on for minutes and also shows in Settings, comes
-/// after it.
+/// is waiting for; a series' count comes next, and a timed permission, which goes on for minutes
+/// and also shows in Settings, last.
 fn show_title(app: &AppHandle) {
     let countdown = *COUNTDOWN.lock().unwrap_or_else(|p| p.into_inner());
+    let series = SERIES.lock().unwrap_or_else(|p| p.into_inner()).clone();
     let grant = *GRANT_MINUTES.lock().unwrap_or_else(|p| p.into_inner());
-    let title = countdown.map(|s| format!("{s}")).or_else(|| {
+    let title = countdown.map(|s| format!("{s}")).or(series).or_else(|| {
         let language = app.state::<AppState>().settings.get().general.language;
         grant.map(|m| i18n::text(language, "tray.grantMinutes", &[("n", &m.to_string())]))
     });
@@ -133,6 +144,9 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
     if cfg!(target_os = "macos") {
         items.push(Box::new(item(app, SCROLL_CAPTURE, word("tray.scroll"), keys.scroll_capture.as_deref())?));
     }
+    // One key starts and stops a series, so the item says which it does now.
+    let interval = if session::interval::is_running() { word("tray.stopInterval") } else { word("tray.interval") };
+    items.push(Box::new(item(app, INTERVAL, interval, keys.interval_capture.as_deref())?));
     items.push(Box::new(PredefinedMenuItem::separator(app)?));
 
     if session::delay::is_running() {
@@ -204,6 +218,14 @@ pub(crate) fn on_menu(app: &AppHandle, id: &str) {
     match id {
         CANCEL_DELAY => {
             session::delay::cancel(app);
+        }
+        INTERVAL => {
+            // The menu fades first, so the frontmost window is the user's again.
+            let app = app.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                session::interval::toggle(&app);
+            });
         }
         HISTORY => windows::open(app, WindowKind::History),
         SETTINGS => windows::open(app, WindowKind::Settings),

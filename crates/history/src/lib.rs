@@ -127,6 +127,9 @@ pub enum EntryKind {
     Recording,
     /// Text from "Copy text", which has no image of its own.
     TextCopy,
+    /// A series of interval captures: one image per tick in a folder of the user's
+    /// ([`Entry::saved_path`]), listed frame by frame by [`HistoryStore::series_frames`].
+    Series,
 }
 
 impl EntryKind {
@@ -135,6 +138,7 @@ impl EntryKind {
             EntryKind::Screenshot => "screenshot",
             EntryKind::Recording => "recording",
             EntryKind::TextCopy => "textCopy",
+            EntryKind::Series => "series",
         }
     }
 
@@ -143,6 +147,7 @@ impl EntryKind {
             "screenshot" => Some(EntryKind::Screenshot),
             "recording" => Some(EntryKind::Recording),
             "textCopy" => Some(EntryKind::TextCopy),
+            "series" => Some(EntryKind::Series),
             _ => None,
         }
     }
@@ -265,6 +270,30 @@ pub struct HostedCopy {
     pub expires_at_ms: Option<i64>,
 }
 
+/// What a series entry holds besides its folder.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SeriesInfo {
+    /// The time between two frames the series was started with.
+    pub interval_ms: u64,
+    /// The frames so far, skipped ones included.
+    pub count: u32,
+    /// The frames the system did not deliver in time, which have no file.
+    pub skipped: u32,
+}
+
+/// One frame of a series.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SeriesFrame {
+    /// The frame's place in the series, from 0.
+    pub index: u32,
+    /// When the frame was due.
+    pub taken_at_ms: i64,
+    /// The frame's file name inside the series' folder, or `None` for a skipped frame.
+    pub file: Option<String>,
+}
+
 /// Describes one capture in the history.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -308,6 +337,8 @@ pub struct Entry {
     pub hosted: Option<HostedCopy>,
     /// A pinned entry is kept by retention and by clearing.
     pub pinned: bool,
+    /// The interval and the frame counts of a series; `None` for every other kind.
+    pub series: Option<SeriesInfo>,
 }
 
 impl Entry {
@@ -346,6 +377,8 @@ pub struct NewEntry {
     /// The hosted copy of a capture that was uploaded before it was recorded, written with the
     /// row so its link and deletion handle cannot be lost between two writes.
     pub hosted: Option<HostedCopy>,
+    /// The interval of a new series, whose frames [`HistoryStore::add_series_frame`] adds.
+    pub series_interval_ms: Option<u64>,
 }
 
 /// Sets the order of a page.
@@ -451,6 +484,7 @@ pub struct Facets {
     pub screenshots: u32,
     pub recordings: u32,
     pub text_copies: u32,
+    pub series: u32,
     pub uploaded: u32,
     pub pinned: u32,
     /// The apps with the most entries first.

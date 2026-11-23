@@ -8,7 +8,8 @@ import { entryName, fileUrl, thumbUrl, type HistoryItem } from "../lib/api/histo
 import { t } from "../lib/i18n";
 import { HISTORY, type HistoryContext } from "./context";
 import Marked from "./Marked.vue";
-import { formatBytes, formatDuration, formatTime } from "./model";
+import { formatBytes, formatDuration, formatTime, GRID } from "./model";
+import { seriesSub, skippedMark } from "./series";
 import Shot from "./Shot.vue";
 
 const props = defineProps<{ item: HistoryItem; box: { w: number; h: number }; height: number; index: number; count: number }>();
@@ -20,6 +21,12 @@ const selected = computed(() => ctx.selection.value.ids.includes(id.value));
 const match = computed(() => props.item.textMatch);
 const upload = computed(() => ctx.uploads.value.get(id.value) ?? null);
 const lang = ctx.lang;
+// A series is drawn as a deck: its frames stack behind the newest one, which gives the deck's
+// edges the top of the media box.
+const series = computed(() => (entry.value.kind === "series" ? entry.value.series : null));
+const isSeries = computed(() => entry.value.kind === "series");
+const open = computed(() => ctx.openSeries.value === id.value);
+const mediaBox = computed(() => (isSeries.value ? { w: props.box.w, h: props.box.h - GRID.deckH } : props.box));
 
 const zoomed = computed(() => !!match.value && match.value.best != null && match.value.boxes.length > 0);
 const src = computed(() => {
@@ -30,6 +37,7 @@ const size = computed(() => match.value?.imageSize ?? entry.value.size);
 
 const sub = computed(() => {
   const e = entry.value;
+  if (e.kind === "series") return seriesSub(e, lang.value);
   const time = formatTime(e.createdAtMs, lang.value);
   if (e.kind === "recording") return `${time} · ${formatDuration(e.durationMs)} · ${formatBytes(e.fileBytes, lang.value)}`;
   if (e.kind === "textCopy") return `${time} · ${t("history.lines", { n: e.textLineCount })}`;
@@ -67,7 +75,8 @@ function move(event: MouseEvent): void {
   if (!start || event.buttons !== 1) return up();
   if (Math.hypot(event.clientX - start.x, event.clientY - start.y) < 4) return;
   up();
-  if (entry.value.kind !== "textCopy") ctx.act.dragOut(id.value);
+  // A series is a folder of frames, which its own menu shows in the file manager instead.
+  if (entry.value.kind !== "textCopy" && entry.value.kind !== "series") ctx.act.dragOut(id.value);
 }
 function up(): void {
   start = null;
@@ -77,7 +86,10 @@ onBeforeUnmount(up);
 
 function click(event: MouseEvent): void {
   if ((event.target as HTMLElement).closest("button")) return;
-  ctx.act.pick(id.value, event.shiftKey ? "range" : event.metaKey ? "toggle" : "one");
+  const mode = event.shiftKey ? "range" : event.metaKey ? "toggle" : "one";
+  ctx.act.pick(id.value, mode);
+  // A plain click on a series opens its frames under the row; its chevron closes them again.
+  if (mode === "one" && isSeries.value && !open.value) ctx.act.toggleSeries(id.value);
 }
 function more(event: MouseEvent): void {
   const r = (event.currentTarget as HTMLElement).getBoundingClientRect();
@@ -88,6 +100,7 @@ function more(event: MouseEvent): void {
 <template>
   <div
     class="g-card"
+    :class="{ 'hv-series': isSeries }"
     role="option"
     :style="{ height: `${height}px` }"
     :aria-selected="selected"
@@ -100,6 +113,7 @@ function more(event: MouseEvent): void {
     @dblclick="ctx.act.open(id)"
     @contextmenu.prevent="ctx.act.menu(id, { x: $event.clientX, y: $event.clientY })"
   >
+    <div v-if="isSeries" class="hv-deck" aria-hidden="true"><i></i><i></i></div>
     <div class="g-card-media">
       <div v-if="entry.kind === 'textCopy'" class="hv-textcard">
         <div>{{ entryName(entry) }}</div>
@@ -110,17 +124,18 @@ function more(event: MouseEvent): void {
         :src="src"
         :size="size"
         mode="cover"
-        :box="box"
+        :box="mediaBox"
         :boxes="match?.boxes"
         :current="match?.best"
         :zoom="zoomed"
         :scale="entry.scale"
       >
         <template #missing>
-          <div class="hv-placeholder"><GIcon :name="entry.kind === 'recording' ? 'film' : 'image'" :size="24" /></div>
+          <div class="hv-placeholder"><GIcon :name="entry.kind === 'recording' ? 'film' : isSeries ? 'grid' : 'image'" :size="24" /></div>
         </template>
       </Shot>
       <span v-if="entry.kind === 'recording'" class="g-tag"><GIcon name="play" :size="12" />{{ formatDuration(entry.durationMs) }}</span>
+      <span v-else-if="series" class="g-tag"><GIcon name="grid" :size="12" />{{ series.count }}</span>
       <div v-if="upload?.state === 'uploading'" class="hv-media-state g-glass" data-material="strong" role="status">
         <svg class="g-ring" viewBox="0 0 22 22" :style="{ '--progress': percent }"><circle cx="11" cy="11" r="8" pathLength="100" /><circle cx="11" cy="11" r="8" pathLength="100" /></svg>
         <span class="hv-ms-text">{{ percent }} %</span>
@@ -133,6 +148,33 @@ function more(event: MouseEvent): void {
         <span class="hv-ms-text">{{ t("history.upload.notUploaded") }}</span>
         <button type="button" class="g-button" :data-tip="t('history.upload.retry')" data-key="⌘U" @click="ctx.act.upload([id])">
           <GIcon name="retry" :size="16" />{{ t("history.upload.retryShort") }}
+        </button>
+      </div>
+      <div v-else-if="isSeries" class="g-card-actions g-glass" role="toolbar" :aria-label="t('history.card.actions')">
+        <button
+          type="button"
+          class="g-btn"
+          data-size="small"
+          :aria-label="t(open ? 'history.series.close' : 'history.series.open')"
+          :aria-expanded="open"
+          :data-tip="t(open ? 'history.series.close' : 'history.series.open')"
+          @click="ctx.act.toggleSeries(id)"
+        >
+          <GIcon :name="open ? 'chevron-up' : 'chevron-down'" :size="16" />
+        </button>
+        <button
+          type="button"
+          class="g-btn"
+          data-size="small"
+          :aria-label="t('history.series.copyLast')"
+          :data-tip="t('history.series.copyLast')"
+          data-key="⌘C"
+          @click="ctx.act.copy(id)"
+        >
+          <GIcon name="copy" :size="16" />
+        </button>
+        <button type="button" class="g-btn" data-size="small" :aria-label="t('history.action.more')" :data-tip="t('history.action.more')" @click="more">
+          <GIcon name="more" :size="16" />
         </button>
       </div>
       <div v-else class="g-card-actions g-glass" role="toolbar" :aria-label="t('history.card.actions')">
@@ -181,9 +223,12 @@ function more(event: MouseEvent): void {
       <div class="g-card-text">
         <span class="hv-titlerow">
           <span class="g-card-title"><Marked :text="entryName(entry)" :query="ctx.query.value" /></span>
-          <span v-if="entry.pinned || entry.hosted || entry.textLineCount > 0" class="hv-marks">
+          <span v-if="entry.pinned || entry.hosted || entry.textLineCount > 0 || (series?.skipped ?? 0) > 0" class="hv-marks">
             <span v-if="entry.pinned" class="hv-mark" data-tone="iris" role="img" :aria-label="t('history.mark.pinned')"><GIcon name="pin" :size="12" /></span>
             <span v-if="entry.hosted && !upload" class="hv-mark" data-tone="ok" role="img" :aria-label="t('history.mark.uploaded')"><GIcon name="link" :size="12" /></span>
+            <span v-if="series && series.skipped > 0" class="hv-mark" data-tone="warn" role="img" :aria-label="skippedMark(series.skipped)" :data-tip="skippedMark(series.skipped)">
+              <GIcon name="bang" :size="12" />
+            </span>
             <span v-if="entry.kind === 'screenshot' && entry.textLineCount > 0" class="hv-mark" role="img" :aria-label="t('history.mark.text', { n: entry.textLineCount })">
               <GIcon name="ocr" :size="12" />
             </span>

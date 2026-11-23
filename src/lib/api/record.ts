@@ -104,8 +104,9 @@ export type RecordingResult = {
   codec: VideoCodec;
   fps: number;
   createdAtMs: number;
-  /** Why the take stopped on its own: the disk is almost full. `null` for an ordinary stop. */
-  stoppedBecause: "diskFull" | null;
+  /** Why the take stopped on its own: the disk is almost full, or the take reached Recording ›
+   * Time limit. `null` for an ordinary stop. */
+  stoppedBecause: "diskFull" | "timeLimit" | null;
 };
 
 /** How a take ended (`record://finished`), sent once after the state returns to `idle`. */
@@ -193,6 +194,9 @@ export type RecordTick = {
   /** The system audio's peak since the last tick, when it is recorded. */
   systemLevel: number | null;
   fileBytes: number;
+  /** Recording › Time limit as the take started with it; the take stops and saves itself when
+   * `elapsedMs` reaches it. */
+  limitMs: number | null;
 };
 
 export type TargetMode = "area" | "window" | "display";
@@ -230,6 +234,9 @@ export type RecordSetup = {
   microphone: boolean;
   /** What Record will record; `null` until a window is chosen in window mode. */
   target: StreamTarget | null;
+  /** The free bytes on the recordings folder's volume when the setup opened, which the options
+   * compare with what a take of the time limit would write; `null` when unknown. */
+  freeBytes?: number | null;
 };
 
 export type SetupUpdate = {

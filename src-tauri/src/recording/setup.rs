@@ -109,6 +109,9 @@ pub struct RecordSetup {
     /// changes it for this take only.
     pub microphone: bool,
     pub target: Option<StreamTarget>,
+    /// The free bytes on the recordings folder's volume when the setup opened, which the options
+    /// compare with what a take of the time limit would write; `None` when it could not be read.
+    pub free_bytes: Option<u64>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -284,6 +287,7 @@ impl RecordSetup {
             camera,
             microphone,
             target: None,
+            free_bytes: None,
         };
         setup.settle(Resolution::Native);
         setup

@@ -17,8 +17,8 @@ use crate::trash::Trash;
 use crate::{
     schema, search, AppCount, DeleteOptions, DeleteOutcome, DeleteReport, Entry, EntryDisplay, EntryId, EntryKind,
     EntrySource, Facets, HistoryError, HistoryItem, HistoryPage, HistoryQuery, HistoryUsage, HostDeletion,
-    HostedCopies, HostedCopy, NewEntry, PixelSize, RecognizedText, Result, Retention, SortOrder, StepOutcome,
-    SweepOptions, TextState,
+    HostedCopies, HostedCopy, NewEntry, PixelSize, RecognizedText, Result, Retention, SeriesFrame, SeriesInfo,
+    SortOrder, StepOutcome, SweepOptions, TextState,
 };
 
 /// Milliseconds since the Unix epoch.
@@ -46,6 +46,8 @@ pub enum Media {
     Thumbnail,
     /// The capture itself: the history's own copy, or the user's saved file.
     File,
+    /// One frame of a series, by its index, from inside the series' folder.
+    Frame(u32),
 }
 
 /// An entry that waits for text recognition.
@@ -66,7 +68,7 @@ pub struct TextJob {
 pub struct ReconcileReport {
     /// Files in the history's own folders that no entry names, now removed.
     pub removed_files: Vec<PathBuf>,
-    /// Screenshots whose thumbnail is missing, to be made again.
+    /// Screenshots and series whose thumbnail is missing, to be made again.
     pub missing_thumbnails: Vec<EntryId>,
 }
 
@@ -121,7 +123,8 @@ const STILL_CLAIMED: &str = "id = ?1 AND text_state = 'pending' AND file IS ?2 A
 const COLUMNS: &str = "e.id, e.kind, e.name, e.created_at_ms, e.file, e.thumbnail, e.annotations, e.saved_path, \
     e.width, e.height, e.scale, e.duration_ms, e.file_bytes, e.app_name, e.bundle_id, e.window_title, e.display_id, \
     e.display_name, e.text_line_count, e.text_state, e.hosted_provider, e.hosted_url, e.hosted_deletion, \
-    e.hosted_uploaded_at_ms, e.hosted_expires_at_ms, e.pinned";
+    e.hosted_uploaded_at_ms, e.hosted_expires_at_ms, e.pinned, e.series_interval_ms, e.series_count, \
+    e.series_skipped";
 
 impl HistoryStore {
     /// Opens (or makes) the history in `paths`, migrating an older database. A database from a
@@ -240,13 +243,25 @@ impl HistoryStore {
         let hosted = new.hosted.as_ref();
         let deletion =
             hosted.and_then(|h| h.deletion.as_ref()).map(serde_json::to_string).transpose().map_err(json_error)?;
+        let series = match kind {
+            EntryKind::Series => {
+                let interval_ms = new.series_interval_ms.filter(|ms| *ms > 0).ok_or_else(|| {
+                    HistoryError::InvalidArgument("a series needs the interval it was started with".into())
+                })?;
+                if new.saved_path.is_none() {
+                    return Err(HistoryError::InvalidArgument("a series needs the folder its frames are in".into()));
+                }
+                Some(SeriesInfo { interval_ms, count: 0, skipped: 0 })
+            }
+            _ => None,
+        };
         self.write().execute(
             "INSERT INTO entries (id, kind, name, created_at_ms, file, annotations, saved_path, width, height, scale,
                 duration_ms, file_bytes, app_name, bundle_id, window_title, display_id, display_name, text, text_lines,
                 text_line_count, text_state, hosted_provider, hosted_url, hosted_deletion, hosted_uploaded_at_ms,
-                hosted_expires_at_ms)
+                hosted_expires_at_ms, series_interval_ms, series_count, series_skipped)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21,
-                ?22, ?23, ?24, ?25, ?26)",
+                ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?28)",
             params![
                 id.0,
                 kind.as_str(),
@@ -274,6 +289,8 @@ impl HistoryStore {
                 deletion,
                 hosted.map(|h| h.uploaded_at_ms),
                 hosted.and_then(|h| h.expires_at_ms),
+                series.map(|s| s.interval_ms as i64),
+                series.map(|_| 0_i64),
             ],
         )?;
         Ok(())
@@ -530,8 +547,46 @@ impl HistoryStore {
         let path = match media {
             Media::Thumbnail => entry.thumbnail,
             Media::File => entry.media_path().map(Path::to_path_buf),
+            Media::Frame(index) => return self.frame_path(&entry, index),
         };
         Ok(path.filter(|p| p.is_file()))
+    }
+
+    /// A series frame's file, only when it really lies in the series' folder: the row names a
+    /// plain file name, and a link placed in the folder that leads elsewhere is not followed.
+    fn frame_path(&self, entry: &Entry, index: u32) -> Result<Option<PathBuf>> {
+        let Some(folder) = entry.saved_path.as_deref().filter(|_| entry.kind == EntryKind::Series) else {
+            return Ok(None);
+        };
+        let file: Option<String> = self.read(|conn| {
+            Ok(conn
+                .query_row(
+                    "SELECT file FROM series_frames WHERE entry_id = ?1 AND idx = ?2",
+                    params![entry.id.0, index],
+                    |r| r.get::<_, Option<String>>(0),
+                )
+                .optional()?
+                .flatten())
+        })?;
+        let Some(file) = file.filter(|name| plain_file_name(name)) else {
+            return Ok(None);
+        };
+        let (Ok(real), Ok(base)) = (fs::canonicalize(folder.join(file)), fs::canonicalize(folder)) else {
+            return Ok(None);
+        };
+        Ok(Some(real).filter(|real| real.parent() == Some(base.as_path()) && real.is_file()))
+    }
+
+    /// The frames of a series in order, skipped ones included.
+    pub fn series_frames(&self, id: &EntryId) -> Result<Vec<SeriesFrame>> {
+        self.read(|conn| {
+            let mut statement =
+                conn.prepare("SELECT idx, taken_at_ms, file FROM series_frames WHERE entry_id = ?1 ORDER BY idx")?;
+            let frames = statement
+                .query_map([&id.0], |r| Ok(SeriesFrame { index: r.get(0)?, taken_at_ms: r.get(1)?, file: r.get(2)? }))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(frames)
+        })
     }
 
     // ----------------------------------------------------------------------------- changing
@@ -707,6 +762,51 @@ impl HistoryStore {
         )
     }
 
+    /// Adds the next frame of a series: a file that is already on disk in the series' folder
+    /// (the crash invariant), or a skipped frame without one. The counts, the bytes and the span
+    /// of the entry change in the same transaction. `NotFound` means the series was deleted
+    /// meanwhile.
+    pub fn add_series_frame(
+        &self,
+        id: &EntryId,
+        frame: &SeriesFrame,
+        bytes: Option<u64>,
+        size: Option<PixelSize>,
+    ) -> Result<Entry> {
+        if let Some(name) = frame.file.as_deref().filter(|name| !plain_file_name(name)) {
+            return Err(HistoryError::InvalidArgument(format!("{name:?} is not a file name inside a folder")));
+        }
+        {
+            let mut conn = self.write();
+            let tx = conn.transaction()?;
+            let changed = tx.execute(
+                "UPDATE entries SET series_count = coalesce(series_count, 0) + 1,
+                    series_skipped = coalesce(series_skipped, 0) + ?2,
+                    file_bytes = coalesce(file_bytes, 0) + ?3,
+                    width = coalesce(?4, width), height = coalesce(?5, height),
+                    duration_ms = max(coalesce(duration_ms, 0), ?6 - created_at_ms)
+                 WHERE id = ?1 AND kind = 'series'",
+                params![
+                    id.0,
+                    frame.file.is_none() as i64,
+                    bytes.unwrap_or(0) as i64,
+                    size.map(|s| s.width),
+                    size.map(|s| s.height),
+                    frame.taken_at_ms,
+                ],
+            )?;
+            if changed == 0 {
+                return Err(HistoryError::NotFound(id.clone()));
+            }
+            tx.execute(
+                "INSERT INTO series_frames (entry_id, idx, taken_at_ms, file) VALUES (?1, ?2, ?3, ?4)",
+                params![id.0, frame.index, frame.taken_at_ms, frame.file],
+            )?;
+            tx.commit()?;
+        }
+        self.get(id)
+    }
+
     fn update(&self, id: &EntryId, sql: &str, values: &[&dyn rusqlite::ToSql]) -> Result<Entry> {
         let mut all: Vec<&dyn rusqlite::ToSql> = vec![&id.0];
         all.extend_from_slice(values);
@@ -735,6 +835,8 @@ impl HistoryStore {
                 Err(error) => return Err(error),
             };
             let mut outcome = DeleteOutcome::new(id.clone());
+            // A series is its folder of frames, so deleting it moves the folder to the Trash.
+            let trash_saved = options.trash_saved_file || entry.kind == EntryKind::Series;
 
             if options.delete_hosted_copy && entry.hosted.is_some() {
                 // A deletion that has not happened yet (a refusal, or a page the user has still to
@@ -749,7 +851,7 @@ impl HistoryStore {
                     Some(step) => {
                         outcome.hosted_copy = step;
                         outcome.own_files = StepOutcome::Skipped;
-                        if options.trash_saved_file && entry.saved_path.is_some() {
+                        if trash_saved && entry.saved_path.is_some() {
                             outcome.saved_file = StepOutcome::Skipped;
                         }
                         kept.push(outcome);
@@ -758,7 +860,7 @@ impl HistoryStore {
                 }
             }
 
-            if options.trash_saved_file {
+            if trash_saved {
                 if let Some(saved) = &entry.saved_path {
                     outcome.saved_file = self.trash_file(saved);
                     if matches!(outcome.saved_file, StepOutcome::Failed { .. }) {
@@ -857,8 +959,10 @@ impl HistoryStore {
             let tx = conn.transaction()?;
             {
                 let mut statement = tx.prepare("DELETE FROM entries WHERE id = ?1")?;
+                let mut frames = tx.prepare("DELETE FROM series_frames WHERE entry_id = ?1")?;
                 for (entry, _) in &doomed {
                     statement.execute([&entry.id.0])?;
+                    frames.execute([&entry.id.0])?;
                 }
             }
             tx.commit()?;
@@ -950,12 +1054,12 @@ impl HistoryStore {
                         keep.insert(path);
                     } else {
                         gone_thumbnails.push(id.clone());
-                        if kind == "screenshot" && has_media {
+                        if has_picture(kind) && has_media {
                             report.missing_thumbnails.push(EntryId(id.clone()));
                         }
                     }
                 }
-                None if kind == "screenshot" && has_media => report.missing_thumbnails.push(EntryId(id.clone())),
+                None if has_picture(kind) && has_media => report.missing_thumbnails.push(EntryId(id.clone())),
                 None => {}
             }
         }
@@ -1048,8 +1152,31 @@ impl HistoryStore {
             text_state: TextState::parse(&row.get::<_, String>("text_state")?),
             hosted,
             pinned: row.get("pinned")?,
+            series: match kind.as_str() {
+                "series" => Some(SeriesInfo {
+                    interval_ms: row.get::<_, Option<i64>>("series_interval_ms")?.unwrap_or(0).max(0) as u64,
+                    count: row.get::<_, Option<u32>>("series_count")?.unwrap_or(0),
+                    skipped: row.get::<_, Option<u32>>("series_skipped")?.unwrap_or(0),
+                }),
+                _ => None,
+            },
         })
     }
+}
+
+/// Whether a stored kind shows an image of its own, whose thumbnail the app makes.
+fn has_picture(kind: &str) -> bool {
+    kind == "screenshot" || kind == "series"
+}
+
+/// Whether `name` names a file directly inside a folder: no separator, no `..`, nothing that
+/// could lead out of the folder.
+fn plain_file_name(name: &str) -> bool {
+    !name.is_empty()
+        && name != "."
+        && name != ".."
+        && !name.contains(['/', '\\', '\0'])
+        && Path::new(name).components().count() == 1
 }
 
 fn json_error(error: serde_json::Error) -> HistoryError {
@@ -1103,7 +1230,8 @@ fn facets(conn: &Connection, expression: Option<&str>) -> Result<Facets> {
     let mut facets = conn.query_row(
         &format!(
             "SELECT count(*), coalesce(sum(kind = 'screenshot'), 0), coalesce(sum(kind = 'recording'), 0),
-                coalesce(sum(kind = 'textCopy'), 0), coalesce(sum(hosted_url IS NOT NULL), 0), coalesce(sum(pinned), 0)
+                coalesce(sum(kind = 'textCopy'), 0), coalesce(sum(hosted_url IS NOT NULL), 0), coalesce(sum(pinned), 0),
+                coalesce(sum(kind = 'series'), 0)
              FROM entries WHERE {scope}"
         ),
         params_from_iter(&values),
@@ -1115,6 +1243,7 @@ fn facets(conn: &Connection, expression: Option<&str>) -> Result<Facets> {
                 text_copies: r.get(3)?,
                 uploaded: r.get(4)?,
                 pinned: r.get(5)?,
+                series: r.get(6)?,
                 apps: Vec::new(),
             })
         },

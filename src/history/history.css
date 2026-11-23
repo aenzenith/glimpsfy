@@ -208,3 +208,48 @@
 .hv-combine-info { display: flex; align-items: flex-start; gap: 8px; margin: 0; font: var(--type-body); color: var(--win-text-2); }
 .hv-combine-info > g-icon { flex: none; color: var(--win-iris-text); }
 .hv-combine-info[data-tone="warn"] > g-icon { color: var(--win-warn); }
+
+/* ------------------------------------------- interval series (design/canvas row 17, Y1) */
+/* A series card is a deck: two edges of earlier frames above its thumbnail, which gives them
+   the top of the media box so the card keeps the grid's height. */
+.hv-deck { position: absolute; left: 4px; right: 4px; top: 3px; height: 24px; pointer-events: none; }
+.hv-deck > i { position: absolute; border-radius: 7px; background: var(--win-sunken); box-shadow: inset 0 0 0 var(--hairline) var(--win-line-strong); }
+.hv-deck > i:nth-child(1) { left: 14px; right: 14px; top: 0; bottom: 0; }
+.hv-deck > i:nth-child(2) { left: 7px; right: 7px; top: 5px; bottom: 0; }
+.hv-series > .g-card-media { flex: 1 1 auto; min-height: 0; margin-top: 10px; aspect-ratio: auto; }
+.hv-series > .g-card-media > .g-tag { z-index: 3; }
+.hv-mark[data-tone="warn"] { background: var(--win-warn-soft); color: var(--win-warn); }
+
+/* the frame band under the open series' row, its notch under the series' card */
+.hv-bandrow { padding: 4px 16px 0; }
+.hv-band {
+  position: relative; box-sizing: border-box; height: 132px; padding: 10px 12px 12px;
+  border-radius: var(--radius-group); background: var(--win-group); box-shadow: inset 0 0 0 var(--hairline) var(--win-group-edge);
+}
+.hv-band::before { content: ""; position: absolute; left: var(--notch, 80px); top: -7px; width: 16px; height: 7px; background: var(--win-group-edge); clip-path: polygon(50% 0, 100% 100%, 0 100%); }
+.hv-band-head { display: flex; align-items: center; gap: 8px; min-width: 0; height: 28px; }
+.hv-band-head > b { flex: 0 1 auto; min-width: 48px; font: var(--type-title); color: var(--win-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hv-bmeta { flex: none; font: var(--type-body); color: var(--win-text-2); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.hv-band-head > .g-btn { color: var(--win-text-2); }
+.hv-band-head > .g-button { flex: none; }
+.hv-path {
+  display: inline-flex; align-items: center; gap: 6px; flex: 0 1 auto; min-width: 0; height: 24px; padding: 0 9px 0 7px; border: 0;
+  border-radius: var(--radius-field); background: var(--win-fill); font: var(--type-body); color: var(--win-text-2); white-space: nowrap; cursor: default;
+}
+.hv-path:hover { color: var(--win-text); }
+.hv-path:focus-visible { outline: 2px solid var(--win-focus); outline-offset: 1px; }
+.hv-path > g-icon { flex: none; color: var(--win-iris-text); }
+.hv-path > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.hv-frames { display: flex; gap: 8px; margin-top: 10px; overflow: hidden; }
+.hv-fr { flex: none; display: block; width: 88px; padding: 0; border: 0; background: none; color: inherit; text-align: left; cursor: default; }
+.hv-fr:focus-visible { outline: none; }
+.hv-fr:focus-visible .hv-fr-media, .hv-fr:hover .hv-fr-media { box-shadow: 0 0 0 2px var(--iris); }
+.hv-fr-media { position: relative; display: block; height: 55px; border-radius: 6px; overflow: hidden; background: var(--win-sunken); }
+.hv-fr-media::after { content: ""; position: absolute; inset: 0; border-radius: inherit; box-shadow: inset 0 0 0 var(--hairline) var(--win-media-rim); pointer-events: none; }
+.hv-fr-media > img { display: block; width: 100%; height: 100%; object-fit: cover; pointer-events: none; user-select: none; }
+.hv-fr-time { display: block; margin-top: 3px; font: 500 10.5px/14px var(--font-mono); color: var(--win-text-3); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hv-fr[data-skip] .hv-fr-media { display: grid; place-items: center; background: none; color: var(--win-warn); }
+.hv-fr[data-skip] .hv-fr-media::after { box-shadow: none; border: 1px dashed var(--win-warn); }
+.hv-fr[data-skip] .hv-fr-time { color: var(--win-warn); }
+.hv-fr[data-more] .hv-fr-media { display: grid; place-items: center; background: var(--win-fill); font: var(--type-label); color: var(--win-text-2); }
+.hv-fr[data-more] .hv-fr-media::after { box-shadow: none; }

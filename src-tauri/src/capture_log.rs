@@ -45,6 +45,14 @@ pub fn record(
     let _ = append(app, &line);
 }
 
+/// Writes one line about a frame of an interval series that was skipped (`what` names it), so a
+/// gap in the series is explained in the same file as the captures that were slow.
+pub fn skipped(app: &AppHandle, what: &str, reason: &str) {
+    let line = format!("{} · {what} · skipped: {reason}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f"));
+    trace::log(format!("[glimpsfy] {line}"));
+    let _ = append(app, &line);
+}
+
 fn line(what: &str, waited: Duration, report: Option<&CaptureReport>, error: Option<&CaptureError>) -> String {
     let mut parts = vec![
         chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f").to_string(),

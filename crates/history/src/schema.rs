@@ -83,6 +83,88 @@ const MIGRATIONS: &[&str] = &[
         DELETE FROM entries_fts WHERE rowid = old.seq;
     END;
     "#,
+    // ----------------------------------------------------------------------------------- 2
+    // A series of interval captures is one entry whose `saved_path` is the series' folder, with
+    // one row per frame in `series_frames`. SQLite cannot change a CHECK in place, so `entries`
+    // is rebuilt with the new kind; `seq` is copied as it is, which keeps every row's search
+    // index entry (its rowid) valid, and the triggers are made again on the new table.
+    r#"
+    CREATE TABLE entries_v2 (
+        seq INTEGER PRIMARY KEY,
+        id TEXT NOT NULL UNIQUE,
+        kind TEXT NOT NULL CHECK (kind IN ('screenshot', 'recording', 'textCopy', 'series')),
+        name TEXT NOT NULL,
+        created_at_ms INTEGER NOT NULL,
+        file TEXT,
+        thumbnail TEXT,
+        thumbnail_bytes INTEGER,
+        annotations TEXT,
+        saved_path TEXT,
+        width INTEGER,
+        height INTEGER,
+        scale REAL,
+        duration_ms INTEGER,
+        file_bytes INTEGER,
+        app_name TEXT,
+        bundle_id TEXT,
+        window_title TEXT,
+        display_id INTEGER,
+        display_name TEXT,
+        text TEXT,
+        text_lines TEXT,
+        text_line_count INTEGER NOT NULL DEFAULT 0,
+        text_state TEXT NOT NULL DEFAULT 'none',
+        text_attempts INTEGER NOT NULL DEFAULT 0,
+        text_retry_at_ms INTEGER,
+        hosted_provider TEXT,
+        hosted_url TEXT,
+        hosted_deletion TEXT,
+        hosted_uploaded_at_ms INTEGER,
+        hosted_expires_at_ms INTEGER,
+        pinned INTEGER NOT NULL DEFAULT 0,
+        -- a series: the planned interval, the frames written so far and how many were skipped
+        series_interval_ms INTEGER,
+        series_count INTEGER,
+        series_skipped INTEGER
+    );
+    INSERT INTO entries_v2 (seq, id, kind, name, created_at_ms, file, thumbnail, thumbnail_bytes, annotations,
+        saved_path, width, height, scale, duration_ms, file_bytes, app_name, bundle_id, window_title, display_id,
+        display_name, text, text_lines, text_line_count, text_state, text_attempts, text_retry_at_ms,
+        hosted_provider, hosted_url, hosted_deletion, hosted_uploaded_at_ms, hosted_expires_at_ms, pinned)
+    SELECT seq, id, kind, name, created_at_ms, file, thumbnail, thumbnail_bytes, annotations,
+        saved_path, width, height, scale, duration_ms, file_bytes, app_name, bundle_id, window_title, display_id,
+        display_name, text, text_lines, text_line_count, text_state, text_attempts, text_retry_at_ms,
+        hosted_provider, hosted_url, hosted_deletion, hosted_uploaded_at_ms, hosted_expires_at_ms, pinned
+    FROM entries;
+    DROP TABLE entries;
+    ALTER TABLE entries_v2 RENAME TO entries;
+    CREATE INDEX entries_by_time ON entries (created_at_ms, seq);
+    CREATE INDEX entries_by_app ON entries (app_name);
+    CREATE INDEX entries_text_queue ON entries (text_state, text_retry_at_ms);
+    CREATE TRIGGER entries_fts_insert AFTER INSERT ON entries BEGIN
+        INSERT INTO entries_fts (rowid, name, window_title, app_name, text)
+        VALUES (new.seq, history_fold(new.name), history_fold(new.window_title),
+                history_fold(new.app_name), history_fold(new.text));
+    END;
+    CREATE TRIGGER entries_fts_update AFTER UPDATE OF name, window_title, app_name, text ON entries BEGIN
+        UPDATE entries_fts SET name = history_fold(new.name), window_title = history_fold(new.window_title),
+            app_name = history_fold(new.app_name), text = history_fold(new.text)
+        WHERE rowid = new.seq;
+    END;
+    CREATE TRIGGER entries_fts_delete AFTER DELETE ON entries BEGIN
+        DELETE FROM entries_fts WHERE rowid = old.seq;
+    END;
+
+    -- One row per frame of a series, in order. `file` is the frame's name inside the series'
+    -- folder, or NULL for a frame that was skipped (the system did not deliver it in time).
+    CREATE TABLE series_frames (
+        entry_id TEXT NOT NULL,
+        idx INTEGER NOT NULL,
+        taken_at_ms INTEGER NOT NULL,
+        file TEXT,
+        PRIMARY KEY (entry_id, idx)
+    ) WITHOUT ROWID;
+    "#,
 ];
 
 /// The version this build writes.

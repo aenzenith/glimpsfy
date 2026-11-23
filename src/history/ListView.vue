@@ -11,6 +11,7 @@ import AppIcon from "./AppIcon.vue";
 import { HISTORY, type HistoryContext } from "./context";
 import Marked from "./Marked.vue";
 import { extensionOf, formatBytes, formatDuration, formatWhen } from "./model";
+import { framesText } from "./series";
 
 const props = defineProps<{ items: readonly HistoryItem[]; sort: SortOrder; extraBottom: number }>();
 const emit = defineEmits<{ sort: [sort: SortOrder] }>();
@@ -73,9 +74,11 @@ function measure(item: HistoryItem): string {
   const e = item.entry;
   if (e.kind === "recording") return formatDuration(e.durationMs);
   if (e.kind === "textCopy") return e.textLineCount === 1 ? t("history.lines.one") : t("history.lines", { n: e.textLineCount });
+  if (e.kind === "series") return framesText(e.series?.count ?? 0);
   return e.size ? `${e.size.width} × ${e.size.height}` : "—";
 }
 function kind(item: HistoryItem): string {
+  if (item.entry.kind === "series") return t("history.kind.series");
   return item.entry.kind === "textCopy" ? t("history.kind.text") : extensionOf(item.entry);
 }
 
