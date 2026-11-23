@@ -88,13 +88,13 @@ jobs:
 
       - name: cargo test
         if: runner.os != 'Linux'
-        run: cargo test --workspace
+        run: cargo test --workspace --no-fail-fast
 
       # The Linux capture tests need a screen. enter.sh gives them the session bus and the virtual
       # X display the Docker check runs in; --in-place keeps it on this checkout.
       - name: cargo test (Linux)
         if: runner.os == 'Linux'
-        run: bash tools/linux-check/enter.sh --in-place cargo test --workspace
+        run: bash tools/linux-check/enter.sh --in-place cargo test --workspace --no-fail-fast
 
       - name: Type check
         run: npm run typecheck
