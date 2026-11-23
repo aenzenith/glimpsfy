@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/aenzenith/glimpsfy/compare/v0.4.0...v0.4.1) (2026-11-23)
+
+
+### Bug Fixes
+
+* **speech:** the macOS release linked whisper.cpp's version check ([8fe0f89](https://github.com/aenzenith/glimpsfy/commit/8fe0f89116000f8b280e3895e9cfb4d94f523ebf))
+
 ## [0.4.0](https://github.com/aenzenith/glimpsfy/compare/v0.3.1...v0.4.0) (2026-11-23)
 
 
