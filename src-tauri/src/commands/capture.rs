@@ -3,6 +3,7 @@
 
 use std::time::Instant;
 
+use glimpsfy_annotate::BeautifyStyle;
 use glimpsfy_capture::{
     ColorSpace, Display, DisplayId, LogicalPoint, LogicalRect, PhysicalSize, WindowId, WindowInfo, WindowListOptions,
 };
@@ -93,6 +94,9 @@ pub struct OverlayFrame {
     pub mode: CaptureMode,
     /// What the page does when the user finishes a selection or clicks a window.
     pub after_selection: AfterSelection,
+    /// The beautify style the capture's images leave with (the automatic preset of Settings ›
+    /// Beautify, or what the page set since), or `None` for the images as they are.
+    pub beautify: Option<BeautifyStyle>,
 }
 
 /// A window the overlay can snap to.
@@ -211,6 +215,25 @@ pub async fn capture_pick_window(
 #[tauri::command]
 pub fn capture_set_delay(app: AppHandle, seconds: u32) -> CommandResult<DelayState> {
     session::delay::set_pending(&app, seconds)
+}
+
+/// Sets the beautify style the images of capture `capture_id` leave with, or `None` to leave
+/// them as they are (F, the panel). It belongs to this capture alone; Settings › Beautify keeps
+/// its presets. A style that is not valid (`invalid_argument`) or a capture that is gone
+/// (`not_found`) changes nothing.
+#[tauri::command]
+pub fn capture_set_beautify(
+    state: State<'_, AppState>,
+    capture_id: CaptureId,
+    style: Option<BeautifyStyle>,
+) -> CommandResult<()> {
+    if let Some(style) = &style {
+        style.check().map_err(CommandError::invalid)?;
+    }
+    let session =
+        state.sessions.get(capture_id).ok_or_else(|| CommandError::not_found(format!("capture #{}", capture_id.0)))?;
+    session.set_beautify(style.map(|s| s.clamped()));
+    Ok(())
 }
 
 /// The delay that is set and the countdown that is running, if any.

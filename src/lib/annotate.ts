@@ -12,7 +12,7 @@
 export type Version = { major: number; minor: number };
 
 /** The version this build writes; it reads every document whose major version is not higher. */
-export const CURRENT_VERSION: Version = { major: 1, minor: 1 };
+export const CURRENT_VERSION: Version = { major: 1, minor: 2 };
 
 export type ImageSize = { width: number; height: number };
 export type Point = { x: number; y: number };
@@ -87,6 +87,49 @@ export type ObjectState = {
 
 export type AnnotationObject = { id: ObjectId } & ObjectState & Shape;
 
+// ------------------------------------------------------------------------------- beautify (1.2)
+// crates/annotate/src/beautify.rs: lengths are logical points, colours are sRGB `#rrggbb`, and a
+// window capture takes only the padding and the background.
+
+/** The largest padding a style may ask for, in points. */
+export const MAX_PADDING = 160;
+/** The largest corner radius, in points. */
+export const MAX_CORNER = 32;
+/** The height of the window frame's title bar, in points. */
+export const FRAME_BAR = 28;
+
+export const SHADOWS = ["none", "soft", "medium", "deep"] as const;
+export type Shadow = (typeof SHADOWS)[number];
+export const WINDOW_FRAMES = ["none", "light", "dark"] as const;
+export type WindowFrame = (typeof WINDOW_FRAMES)[number];
+
+/** The blur, the offset downwards (both in points) and the opacity of each shadow. */
+export const SHADOW_GEOMETRY: Record<Exclude<Shadow, "none">, { blur: number; dy: number; opacity: number }> = {
+  soft: { blur: 8, dy: 3, opacity: 0.22 },
+  medium: { blur: 18, dy: 8, opacity: 0.3 },
+  deep: { blur: 30, dy: 16, opacity: 0.42 },
+};
+
+export type Background =
+  | { kind: "transparent" }
+  | { kind: "solid"; color: string }
+  /** A linear gradient at 135°, through evenly spaced stops. */
+  | { kind: "gradient"; stops: string[] }
+  /** An image file that covers the output; `fallback` is used when it cannot be read. */
+  | { kind: "image"; path: string; fallback: string[] }
+  /** The median colour of the capture's outermost 2-pixel band. */
+  | { kind: "match" };
+
+export type BeautifyStyle = {
+  /** The preset the style was taken from, so the panel can name it. */
+  preset: string | null;
+  padding: number;
+  corner: number;
+  shadow: Shadow;
+  background: Background;
+  frame: WindowFrame;
+};
+
 export type AnnotationDocument = {
   version: Version;
   image: ImageSize;
@@ -94,6 +137,8 @@ export type AnnotationDocument = {
   scale: number;
   /** The objects are listed in stacking order, the bottom one first. */
   objects: AnnotationObject[];
+  /** The style the outputs put around the image, or `null` for none (format 1.2). */
+  beautify: BeautifyStyle | null;
 };
 
 /** `parseDocument` throws this; `path` names the field that broke the rule. */
@@ -303,7 +348,75 @@ export function migrateDocument(raw: unknown): unknown {
   if (older(version, { major: 1, minor: 1 }) && Array.isArray(objects)) {
     objects = objects.map((o: unknown) => (typeof o === "object" && o !== null && !Array.isArray(o) ? { hidden: false, locked: false, ...o } : o));
   }
+  // 1.1 → 1.2: the beautify style, which an older document has none of; only the version changes.
   return { ...d, version: { ...CURRENT_VERSION }, objects };
+}
+
+function readHex(value: unknown, path: string): string {
+  if (typeof value !== "string" || !HEX.test(value)) throw new DocumentError(path, `${JSON.stringify(value)} is not #rrggbb or #rrggbbaa`);
+  return value;
+}
+
+function readStops(from: Fields, key: string, path: string): string[] {
+  const list = field(from, key, path);
+  if (!Array.isArray(list) || list.length === 0) throw new DocumentError(`${path}.${key}`, "a list of at least one colour is expected");
+  return list.map((c, i) => readHex(c, `${path}.${key}[${i}]`));
+}
+
+function readBackground(value: unknown, path: string): Background {
+  const b = record(value, path);
+  const kind = oneOf(b, "kind", path, ["transparent", "solid", "gradient", "image", "match"] as const);
+  switch (kind) {
+    case "transparent":
+    case "match":
+      return { kind };
+    case "solid":
+      return { kind, color: readHex(field(b, "color", path), `${path}.color`) };
+    case "gradient":
+      return { kind, stops: readStops(b, "stops", path) };
+    case "image":
+      return { kind, path: str(b, "path", path), fallback: readStops(b, "fallback", path) };
+  }
+}
+
+/** Reads a beautify style, as the document, the settings' presets and the overlay's frame hold it. */
+export function readBeautify(value: unknown, path = "beautify"): BeautifyStyle {
+  const b = record(value, path);
+  const preset = "preset" in b && b.preset !== null && b.preset !== undefined ? str(b, "preset", path) : null;
+  return {
+    preset,
+    padding: length(b, "padding", path),
+    corner: length(b, "corner", path),
+    shadow: oneOf(b, "shadow", path, SHADOWS),
+    background: readBackground(field(b, "background", path), `${path}.background`),
+    frame: oneOf(b, "frame", path, WINDOW_FRAMES),
+  };
+}
+
+function writeBackground(b: Background): unknown {
+  switch (b.kind) {
+    case "transparent":
+    case "match":
+      return { kind: b.kind };
+    case "solid":
+      return { kind: b.kind, color: b.color };
+    case "gradient":
+      return { kind: b.kind, stops: [...b.stops] };
+    case "image":
+      return { kind: b.kind, path: b.path, fallback: [...b.fallback] };
+  }
+}
+
+/** A beautify style as plain JSON data, the shape `capture_set_beautify` and the core read. */
+export function writeBeautify(style: BeautifyStyle): unknown {
+  return {
+    ...(style.preset === null ? {} : { preset: style.preset }),
+    padding: style.padding,
+    corner: style.corner,
+    shadow: style.shadow,
+    background: writeBackground(style.background),
+    frame: style.frame,
+  };
 }
 
 function flag(from: Fields, key: string, path: string): boolean {
@@ -350,7 +463,8 @@ export function parseDocument(input: unknown): AnnotationDocument {
   });
   if (crops > 1) throw new DocumentError("document.objects", `the document has ${crops} crop objects, and one is allowed`);
 
-  return { version, image, scale, objects };
+  const beautify = "beautify" in d && d.beautify !== null && d.beautify !== undefined ? readBeautify(d.beautify, "document.beautify") : null;
+  return { version, image, scale, objects, beautify };
 }
 
 function writeColor(color: Color): unknown {
@@ -419,5 +533,6 @@ export function serializeDocument(doc: AnnotationDocument): unknown {
     image: { width: doc.image.width, height: doc.image.height },
     scale: doc.scale,
     objects: doc.objects.map(writeObject),
+    ...(doc.beautify === null ? {} : { beautify: writeBeautify(doc.beautify) }),
   };
 }

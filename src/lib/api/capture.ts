@@ -92,6 +92,9 @@ export type OverlayFrame = {
   pointer: LogicalPoint | null;
   mode: CaptureMode;
   afterSelection: AfterSelection;
+  /** The beautify style the capture's images leave with (the automatic preset, or what the page
+   * set since), or `null` for the images as they are. Read it with `readBeautify`. */
+  beautify: unknown;
 };
 
 /** The result of `capture_pick_window`: the window's own image is ready, and Copy or Save on a
@@ -130,6 +133,11 @@ export const overlay_failed = (captureId: CaptureId, displayId: DisplayId, messa
 /** Captures the clicked window on its own (window mode, or Space in area mode). */
 export const capture_pick_window = (captureId: CaptureId, displayId: DisplayId, windowId: WindowId) =>
   call<PickedWindow>("capture_pick_window", { captureId, displayId, windowId });
+/** Sets the beautify style this capture's images leave with (`writeBeautify` of a style), or
+ * `null` to leave them as they are; it belongs to this capture alone. A capture that is gone
+ * throws `not_found`. */
+export const capture_set_beautify = (captureId: CaptureId, style: unknown) =>
+  call<void>("capture_set_beautify", { captureId, style });
 /** Sets the one-shot delay of the next capture: 0, 3, 5 or 10 seconds. */
 export const capture_set_delay = (seconds: number) => call<DelayState>("capture_set_delay", { seconds });
 export const capture_delay = () => call<DelayState>("capture_delay");

@@ -1,7 +1,7 @@
 {
   "version": {
     "major": 1,
-    "minor": 1
+    "minor": 2
   },
   "image": {
     "width": 2880,
@@ -268,5 +268,21 @@
       },
       "dim": "dark"
     }
-  ]
+  ],
+  "beautify": {
+    "preset": "sunset",
+    "padding": 64.0,
+    "corner": 16.0,
+    "shadow": "deep",
+    "background": {
+      "kind": "image",
+      "path": "/Users/someone/Pictures/Wallpaper 2026.heic",
+      "fallback": [
+        "#ff8a4c",
+        "#ff4f8b",
+        "#8b4dff"
+      ]
+    },
+    "frame": "dark"
+  }
 }

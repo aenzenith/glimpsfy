@@ -110,10 +110,15 @@ pub async fn output_copy(app: AppHandle, selection: Selection) -> CommandResult<
 }
 
 /// Saves the selection as a new file in the folder of Settings › Output, named by its template
-/// and in its format, and closes the overlay (⌘S). An existing file is never replaced.
+/// and in its format, or in `format` for this image alone (the beautify panel's Save as PNG this
+/// time), and closes the overlay (⌘S). An existing file is never replaced.
 #[tauri::command]
-pub async fn output_save(app: AppHandle, selection: Selection) -> CommandResult<OutputDone> {
-    off_main(move || crate::output::save(&app, selection)).await
+pub async fn output_save(
+    app: AppHandle,
+    selection: Selection,
+    format: Option<crate::settings::ImageFormat>,
+) -> CommandResult<OutputDone> {
+    off_main(move || crate::output::save(&app, selection, format)).await
 }
 
 /// Saves the selection to a path (Save as…, ⇧⌘S). Without a path the overlay closes first and

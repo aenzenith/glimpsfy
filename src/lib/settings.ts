@@ -73,6 +73,18 @@ export type SendPaste = "image" | "path" | "file";
 /** One app of Send to app; its bundle identifier is also its id. */
 export type SendTarget = { bundleId: string; name: string; paste: SendPaste };
 
+/** Settings › Beautify (`Beautify` in settings.rs). */
+export type Beautify = Extra & {
+  /** Every screenshot gets `preset` unless F skips it for that capture. */
+  auto: boolean;
+  /** The id of the preset `auto` applies, and F turns on when `auto` is off. */
+  preset: string;
+  /** The presets in the order Settings lists them. An entry this version cannot read stays in the
+   * list as it is (`Kept` in settings.rs), so the pages read the list through `readPresets`
+   * (`src/annotate/beautify.ts`) and write it back whole. */
+  presets: unknown[];
+};
+
 export type VideoCodec = "h264" | "hevc";
 export type RecordingResolution = "native" | "half";
 export type RingColor = "yellow" | "red" | "blue" | "white";
@@ -138,6 +150,7 @@ export type Settings = Extra & {
   general: General;
   shortcuts: Shortcuts;
   output: Output;
+  beautify: Beautify;
   recording: Recording;
   ocr: Ocr;
   upload: Upload;

@@ -12,7 +12,7 @@
 
 import { ref } from "vue";
 
-import type { AnnotationDocument, AnnotationObject, Color, Point, Rect } from "../lib/annotate";
+import type { AnnotationDocument, AnnotationObject, BeautifyStyle, Color, Point, Rect } from "../lib/annotate";
 import { textSize } from "./draw";
 import { boxTo, clamp, contains, frameOf, handlesOf, hits, moved, rectFrom, resized, snapAngle, type Handle } from "./geometry";
 import type { AnnotatePrefs, ToolId, ToolOptions } from "./prefs";
@@ -81,12 +81,16 @@ function newId(kind: string): string {
 }
 
 /** The undo and redo stack: each entry is a whole object list. */
+/** One state of the history: the drawings and the beautify style around them, so a change in the
+ * beautify panel is a step like a drawing. */
+type Step = { objects: Objects; beautify: BeautifyStyle | null };
+
 class History {
-  past: Objects[] = [];
-  future: Objects[] = [];
+  past: Step[] = [];
+  future: Step[] = [];
   static readonly LIMIT = 200;
 
-  push(before: Objects): void {
+  push(before: Step): void {
     this.past.push(before);
     if (this.past.length > History.LIMIT) this.past.shift();
     this.future = [];
@@ -99,9 +103,9 @@ class History {
 
   /** Changes the crop in every entry, for a crop change that is not a step of its own. */
   rewriteCrop(crop: AnnotationObject | null): void {
-    const swap = (list: Objects) => {
-      const rest = list.filter((o) => o.kind !== "crop");
-      return crop ? [crop, ...rest] : rest;
+    const swap = (step: Step): Step => {
+      const rest = step.objects.filter((o) => o.kind !== "crop");
+      return { ...step, objects: crop ? [crop, ...rest] : rest };
     };
     this.past = this.past.map(swap);
     this.future = this.future.map(swap);
@@ -139,7 +143,8 @@ export class AnnotationEngine {
   /** The object list when the current gesture or text edit began. */
   private before: Objects | null = null;
   private saved: Objects;
-  private cropSession: { objects: Objects; past: number } | null = null;
+  private savedBeautify: BeautifyStyle | null;
+  private cropSession: { objects: Objects; beautify: BeautifyStyle | null; past: number } | null = null;
 
   constructor(
     doc: AnnotationDocument,
@@ -149,6 +154,7 @@ export class AnnotationEngine {
     this.doc = doc;
     this.prefs = prefs;
     this.saved = doc.objects;
+    this.savedBeautify = doc.beautify;
   }
 
   // ------------------------------------------------------------------------------- reading
@@ -207,11 +213,25 @@ export class AnnotationEngine {
 
   /** Whether the document differs from the last `markSaved`. */
   dirty(): boolean {
-    return this.doc.objects !== this.saved;
+    return this.doc.objects !== this.saved || this.doc.beautify !== this.savedBeautify;
   }
 
   markSaved(): void {
     this.saved = this.doc.objects;
+    this.savedBeautify = this.doc.beautify;
+    this.bump();
+  }
+
+  /**
+   * Sets the beautify style around the image, or `null` for none. With `step`, the change is one
+   * undo step; without it, it joins the step before, so a slider dragged through many values is
+   * one ⌘Z.
+   */
+  setBeautify(style: BeautifyStyle | null, step = true): void {
+    this.finishText();
+    if (style === this.doc.beautify) return;
+    if (step) this.history.push(this.step(this.doc.objects));
+    this.doc = { ...this.doc, beautify: style };
     this.bump();
   }
 
@@ -246,8 +266,19 @@ export class AnnotationEngine {
     const before = this.doc.objects;
     const after = change(before);
     if (after === before) return;
-    this.history.push(before);
+    this.history.push(this.step(before));
     this.set(after);
+  }
+
+  /** The history entry of `objects`. */
+  private step(objects: Objects): Step {
+    return { objects, beautify: this.doc.beautify };
+  }
+
+  /** Goes back or forward to a history entry. */
+  private restore(step: Step): void {
+    if (step.beautify !== this.doc.beautify) this.doc = { ...this.doc, beautify: step.beautify };
+    this.set(step.objects);
   }
 
   private replace(id: string, next: AnnotationObject): Objects {
@@ -260,6 +291,7 @@ export class AnnotationEngine {
     this.cancelGesture();
     this.doc = doc;
     this.saved = unsaved ? [] : doc.objects;
+    this.savedBeautify = unsaved ? null : doc.beautify;
     this.selectedId = null;
     this.groupIds = [];
     this.editingId = null;
@@ -272,16 +304,16 @@ export class AnnotationEngine {
     this.finishText();
     const previous = this.history.past.pop();
     if (!previous) return;
-    this.history.future.push(this.doc.objects);
-    this.set(previous);
+    this.history.future.push(this.step(this.doc.objects));
+    this.restore(previous);
   }
 
   redo(): void {
     this.finishText();
     const next = this.history.future.pop();
     if (!next) return;
-    this.history.past.push(this.doc.objects);
-    this.set(next);
+    this.history.past.push(this.step(this.doc.objects));
+    this.restore(next);
   }
 
   setTool(tool: ToolId | null): void {
@@ -291,7 +323,7 @@ export class AnnotationEngine {
     if (tool === "crop") {
       this.selectedId = null;
       this.groupIds = [];
-      this.cropSession = { objects: this.doc.objects, past: this.history.past.length };
+      this.cropSession = { objects: this.doc.objects, beautify: this.doc.beautify, past: this.history.past.length };
     }
     if (tool && (tool === "blur" || tool === "pixelate") && !this.prefs.redactionNoticeSeen) this.onRedaction();
     this.bump();
@@ -350,7 +382,7 @@ export class AnnotationEngine {
     if (session) {
       this.history.past.length = Math.min(this.history.past.length, session.past);
       this.history.future = [];
-      this.set(session.objects);
+      this.restore({ objects: session.objects, beautify: session.beautify });
     }
     this.cropSession = null;
     this.setTool(null);
@@ -834,7 +866,7 @@ export class AnnotationEngine {
       this.set(this.replace(object.id, { ...object, rect: this.roundRect(object.rect) }));
     }
     if (this.doc.objects !== before) {
-      this.history.push(before);
+      this.history.push(this.step(before));
       this.bump();
     }
   }
@@ -894,7 +926,7 @@ export class AnnotationEngine {
     if (this.doc.objects !== before) {
       // A text that was created and emptied again leaves the list as it was.
       const same = before.length === this.doc.objects.length && before.every((o, i) => o === this.doc.objects[i]);
-      if (!same) this.history.push(before);
+      if (!same) this.history.push(this.step(before));
       else this.set(before);
     }
     this.bump();

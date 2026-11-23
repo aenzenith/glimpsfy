@@ -110,6 +110,11 @@ const ICONS: Record<string, IconDef> = {
     plus: '<path d="M10 4.5v11M4.5 10h11"/>',
     minus: '<path d="M4.5 10h11"/>',
 
+    /* beautify (design/canvas row 12): a frame around a picture, its margin filled at 38 %; and the
+       eyedropper of Match, which picks the colour from the capture's edge (D29 shares it) */
+    beautify: '<path class="fo" fill-rule="evenodd" d="M5.5 3.25H14.5A2.75 2.75 0 0 1 17.25 6V14A2.75 2.75 0 0 1 14.5 16.75H5.5A2.75 2.75 0 0 1 2.75 14V6A2.75 2.75 0 0 1 5.5 3.25ZM7.5 7H12.5A1 1 0 0 1 13.5 8V12A1 1 0 0 1 12.5 13H7.5A1 1 0 0 1 6.5 12V8A1 1 0 0 1 7.5 7Z"/><path d="M5.5 3.25H14.5A2.75 2.75 0 0 1 17.25 6V14A2.75 2.75 0 0 1 14.5 16.75H5.5A2.75 2.75 0 0 1 2.75 14V6A2.75 2.75 0 0 1 5.5 3.25Z"/><path d="M7.5 7H12.5A1 1 0 0 1 13.5 8V12A1 1 0 0 1 12.5 13H7.5A1 1 0 0 1 6.5 12V8A1 1 0 0 1 7.5 7Z"/>',
+    eyedropper: { vb: 16, sw: 1.45, body: '<path d="M10.2 2.7a1.7 1.7 0 0 1 2.4 0l.7.7a1.7 1.7 0 0 1 0 2.4l-1.6 1.6-3.1-3.1z"/><path d="M7.4 4.8l3.8 3.8"/><path d="M9.3 6.7 4.2 11.8a1.4 1.4 0 0 0-.4.8l-.3 1.9 1.9-.3a1.4 1.4 0 0 0 .8-.4l5.1-5.1"/>' },
+
     /* ---------------------------------------------------------------- status */
     check: '<path d="m5 10.5 3.25 3.25L15 6.5"/>',
     info: '<circle cx="10" cy="10" r="7"/><path d="M10 9.25v4.5"/><circle class="f" cx="10" cy="6.6" r=".95"/>',

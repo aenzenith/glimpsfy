@@ -19,7 +19,7 @@ import type { Bytes, PixelRect, Pixels } from "../annotate/redact";
 export type { Point };
 
 function emptyDocument(width: number, height: number, scale: number): AnnotationDocument {
-  return { version: CURRENT_VERSION, image: { width, height }, scale, objects: [] };
+  return { version: CURRENT_VERSION, image: { width, height }, scale, objects: [], beautify: null };
 }
 
 /** The engine of this overlay page; it lives as long as the page and takes a new document for

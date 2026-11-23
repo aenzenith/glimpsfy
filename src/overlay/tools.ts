@@ -19,7 +19,7 @@ export type ToolId =
   | "undo"
   | "redo";
 
-export type ActionId = "copy" | "send" | "save" | "upload" | "copy-text" | "pin" | "record" | "close";
+export type ActionId = "beautify" | "copy" | "send" | "save" | "upload" | "copy-text" | "pin" | "record" | "close";
 
 export type Tool = { id: ToolId; label: Key; key: string; momentary?: boolean };
 export type Action = { id: ActionId; icon: string; label: Key; key: string };
@@ -46,6 +46,9 @@ export const TOOLS: (Tool | null)[] = [
 ];
 
 export const ACTIONS: (Action | null)[] = [
+  // F is a plain key, like the tools' letters; it works during the drag too (B11).
+  { id: "beautify", icon: "beautify", label: "beautify.title", key: "F" },
+  null,
   { id: "copy", icon: "copy", label: "action.copy", key: "⌘C" },
   { id: "send", icon: "send", label: "action.send", key: "⌘↩" },
   { id: "save", icon: "save", label: "action.save", key: "⌘S" },
@@ -59,7 +62,7 @@ export const ACTIONS: (Action | null)[] = [
 ];
 
 /** The actions that work in this build; the others say so when used. */
-export const WORKING_ACTIONS: ActionId[] = ["copy", "send", "save", "upload", "copy-text", "pin", "record", "close"];
+export const WORKING_ACTIONS: ActionId[] = ["beautify", "copy", "send", "save", "upload", "copy-text", "pin", "record", "close"];
 
 export const INKS = ["red", "orange", "yellow", "green", "cyan", "blue", "white", "black"] as const;
 

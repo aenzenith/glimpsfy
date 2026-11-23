@@ -21,6 +21,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use glimpsfy_annotate::BeautifyStyle;
 use glimpsfy_capture::{
     ColorInfo, ColorSpace, DisplayId, Frame, LogicalRect, PhysicalSize, PixelFormat, PngEffort, ScaleFactor,
 };
@@ -36,7 +37,7 @@ use super::history::{EditorBase, EditorOrigin, EditorRecord};
 use super::output::OutputDone;
 use super::upload::UploadStarted;
 use super::windows::WindowKind;
-use crate::settings::{ImageFormat, RetinaScale};
+use crate::settings::ImageFormat;
 use crate::{session, AppState};
 
 /// Events this area owns. The TypeScript copy is in `src/lib/api/render.ts`.
@@ -68,6 +69,16 @@ pub struct RenderHeader {
     /// still renders; its outputs only leave the last area as it was.
     #[serde(default)]
     pub area: Option<RenderedArea>,
+    /// The format to use instead of the settings' (Save as PNG this time, under a JPEG output
+    /// format that would fill a removed background or a beautified corner with white): a Save
+    /// writes it, and Save as suggests it in its panel and lists it first.
+    #[serde(default)]
+    pub format: Option<ImageFormat>,
+    /// For the editor's image: the beautify style of its document, which Copy, Save, Save as and
+    /// Upload put around the pixels. An overlay's style is its capture's (`capture_set_beautify`),
+    /// so the overlay leaves this out.
+    #[serde(default)]
+    pub beautify: Option<BeautifyStyle>,
     /// For `send_rendered`: the bundle identifier of the target to send to; none copies the path.
     #[serde(default)]
     pub send_target: Option<String>,
@@ -164,6 +175,22 @@ fn find<'a>(images: &'a [EditorSource], token: &str) -> CommandResult<&'a Editor
         .ok_or_else(|| CommandError::not_found("the editor's image is no longer open"))
 }
 
+/// The image backgrounds the documents of the editor's images name (`frames.rs` serves their
+/// previews).
+pub(crate) fn editor_backgrounds() -> Vec<String> {
+    let images = editor();
+    images
+        .iter()
+        .flat_map(|s| [s.document.as_deref(), s.image.document.as_deref()])
+        .flatten()
+        .filter_map(|json| glimpsfy_annotate::Document::from_json(json).ok()?.beautify)
+        .filter_map(|style| match style.background {
+            glimpsfy_annotate::Background::Image { path, .. } => Some(path),
+            _ => None,
+        })
+        .collect()
+}
+
 /// Makes `source` the editor's image and keeps the one before it.
 fn keep(source: EditorSource) {
     let mut images = editor();
@@ -185,7 +212,7 @@ async fn off_main<T: Send + 'static>(work: impl FnOnce() -> CommandResult<T> + S
 // ------------------------------------------------------------------------- rendered output
 
 /// `%XX` escapes back to bytes, as `encodeURIComponent` wrote them.
-fn percent_decode(text: &str) -> Option<String> {
+pub(crate) fn percent_decode(text: &str) -> Option<String> {
     let bytes = text.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
@@ -237,6 +264,20 @@ struct Prepared {
     front_app: Option<String>,
     /// For the editor's image: its history record and the page's document at this output.
     editor: Option<(Arc<EditorRecord>, Option<String>)>,
+    /// The style the outputs put around the pixels: the capture's, or the editor document's.
+    beautify: Option<BeautifyStyle>,
+    /// The header's format, for a Save.
+    format: Option<ImageFormat>,
+}
+
+impl Prepared {
+    /// Where the pixels came from, with the style and the format they leave with.
+    pub(super) fn output_origin(&self, app: &AppHandle) -> crate::output::Origin {
+        let mut origin = crate::output::Origin::of_selection(app, &self.origin);
+        origin.beautify = self.beautify.clone();
+        origin.format = self.format;
+        origin
+    }
 }
 
 /// Builds the output frame. With `close`, a capture is closed here, before the encoding, so the
@@ -251,6 +292,7 @@ fn prepare(
 ) -> CommandResult<Prepared> {
     let nowhere = LogicalRect::new(0.0, 0.0, 0.0, 0.0);
     let mut editor_record = None;
+    let mut beautify = header.beautify.clone();
     let (color, scale, origin, front_app) = match &header.source {
         RenderSource::Capture { capture_id, display_id } => {
             let state = app.state::<AppState>();
@@ -262,6 +304,7 @@ fn prepare(
                 .display(*display_id)
                 .ok_or_else(|| CommandError::not_found(format!("display {}", display_id.0)))?;
             let found = (entry.frame.color.clone(), entry.frame.scale, session.front_app.clone());
+            beautify = session.beautify();
             if let (true, Some(area)) = (remember, header.area) {
                 remember_area(app, &session, *capture_id, *display_id, area);
             }
@@ -289,7 +332,7 @@ fn prepare(
     }
     let size = PhysicalSize::new(header.width, header.height);
     let frame = Frame::new(size, header.width as usize * 4, PixelFormat::Rgba8, color, scale, pixels)?;
-    Ok(Prepared { frame, origin, front_app, editor: editor_record })
+    Ok(Prepared { frame, origin, front_app, editor: editor_record, beautify, format: header.format })
 }
 
 /// Makes the overlay's rendered crop the area Repeat Last Area captures again. The crop arrives
@@ -324,16 +367,18 @@ fn remember_area(
 /// record the hand-off that follows belongs to. The editor's deliveries run one at a time, so
 /// the hand-offs come in the order of the history's tickets.
 fn deliver(
+    app: &AppHandle,
     ready: Prepared,
-    run: impl FnOnce(&Selection, Frame, Option<&str>) -> CommandResult<OutputDone>,
+    run: impl FnOnce(crate::output::Origin, Frame, Option<&str>) -> CommandResult<OutputDone>,
 ) -> CommandResult<OutputDone> {
+    let origin = ready.output_origin(app);
     let Some((record, document)) = ready.editor else {
-        return run(&ready.origin, ready.frame, ready.front_app.as_deref());
+        return run(origin, ready.frame, ready.front_app.as_deref());
     };
     static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
     let _turn = ONE_AT_A_TIME.lock().unwrap_or_else(|p| p.into_inner());
     let ticket = super::history::expect_editor_output(record, document);
-    let result = run(&ready.origin, ready.frame, ready.front_app.as_deref());
+    let result = run(origin, ready.frame, ready.front_app.as_deref());
     if result.is_err() {
         super::history::forget_editor_output(ticket);
     }
@@ -347,7 +392,7 @@ pub async fn output_copy_rendered(app: AppHandle, request: Request<'_>) -> Comma
     let (header, pixels) = read_rendered(&request)?;
     off_main(move || {
         let ready = prepare(&app, header, pixels, Some(CloseReason::Copied), true)?;
-        deliver(ready, |origin, frame, _| crate::output::copy_frame(&app, origin, frame))
+        deliver(&app, ready, |origin, frame, _| crate::output::copy_frame(&app, origin, frame))
     })
     .await
 }
@@ -360,7 +405,7 @@ pub async fn output_save_rendered(app: AppHandle, request: Request<'_>) -> Comma
     let (header, pixels) = read_rendered(&request)?;
     off_main(move || {
         let ready = prepare(&app, header, pixels, Some(CloseReason::Saved), true)?;
-        deliver(ready, |origin, frame, front_app| crate::output::save_frame(&app, origin, frame, front_app, None))
+        deliver(&app, ready, |origin, frame, front_app| crate::output::save_frame(&app, origin, frame, front_app, None))
     })
     .await
 }
@@ -374,7 +419,7 @@ pub async fn output_save_rendered(app: AppHandle, request: Request<'_>) -> Comma
 pub async fn output_save_as_rendered(app: AppHandle, request: Request<'_>) -> CommandResult<OutputDone> {
     let (header, pixels) = read_rendered(&request)?;
     off_main(move || {
-        let (folder, name) = suggestion(&app, &header.source);
+        let (folder, name) = suggestion(&app, &header.source, header.format);
         // The overlays sit at the screen saver level, above any panel, so the panel would open
         // where nobody can see it.
         let capture = match &header.source {
@@ -384,7 +429,7 @@ pub async fn output_save_as_rendered(app: AppHandle, request: Request<'_>) -> Co
         if capture.is_some() {
             crate::windows::hide_overlays(&app);
         }
-        let target = match pick_save_path(&app, folder, &name) {
+        let target = match pick_save_path(&app, folder, &name, header.format) {
             Ok(target) => target,
             Err(error) => {
                 if let Some(id) = capture {
@@ -404,7 +449,7 @@ pub async fn output_save_as_rendered(app: AppHandle, request: Request<'_>) -> Co
                 return Err(error);
             }
         };
-        deliver(ready, |origin, frame, front_app| {
+        deliver(&app, ready, |origin, frame, front_app| {
             crate::output::save_frame(&app, origin, frame, front_app, Some(&target))
         })
     })
@@ -469,14 +514,16 @@ pub async fn upload_capture_rendered(app: AppHandle, request: Request<'_>) -> Co
 }
 
 /// Encodes a rendered image as a new PNG in `<cache>/rendered/`, named by the template of
-/// Settings › Output. `for_upload` scales it to 1× when the settings say so, as an upload of a
-/// capture is.
+/// Settings › Output. `for_upload` gives it the pixels an upload of a capture has: scaled to 1×
+/// when the settings say so, and beautified. A pin shows the drawing as it is.
 fn stage(app: &AppHandle, header: RenderHeader, pixels: Vec<u8>, for_upload: bool) -> CommandResult<PathBuf> {
     let ready = prepare(app, header, pixels, None, for_upload)?;
     let settings = app.state::<AppState>().settings.get();
-    let frame = match settings.output.retina {
-        RetinaScale::ScaleTo1x if for_upload => ready.frame.at_1x().unwrap_or(ready.frame),
-        _ => ready.frame,
+    let origin = ready.output_origin(app);
+    let frame = if for_upload {
+        crate::output::finish_pixels(ready.frame, &origin, settings.output.retina)
+    } else {
+        ready.frame
     };
     let folder = crate::paths::cache_dir(app).map_err(|e| CommandError::internal(e.to_string()))?.join("rendered");
     prune(&folder, std::time::Duration::from_secs(3600));
@@ -510,9 +557,9 @@ fn prune(folder: &Path, age: std::time::Duration) {
 /// the save folder of the settings. A file in the app's own folders (a pin's copy in the cache)
 /// gets the dated name in the save folder, since its folder is emptied without asking and its
 /// name is the app's, not the user's.
-fn suggestion(app: &AppHandle, source: &RenderSource) -> (PathBuf, String) {
+fn suggestion(app: &AppHandle, source: &RenderSource, format: Option<ImageFormat>) -> (PathBuf, String) {
     let output = app.state::<AppState>().settings.get().output;
-    let (save_folder, ext) = (output.save_folder, output.format.extension());
+    let (save_folder, ext) = (output.save_folder, format.unwrap_or(output.format).extension());
     let suggest = match source {
         RenderSource::Editor { token } => find(&editor(), token).ok().and_then(|s| s.suggest.clone()),
         RenderSource::Capture { .. } => None,
@@ -539,13 +586,13 @@ fn app_owned(app: &AppHandle, folder: &Path) -> bool {
 /// The save panel of the dialog plugin, offering PNG, JPEG and WebP with the settings' format
 /// first; the extension the user keeps picks the format (`output::save_frame`). It runs on a
 /// worker thread and blocks only that thread until the user answers.
-fn pick_save_path(app: &AppHandle, folder: PathBuf, name: &str) -> CommandResult<PathBuf> {
+fn pick_save_path(app: &AppHandle, folder: PathBuf, name: &str, format: Option<ImageFormat>) -> CommandResult<PathBuf> {
     use tauri_plugin_dialog::DialogExt;
     // `dialog()` panics when the plugin is not registered, and registering it is the app shell's.
     if app.try_state::<tauri_plugin_dialog::Dialog<tauri::Wry>>().is_none() {
         return Err(CommandError::not_implemented("the save panel"));
     }
-    let format = app.state::<AppState>().settings.get().output.format;
+    let format = format.unwrap_or_else(|| app.state::<AppState>().settings.get().output.format);
     let mut filters: [(ImageFormat, &str, &[&str]); 3] = [
         (ImageFormat::Png, "PNG", &["png"]),
         (ImageFormat::Jpeg, "JPEG", &["jpg", "jpeg"]),

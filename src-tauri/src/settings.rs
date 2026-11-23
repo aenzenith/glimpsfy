@@ -21,6 +21,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 
+use glimpsfy_annotate::{BeautifyPreset, BeautifyStyle};
 use glimpsfy_upload::{FieldInput, ProviderDescription};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -37,6 +38,7 @@ pub struct Settings {
     pub general: General,
     pub shortcuts: Shortcuts,
     pub output: Output,
+    pub beautify: Beautify,
     pub recording: Recording,
     pub ocr: Ocr,
     pub upload: Upload,
@@ -52,6 +54,7 @@ impl Default for Settings {
             general: General::default(),
             shortcuts: Shortcuts::default(),
             output: Output::default(),
+            beautify: Beautify::default(),
             recording: Recording::default(),
             ocr: Ocr::default(),
             upload: Upload::default(),
@@ -120,6 +123,16 @@ pub struct General {
     pub first_run_done: bool,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
+}
+
+/// One entry of a list the user built. `load_lenient` tries a list as one value, so a single entry
+/// that does not fit (hand-edited, or of a shape a newer Glimpsfy wrote) would cost the whole
+/// list; such an entry is kept here as it is and written back unchanged, and the pages skip it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Kept<T> {
+    Known(T),
+    Other(Value),
 }
 
 impl Default for General {
@@ -458,6 +471,73 @@ impl Default for Output {
             send_targets: Vec::new(),
             extra: Map::new(),
         }
+    }
+}
+
+// ------------------------------------------------------------------------------------ beautify
+
+/// The presets of a list that this version reads; the others stay in the list as they are.
+fn read_presets(presets: &[Kept<BeautifyPreset>]) -> impl Iterator<Item = &BeautifyPreset> {
+    presets.iter().filter_map(|item| match item {
+        Kept::Known(preset) => Some(preset),
+        Kept::Other(_) => None,
+    })
+}
+
+/// Settings › Beautify: the presets, and whether one is put around every capture by itself.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Beautify {
+    /// Every screenshot gets `preset` unless F skips it for that capture.
+    pub auto: bool,
+    /// The id of the preset `auto` applies, and F turns on when `auto` is off.
+    pub preset: String,
+    /// In the order Settings lists them; a new installation has the built-in ones.
+    pub presets: Vec<Kept<BeautifyPreset>>,
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+impl Default for Beautify {
+    fn default() -> Self {
+        Beautify {
+            auto: false,
+            preset: glimpsfy_annotate::DEFAULT_PRESET.into(),
+            presets: glimpsfy_annotate::built_in_presets().into_iter().map(Kept::Known).collect(),
+            extra: Map::new(),
+        }
+    }
+}
+
+impl Beautify {
+    /// The presets this version reads, in their order; one a newer version wrote stays in the
+    /// file without being offered.
+    pub fn offered(&self) -> impl Iterator<Item = &BeautifyPreset> {
+        read_presets(&self.presets)
+    }
+
+    /// The style of preset `id` with its id in it, or `None` when no preset this version reads
+    /// has that id.
+    pub fn style(&self, id: &str) -> Option<BeautifyStyle> {
+        read_presets(&self.presets)
+            .find(|p| p.id == id)
+            .map(|p| BeautifyStyle { preset: Some(p.id.clone()), ..p.style.clone() })
+    }
+
+    /// The style F turns on: the chosen preset's, else the first one this version reads, else
+    /// Ocean as it ships.
+    pub fn chosen(&self) -> BeautifyStyle {
+        self.style(&self.preset)
+            .or_else(|| read_presets(&self.presets).next().and_then(|p| self.style(&p.id)))
+            .unwrap_or_else(|| {
+                let ocean = glimpsfy_annotate::built_in_presets().swap_remove(0);
+                BeautifyStyle { preset: Some(ocean.id), ..ocean.style }
+            })
+    }
+
+    /// What a new capture applies by itself: the chosen preset when `auto` is on.
+    pub fn automatic(&self) -> Option<BeautifyStyle> {
+        self.auto.then(|| self.chosen())
     }
 }
 
@@ -1008,6 +1088,36 @@ mod tests {
         check(&store.get());
         store.set(store.get()).unwrap();
         check(&SettingsStore::open_with(path, SecretFields::new()).get());
+    }
+
+    /// A beautify preset whose background a newer Glimpsfy added (a kind this version does not
+    /// know) is not offered, and it survives a load and the next save in its place, as does a
+    /// readable preset's unknown field; the presets the user made are not reset to the built-in
+    /// ones.
+    #[test]
+    fn a_preset_with_an_unknown_background_survives_a_load_and_a_save() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let style = |background: Value| json!({ "padding": 40.0, "corner": 10.0, "shadow": "soft", "background": background, "frame": "none" });
+        let presets = json!([
+            { "id": "mine", "name": "Mine", "style": style(json!({ "kind": "solid", "color": "#112233" })), "pinned": true },
+            { "id": "mesh", "name": "Mesh", "style": style(json!({ "kind": "mesh", "points": [[0, 0, "#ff0000"]] })) },
+            { "id": "ocean", "name": null, "style": style(json!({ "kind": "gradient", "stops": ["#2563ff", "#2fc6c0"] })) }
+        ]);
+        let file = json!({ "beautify": { "auto": true, "preset": "mesh", "presets": presets } });
+        fs::write(&path, serde_json::to_vec(&file).unwrap()).unwrap();
+
+        let store = SettingsStore::open_with(path.clone(), SecretFields::new());
+        let loaded = store.get();
+        let offered: Vec<&str> = read_presets(&loaded.beautify.presets).map(|p| p.id.as_str()).collect();
+        assert_eq!(offered, ["mine", "ocean"]);
+        // The automatic preset cannot be read, so a capture gets the first one that can.
+        assert_eq!(loaded.beautify.automatic().and_then(|s| s.preset).as_deref(), Some("mine"));
+
+        store.set(loaded).unwrap();
+        let written: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(written["beautify"]["presets"], presets);
+        assert_eq!(written["beautify"]["preset"], "mesh");
     }
 
     /// Saving replaces the file through a rename: the old file is never truncated in place, the

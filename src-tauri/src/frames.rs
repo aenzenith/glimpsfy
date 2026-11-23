@@ -14,8 +14,15 @@
 //!
 //! Each request encodes on its own thread, so the displays of a multi-display capture are served
 //! in parallel and the main thread never waits for a frame.
+//!
+//! The scheme also serves a still outside a capture: the preview of a beautify background
+//! image (`glimpsfy-frame://background/<longest side>?t=<percent-encoded path>`, a PNG). A
+//! background is served only when a preset of Settings › Beautify, the open capture's style, an
+//! editor document or the user's own pick in a file panel names it, so a page cannot read any
+//! other file through the scheme; a missing one answers 404, which the panel shows as missing.
 
 use std::borrow::Cow;
+use std::sync::Mutex;
 use std::time::Instant;
 
 use glimpsfy_capture::{DisplayId, Frame, PngEffort};
@@ -72,20 +79,95 @@ impl FrameFormat {
 
 /// The address an overlay fetches its frame from.
 pub fn frame_url(display: DisplayId, token: &str) -> String {
-    if cfg!(windows) {
-        format!("http://{SCHEME}.localhost/display/{}?t={token}", display.0)
-    } else {
-        format!("{SCHEME}://display/{}?t={token}", display.0)
+    url(Kind::Display, display, token)
+}
+
+/// What a frame address names: a display's frame of the open capture, or a background preview.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    Display,
+    Background,
+}
+
+impl Kind {
+    fn name(self) -> &'static str {
+        match self {
+            Kind::Display => "display",
+            Kind::Background => "background",
+        }
     }
 }
 
-/// The display and token of a frame address, in either form of `frame_url`.
-fn parse(uri: &tauri::http::Uri) -> Option<(DisplayId, String)> {
+fn url(kind: Kind, display: DisplayId, token: &str) -> String {
+    let kind = kind.name();
+    if cfg!(windows) {
+        format!("http://{SCHEME}.localhost/{kind}/{}?t={token}", display.0)
+    } else {
+        format!("{SCHEME}://{kind}/{}?t={token}", display.0)
+    }
+}
+
+/// The kind, display and token of a frame address, in either form of `url`.
+fn parse(uri: &tauri::http::Uri) -> Option<(Kind, DisplayId, String)> {
     let path = uri.path().trim_matches('/');
-    let id = if uri.host() == Some("display") { path } else { path.strip_prefix("display/")? };
+    let (kind, id) = match uri.host() {
+        Some("display") => (Kind::Display, path),
+        Some("background") => (Kind::Background, path),
+        _ => match path.split_once('/')? {
+            ("display", id) => (Kind::Display, id),
+            ("background", id) => (Kind::Background, id),
+            _ => return None,
+        },
+    };
     let id = id.parse().ok()?;
     let token = uri.query()?.split('&').find_map(|pair| pair.strip_prefix("t="))?;
-    Some((DisplayId(id), token.to_string()))
+    Some((kind, DisplayId(id), token.to_string()))
+}
+
+/// The files the user picked in a file panel (`app_choose_file`), which a beautify panel may show
+/// before any style names them.
+static CHOSEN: Mutex<Vec<std::path::PathBuf>> = Mutex::new(Vec::new());
+
+/// Lets the preview of `path` be served: the user picked it.
+pub fn allow_background(path: &std::path::Path) {
+    let mut chosen = CHOSEN.lock().unwrap_or_else(|p| p.into_inner());
+    if !chosen.iter().any(|p| p == path) {
+        chosen.push(path.to_path_buf());
+    }
+}
+
+/// Whether a style, a document or a pick names `path` as a background image.
+fn background_allowed(app: &tauri::AppHandle, path: &std::path::Path) -> bool {
+    use glimpsfy_annotate::Background;
+    let named = |style: &glimpsfy_annotate::BeautifyStyle| matches!(&style.background, Background::Image { path: p, .. } if std::path::Path::new(p) == path);
+    let state = app.state::<AppState>();
+    let settings = state.settings.get();
+    settings.beautify.offered().any(|preset| named(&preset.style))
+        || state.sessions.current().and_then(|s| s.beautify()).is_some_and(|style| named(&style))
+        || crate::commands::render::editor_backgrounds().iter().any(|p| std::path::Path::new(p) == path)
+        || CHOSEN.lock().unwrap_or_else(|p| p.into_inner()).iter().any(|p| p == path)
+}
+
+/// The preview of a background image, at most `side` pixels on its longer side, as an sRGB PNG
+/// the page's canvas converts into its own colour space.
+fn background_preview(app: &tauri::AppHandle, encoded: &str, side: u32) -> Result<Vec<u8>, StatusCode> {
+    let path = crate::commands::render::percent_decode(encoded).ok_or(StatusCode::BAD_REQUEST)?;
+    let path = std::path::Path::new(&path);
+    if !background_allowed(app, path) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    let image =
+        crate::output::beautify::load_image(path, glimpsfy_capture::ColorSpace::Srgb).ok_or(StatusCode::NOT_FOUND)?;
+    let side = side.clamp(64, 2048);
+    let longest = image.size.width.max(image.size.height);
+    let image = if longest > side {
+        let k = side as f64 / longest as f64;
+        let scaled = |v: u32| ((v as f64 * k).round() as u32).max(1);
+        image.resized(glimpsfy_capture::PhysicalSize::new(scaled(image.size.width), scaled(image.size.height)))
+    } else {
+        image
+    };
+    image.encode_png(PngEffort::Fastest).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
 /// The scheme's handler (`register_asynchronous_uri_scheme_protocol`).
@@ -102,9 +184,22 @@ fn serve(app: &tauri::AppHandle, request: &Request<Vec<u8>>) -> Response<Cow<'st
             .body(Cow::Borrowed(&[][..]))
             .unwrap_or_default()
     };
-    let Some((display, token)) = parse(request.uri()) else {
+    let Some((kind, display, token)) = parse(request.uri()) else {
         return reply(StatusCode::BAD_REQUEST);
     };
+    if kind == Kind::Background {
+        // The number of the address is the longest side the preview needs.
+        return match background_preview(app, &token, display.0) {
+            Ok(png) => Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, FrameFormat::Png.content_type())
+                .header(header::CACHE_CONTROL, "no-store")
+                .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                .body(Cow::Owned(png))
+                .unwrap_or_else(|_| reply(StatusCode::INTERNAL_SERVER_ERROR)),
+            Err(status) => reply(status),
+        };
+    }
     let Some(session) = app.state::<AppState>().sessions.current() else {
         return reply(StatusCode::NOT_FOUND);
     };

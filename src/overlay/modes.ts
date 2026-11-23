@@ -4,7 +4,7 @@
 // so Copy and Save deliver the window with its real transparency instead of the crop.
 // Owner: capture (milestone 1); the page wires it in `App.vue`.
 
-import { capture_close, capture_pick_window, overlay_failed, type OverlayFrame, type Selection } from "../lib/api/capture";
+import { capture_close, capture_pick_window, overlay_failed, type OverlayFrame, type PickedWindow, type Selection } from "../lib/api/capture";
 import { ocr_copy_text } from "../lib/api/ocr";
 import { output_copy, output_save } from "../lib/api/output";
 
@@ -16,10 +16,21 @@ export type Finish = "stay" | "done" | "empty";
  * Runs the mode's action on a finished selection. `windowId` is the window the user clicked, if
  * the selection is a window. A failure is thrown, and the page shows it and keeps the selection.
  */
-export async function finish(frame: OverlayFrame, selection: Selection, windowId: number | null): Promise<Finish> {
+export async function finish(
+  frame: OverlayFrame,
+  selection: Selection,
+  windowId: number | null,
+  hooks: {
+    /** The beautify changes sent so far (F during the drag); a copy or save waits for them. */
+    settled?: () => Promise<void>;
+    /** The window's own image, whose size the beautify panel shows. */
+    picked?: (window: PickedWindow) => void;
+  } = {},
+): Promise<Finish> {
+  const settled = hooks.settled ?? (() => Promise.resolve());
   if (windowId !== null) {
     try {
-      await capture_pick_window(frame.captureId, selection.displayId, windowId);
+      hooks.picked?.(await capture_pick_window(frame.captureId, selection.displayId, windowId));
     } catch (error) {
       // Without the window's own image, the crop of the frozen frame is delivered instead.
       console.warn("[glimpsfy] the window could not be captured on its own", error);
@@ -29,9 +40,11 @@ export async function finish(frame: OverlayFrame, selection: Selection, windowId
     case "annotate":
       return "stay";
     case "copy":
+      await settled();
       await output_copy(selection);
       return "done";
     case "save":
+      await settled();
       await output_save(selection);
       return "done";
     case "copyText": {

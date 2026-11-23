@@ -312,12 +312,10 @@ fn upload_selection(
 ) -> CommandResult<UploadStarted> {
     let settings = app.state::<AppState>().settings.get();
     let provider = chosen(provider_id, &settings)?;
-    // The same pixels Copy takes: the picked window's own image, or the crop of the frame.
+    // The same pixels Copy takes: the picked window's own image, or the crop of the frame,
+    // scaled and beautified as a copy is.
     let (frame, origin) = crate::output::take(app, &selection)?;
-    let frame = match settings.output.retina {
-        RetinaScale::ScaleTo1x => frame.at_1x().unwrap_or(frame),
-        RetinaScale::Keep2x => frame,
-    };
+    let frame = crate::output::finish_pixels(frame, &origin, settings.output.retina);
     let file_name = capture_file_name(&settings, &origin, &frame);
     let png: Arc<[u8]> = frame.encode(ImageEncoding::Png(PngEffort::Balanced))?.into();
     let pending = uploader()?.begin(

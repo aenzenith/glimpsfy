@@ -626,9 +626,10 @@ fn queue_editor_output(app: &AppHandle, ticket: EditorTicket, handoff: CaptureHa
     let _ = queue.lock().unwrap_or_else(|p| p.into_inner()).send((app.clone(), ticket, handoff));
 }
 
-/// Whether an annotation document holds any drawing (a crop counts).
+/// Whether an annotation document changes the image: a drawing (a crop counts) or a beautify
+/// style, either of which makes the output a new picture.
 fn has_drawings(document: Option<&str>) -> bool {
-    document.and_then(|d| glimpsfy_annotate::Document::from_json(d).ok()).is_some_and(|d| !d.objects.is_empty())
+    document.and_then(|d| glimpsfy_annotate::Document::from_json(d).ok()).is_some_and(|d| d.changes_image())
 }
 
 /// Records one output of an editor image: adds its entry the first time and revises it after

@@ -13,6 +13,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { computed, nextTick, onMounted, onUnmounted, provide, reactive, ref, shallowRef, watch } from "vue";
 
+import BeautifyPanel from "../components/BeautifyPanel.vue";
 import GIcon from "../components/GIcon.vue";
 import TipWrap from "../components/TipWrap.vue";
 import OptionsStrip from "../annotate/OptionsStrip.vue";
@@ -24,8 +25,23 @@ import { defaultPrefs, flushPrefs, loadPrefs, savePrefs, type ToolId as Annotate
 import type { Bytes, PixelRect } from "../annotate/redact";
 import { TEXT_LAYER, textLayerComponent, type View } from "../annotate/textLayer";
 import { thumbnailOfPixels, uploadFlow } from "../annotate/upload";
-import { CURRENT_VERSION, parseDocument, serializeDocument, type AnnotationDocument } from "../lib/annotate";
-import { ApiError, onWindow } from "../lib/api/core";
+import {
+  IMAGE_FALLBACK,
+  IMAGE_TYPES,
+  chosenStyle,
+  drawBeautified,
+  edgeMedian,
+  layoutOf,
+  outputSize,
+  presetName,
+  readPresets,
+  styleOf,
+  useBackgroundImage,
+  withNewPreset,
+  withPresetStyle,
+} from "../annotate/beautify";
+import { CURRENT_VERSION, parseDocument, serializeDocument, writeBeautify, type AnnotationDocument, type BeautifyStyle } from "../lib/annotate";
+import { ApiError, on, onWindow } from "../lib/api/core";
 import {
   EDITOR_OPENED,
   editor_close,
@@ -41,8 +57,11 @@ import {
   type EditorImage,
   type RenderedImage,
 } from "../lib/api/render";
-import { pin_open } from "../lib/api/windows";
+import { settings_get, settings_set } from "../lib/api/settings";
+import { app_choose_file, pin_open } from "../lib/api/windows";
+import { SETTINGS_CHANGED } from "../lib/events";
 import { language, t, type Key } from "../lib/i18n";
+import type { ImageFormat, Settings } from "../lib/settings";
 import { TOOLS, toolForKey, type ToolId } from "../overlay/tools";
 import FirstUploadDialog from "../upload/FirstUploadDialog.vue";
 import ObjectsPanel from "./ObjectsPanel.vue";
@@ -56,7 +75,7 @@ const HANDLE_HIT = 14;
 const OPTIONS_ROOM = 60;
 
 function emptyDocument(width: number, height: number, scale: number): AnnotationDocument {
-  return { version: CURRENT_VERSION, image: { width, height }, scale, objects: [] };
+  return { version: CURRENT_VERSION, image: { width, height }, scale, objects: [], beautify: null };
 }
 
 // ------------------------------------------------------------------------------- the state
@@ -167,7 +186,8 @@ function screen(r: { x: number; y: number; width: number; height: number }) {
 }
 const boxStyle = (r: { x: number; y: number; w: number; h: number }) => ({ left: px(r.x), top: px(r.y), width: px(r.w), height: px(r.h) });
 
-const imageBox = computed(() => (area.value ? boxStyle(screen(area.value)) : null));
+/** The lift's shadow goes round the beautified image when there is a style. */
+const liftBox = computed(() => (framed.value ? boxStyle(screen(framed.value)) : null));
 const gridStyle = computed(() => {
   if (!area.value || percent.value < GRID_ZOOM - 0.5) return null;
   const k = view.value.k;
@@ -187,6 +207,191 @@ provide(TEXT_LAYER, {
   scale,
   visible: textLayerVisible,
 });
+
+// ------------------------------------------------------------------------------ beautify
+//
+// The document holds the image's beautify style (B11), so each change in the panel is an undo
+// step and the history keeps the style editable. The canvas draws the background, the shadow and
+// the frame under the surface, and the surface's corners are rounded to the style's.
+
+const settings = shallowRef<Settings | null>(null);
+const beautifyOpen = ref(false);
+const beautifyEl = ref<InstanceType<typeof BeautifyPanel> | null>(null);
+const ringEl = ref<HTMLCanvasElement | null>(null);
+/** Save writes PNG for this image alone, chosen over JPEG in the panel. */
+const pngOnce = ref(false);
+const beautifyStyle = computed(() => (rev.value, engine.doc.beautify));
+/** The style the switch turns on: the last one this image had, else the chosen preset. */
+const lastStyle = shallowRef<BeautifyStyle | null>(null);
+watch(beautifyStyle, (style) => {
+  if (style) lastStyle.value = style;
+});
+const panelStyle = computed(() => beautifyStyle.value ?? lastStyle.value ?? chosenStyle(settings.value));
+const presets = computed(() => readPresets(settings.value?.beautify));
+const autoId = computed(() => (settings.value?.beautify?.auto ? settings.value.beautify.preset : null));
+const outputFormat = computed<ImageFormat>(() => settings.value?.output.format ?? "png");
+/** The crop shows the whole image, so the style waits until the crop is applied. */
+const ringShown = computed(() => beautifyStyle.value !== null && !cropMode.value && area.value !== null);
+const ringLayout = computed(() => {
+  const a = area.value;
+  const style = beautifyStyle.value;
+  return a && style && ringShown.value ? layoutOf({ from: a, scale: scale.value, style, window: false }) : null;
+});
+/** What the view fits: the beautified image around the area, or the area alone. */
+const framed = computed<PixelRect | null>(() => {
+  const a = area.value;
+  const L = ringLayout.value;
+  if (!a || !L) return a;
+  return { x: a.x - L.pad, y: a.y - L.pad - L.bar, width: L.width, height: L.height };
+});
+/** The image's size in points, which the panel turns into the output's. */
+const points = computed(() => {
+  const a = area.value;
+  const k = scale.value || 1;
+  return a ? { width: a.width / k, height: a.height / k } : { width: 0, height: 0 };
+});
+/** The Match colour of the image's outer band; the core takes it from the rendered pixels. */
+const matchColor = computed<[number, number, number] | null>(() => {
+  const s = source.value;
+  const a = area.value;
+  if (!s || !a || (!beautifyOpen.value && panelStyle.value.background.kind !== "match")) return null;
+  return edgeMedian(s.pixels, a);
+});
+const backgroundImage = useBackgroundImage(() => {
+  const bg = panelStyle.value.background;
+  return bg.kind === "image" ? bg.path : null;
+}, 2048);
+/** The surface's corners in screen points: the image's own lower corners under a window frame. */
+const imageRadius = computed(() => {
+  const L = ringLayout.value;
+  if (!L || L.radius <= 0) return undefined;
+  const r = `${L.radius * view.value.k}px`;
+  return L.bar ? `0 0 ${r} ${r}` : r;
+});
+const beautifyFacts = computed(() => {
+  const style = beautifyStyle.value;
+  if (!style) return null;
+  const size = outputSize(points.value.width, points.value.height, style, false);
+  const format = pngOnce.value ? "PNG" : { png: "PNG", jpeg: "JPEG", webp: "WebP" }[outputFormat.value];
+  const preset = presets.value.find((p) => p.id === style.preset);
+  return `${size.width} × ${size.height} pt · ${format} · ${preset ? presetName(preset) : t("beautify.title")}`;
+});
+
+let ringFrame = 0;
+function drawRing(): void {
+  ringFrame = 0;
+  const el = ringEl.value;
+  const s = source.value;
+  const a = area.value;
+  const f = framed.value;
+  const style = beautifyStyle.value;
+  if (!el || !s || !a || !f || !style || !ringShown.value) return;
+  const dpr = window.devicePixelRatio || 1;
+  const w = Math.max(1, Math.round(room.width * dpr));
+  const h = Math.max(1, Math.round(room.height * dpr));
+  if (el.width !== w) el.width = w;
+  if (el.height !== h) el.height = h;
+  const ctx = el.getContext("2d", { colorSpace: s.colorSpace });
+  if (!ctx) return;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  const { k, ox, oy } = view.value;
+  ctx.setTransform(k * dpr, 0, 0, k * dpr, (ox + f.x * k) * dpr, (oy + f.y * k) * dpr);
+  ctx.imageSmoothingQuality = "high";
+  drawBeautified(ctx, {
+    image: null,
+    from: a,
+    scale: scale.value,
+    style,
+    window: false,
+    space: s.colorSpace,
+    match: matchColor.value,
+    backgroundImage: backgroundImage.image.value,
+    jpeg: outputFormat.value === "jpeg" && !pngOnce.value,
+    ringOnly: true,
+  });
+}
+watch(
+  () => [ringEl.value, ringShown.value, view.value, framed.value, beautifyStyle.value, matchColor.value, backgroundImage.image.value, outputFormat.value, pngOnce.value, room.width, room.height],
+  () => {
+    if (!ringFrame) ringFrame = requestAnimationFrame(drawRing);
+  },
+  { flush: "post" },
+);
+
+/** The rail's button opens the panel over the canvas, or closes it. */
+function toggleBeautifyPanel(): void {
+  if (!source.value) return;
+  beautifyOpen.value = !beautifyOpen.value;
+  if (beautifyOpen.value) void loadSettings();
+}
+
+/** F and the panel's switch: on with the last style, or off; one undo step either way. */
+function toggleBeautify(next = beautifyStyle.value === null): void {
+  if (!source.value || next === (beautifyStyle.value !== null)) return;
+  engine.setBeautify(next ? panelStyle.value : null);
+}
+
+const changeBeautify = (style: BeautifyStyle, step: boolean) => engine.setBeautify(style, step);
+
+function pickPreset(id: string): void {
+  const preset = presets.value.find((p) => p.id === id);
+  if (preset) engine.setBeautify(styleOf(preset));
+}
+
+async function chooseBackground(): Promise<void> {
+  try {
+    const path = await app_choose_file([{ name: t("beautify.images"), extensions: IMAGE_TYPES }]);
+    if (!path) return;
+    const style = panelStyle.value;
+    const bg = style.background;
+    const fallback = bg.kind === "gradient" ? bg.stops : bg.kind === "image" ? bg.fallback : IMAGE_FALLBACK;
+    engine.setBeautify({ ...style, background: { kind: "image", path, fallback } });
+  } catch (error) {
+    console.warn("[glimpsfy] the image could not be chosen", error);
+  }
+}
+
+async function loadSettings(): Promise<void> {
+  try {
+    settings.value = await settings_get();
+  } catch (error) {
+    console.warn("[glimpsfy] the beautify presets were not read", error);
+  }
+}
+
+/** Writes the panel's values into its preset in Settings › Beautify. */
+async function updatePreset(): Promise<void> {
+  const style = panelStyle.value;
+  if (!style.preset) return;
+  try {
+    const next = withPresetStyle(await settings_get(), style.preset, style);
+    await settings_set(next);
+    settings.value = next;
+    const preset = readPresets(next.beautify).find((p) => p.id === style.preset);
+    if (preset) say(t("beautify.updated", { name: presetName(preset) }));
+  } catch (error) {
+    console.warn("[glimpsfy] the preset was not updated", error);
+    say(t("beautify.failed"));
+  }
+}
+
+/** Adds the panel's values as a new preset, which the image's style then names; naming it is no
+ * undo step of its own. */
+async function createPreset(name: string): Promise<void> {
+  try {
+    const made = withNewPreset(await settings_get(), name, panelStyle.value);
+    await settings_set(made.settings);
+    settings.value = made.settings;
+    const style = { ...panelStyle.value, preset: made.id };
+    if (beautifyStyle.value) engine.setBeautify(style, false);
+    else lastStyle.value = style;
+    say(t("beautify.added", { name }));
+  } catch (error) {
+    console.warn("[glimpsfy] the preset was not added", error);
+    say(t("beautify.failed"));
+  }
+}
 
 // ------------------------------------------------------------------------------- messages
 
@@ -281,6 +486,8 @@ async function show(img: EditorImage): Promise<void> {
     source.value = next;
     fileBytes.value = img.encoding === "file" ? buffer.byteLength : null;
     fromHistory.value = img.entryId !== null;
+    pngOnce.value = false;
+    lastStyle.value = null;
     engine.setTool(null);
     // Drawings handed over by the overlay are not kept anywhere yet; an edit reopened from the
     // history is already what its entry holds.
@@ -362,7 +569,10 @@ function rendered(): RenderedImage | null {
   if (!s || !img) return null;
   engine.finishText();
   const r = renderExport(s, engine.doc);
-  return r ? { source: { kind: "editor", token: img.token }, width: r.width, height: r.height, colorSpace: r.colorSpace, data: r.data } : null;
+  if (!r) return null;
+  // The core puts the document's beautify style around the pixels (`output/beautify.rs`).
+  const beautify = engine.doc.beautify ? writeBeautify(engine.doc.beautify) : null;
+  return { source: { kind: "editor", token: img.token }, width: r.width, height: r.height, colorSpace: r.colorSpace, data: r.data, beautify, format: pngOnce.value ? "png" : null };
 }
 
 /** Copy, Save and Save as; resolves whether the image left. */
@@ -465,23 +675,23 @@ watch(
 watch(pick, measureOptions, { flush: "post" });
 
 function openingView(): void {
-  if (!area.value) return;
-  const chosen = opening(area.value, room, scale.value);
+  if (!framed.value) return;
+  const chosen = opening(framed.value, room, scale.value);
   view.value = chosen.view;
   zoomMode.value = chosen.mode;
 }
 
 function applyFit(mode: "fit" | "width"): void {
-  if (!area.value) return;
-  view.value = mode === "fit" ? fit(area.value, room, scale.value) : fitWidth(area.value, room, scale.value);
+  if (!framed.value) return;
+  view.value = mode === "fit" ? fit(framed.value, room, scale.value) : fitWidth(framed.value, room, scale.value);
   zoomMode.value = mode;
 }
 
 function zoomTo(percentValue: number, at?: { x: number; y: number }): void {
-  if (!area.value) return;
+  if (!framed.value) return;
   const p = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, percentValue));
   const centre = at ?? { x: room.width / 2, y: (room.top + room.height) / 2 };
-  view.value = clampPan(zoomAt(view.value, kOf(p, scale.value), centre.x, centre.y), area.value, room);
+  view.value = clampPan(zoomAt(view.value, kOf(p, scale.value), centre.x, centre.y), framed.value, room);
   zoomMode.value = "custom";
 }
 
@@ -496,6 +706,14 @@ watch(
   () => (area.value ? `${area.value.x},${area.value.y},${area.value.width},${area.value.height}` : ""),
   (now, before) => {
     if (now && before && now !== before) applyFit(zoomMode.value === "width" ? "width" : "fit");
+  },
+);
+// A beautify style that grows or shrinks the image refits a view that is fitted, and leaves a
+// zoom the user chose as it is.
+watch(
+  () => (framed.value ? `${framed.value.x},${framed.value.y},${framed.value.width},${framed.value.height}` : ""),
+  (now, before) => {
+    if (now && before && now !== before && zoomMode.value !== "custom") applyFit(zoomMode.value);
   },
 );
 
@@ -530,8 +748,8 @@ function onPointerDown(e: PointerEvent): void {
 }
 
 function onPointerMove(e: PointerEvent): void {
-  if (pan && area.value) {
-    view.value = clampPan({ k: pan.view.k, ox: pan.view.ox + e.clientX - pan.x, oy: pan.view.oy + e.clientY - pan.y }, area.value, room);
+  if (pan && framed.value) {
+    view.value = clampPan({ k: pan.view.k, ox: pan.view.ox + e.clientX - pan.x, oy: pan.view.oy + e.clientY - pan.y }, framed.value, room);
     zoomMode.value = "custom";
     return;
   }
@@ -585,7 +803,7 @@ function onWheel(e: WheelEvent): void {
     zoomTo(percent.value * Math.exp(-e.deltaY * 0.01), local(e));
     return;
   }
-  view.value = clampPan({ k: view.value.k, ox: view.value.ox - e.deltaX, oy: view.value.oy - e.deltaY }, area.value, room);
+  view.value = clampPan({ k: view.value.k, ox: view.value.ox - e.deltaX, oy: view.value.oy - e.deltaY }, framed.value ?? area.value, room);
   zoomMode.value = "custom";
 }
 
@@ -640,7 +858,9 @@ function onKeyDown(e: KeyboardEvent): void {
   // A dialog that took the key (the first-upload question's Esc) has prevented its default.
   if (sheet.value || uploadAsk.value || e.defaultPrevented) return;
   const target = e.target as HTMLElement | null;
-  if (target && (target.isContentEditable || ["INPUT", "SELECT", "TEXTAREA"].includes(target.tagName))) return;
+  // The beautify panel's sliders keep only their own keys (`BeautifyPanel.vue`).
+  const slider = target instanceof HTMLInputElement && target.type === "range";
+  if (target && (target.isContentEditable || (!slider && ["INPUT", "SELECT", "TEXTAREA"].includes(target.tagName)))) return;
   const command = e.metaKey || e.ctrlKey;
   if (command && e.altKey && e.code === "KeyO") {
     e.preventDefault();
@@ -670,7 +890,9 @@ function onKeyDown(e: KeyboardEvent): void {
   }
   if (e.key === "Escape") {
     e.preventDefault();
-    if (textLayerVisible.value) textLayerVisible.value = false;
+    if (beautifyOpen.value) {
+      if (!beautifyEl.value?.escape()) beautifyOpen.value = false;
+    } else if (textLayerVisible.value) textLayerVisible.value = false;
     else if (engine.tool) engine.setTool(null);
     return;
   }
@@ -696,6 +918,12 @@ function onKeyDown(e: KeyboardEvent): void {
     return;
   }
   if (e.altKey) return;
+  // F turns the image's beautify style on or off; ⇧F is free.
+  if (e.key.toLowerCase() === "f" && !e.shiftKey && !cropMode.value) {
+    e.preventDefault();
+    toggleBeautify();
+    return;
+  }
   const match = toolForKey(e.key);
   if (match) chooseTool(match.id);
 }
@@ -735,7 +963,9 @@ onMounted(async () => {
     engine.rev.value += 1;
   });
 
+  void loadSettings();
   const win = getCurrentWebviewWindow();
+  stops.push(await on<Settings>(SETTINGS_CHANGED, (next) => (settings.value = next)));
   stops.push(await onWindow<EditorImage>(EDITOR_OPENED, (img) => void incoming(img)));
   stops.push(
     await getCurrentWebview().onDragDropEvent((event) => {
@@ -771,6 +1001,7 @@ onUnmounted(() => {
   window.removeEventListener("keyup", onKeyUp);
   resize?.disconnect();
   optionsResize.disconnect();
+  cancelAnimationFrame(ringFrame);
   stops.forEach((stop) => stop());
 });
 </script>
@@ -835,12 +1066,28 @@ onUnmounted(() => {
             </button>
           </TipWrap>
         </template>
+        <span class="e-rail-end">
+          <TipWrap :tip="t('beautify.title')" :caps="['F']" side="right">
+            <button
+              type="button"
+              class="g-btn"
+              :aria-label="t('beautify.title')"
+              :aria-expanded="beautifyOpen"
+              :data-state="beautifyOpen ? 'pressed' : undefined"
+              :data-on="beautifyStyle ? '' : undefined"
+              :disabled="!source"
+              @click="toggleBeautifyPanel"
+            >
+              <GIcon name="beautify" />
+            </button>
+          </TipWrap>
+        </span>
       </div>
       <div
         ref="canvasEl"
         class="e-canvas"
         :aria-label="t('editor.canvas')"
-        :style="{ cursor }"
+        :style="{ cursor, '--e-image-radius': imageRadius }"
         @pointerdown="onPointerDown"
         @pointermove="onPointerMove"
         @pointerup="onPointerUp"
@@ -849,7 +1096,9 @@ onUnmounted(() => {
         @dblclick="onDoubleClick"
         @wheel="onWheel"
       >
-        <div v-if="imageBox" class="e-lift" :style="imageBox" aria-hidden="true" />
+        <div v-if="liftBox" class="e-lift" :style="liftBox" aria-hidden="true" />
+        <!-- The beautify style's background, shadow and frame, under the surface. -->
+        <canvas v-if="ringShown && source" :key="source.colorSpace" ref="ringEl" class="e-ring" aria-hidden="true" />
         <Surface v-if="source" :engine="engine" :source="source" :view="view" :area="area" />
         <div v-if="gridStyle" class="e-pixgrid" :style="gridStyle" aria-hidden="true" />
 
@@ -921,13 +1170,40 @@ onUnmounted(() => {
           <div class="e-drop-title">{{ t("editor.drop.title", { name: dropName }) }}</div>
           <p class="e-drop-text">{{ t("editor.drop.text") }}</p>
         </div>
+        <BeautifyPanel
+          v-if="beautifyOpen && source && !cropMode"
+          ref="beautifyEl"
+          class="e-beautify"
+          variant="window"
+          scope="image"
+          :on="beautifyStyle !== null"
+          :current="panelStyle"
+          :presets="presets"
+          :auto-id="autoId"
+          :window="false"
+          :format="outputFormat"
+          :png-once="pngOnce"
+          :points="points"
+          :match="matchColor"
+          :missing="backgroundImage.missing.value"
+          :background-image="backgroundImage.image.value"
+          :space="source.colorSpace"
+          :preview="null"
+          @toggle="toggleBeautify"
+          @change="changeBeautify"
+          @pick="pickPreset"
+          @png="pngOnce = true"
+          @choose-image="chooseBackground"
+          @update="updatePreset"
+          @create="createPreset"
+        />
         <div v-if="message" class="g-hint g-glass e-message" role="status">{{ message }}</div>
       </div>
       <ObjectsPanel v-if="objectsOpen" :engine="engine" @close="objectsOpen = false" />
     </div>
 
     <footer class="g-statusbar e-status" data-size="large">
-      <span class="e-facts">{{ facts }}</span>
+      <span class="e-facts">{{ beautifyFacts ?? facts }}</span>
       <span class="g-spacer" />
       <span v-if="readout" class="e-readout">
         {{ t("editor.readout", { x: readout.x, y: readout.y }) }}
@@ -1026,6 +1302,32 @@ onUnmounted(() => {
   position: absolute;
   box-shadow: var(--win-shadow-lift);
   pointer-events: none;
+}
+/* The beautify style's ring fills the canvas and draws only around the image; the surface's
+   corners follow the style's (B11). */
+.e-ring {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+.e-canvas :deep(.a-canvas) {
+  border-radius: var(--e-image-radius, 0);
+}
+.e-beautify {
+  position: absolute;
+  left: 8px;
+  bottom: 10px;
+  z-index: 13;
+}
+.e-rail-end {
+  display: flex;
+  margin-top: auto;
+  padding-top: 8px;
+}
+.e-rail .g-btn[data-on] {
+  color: var(--surface-iris-text);
 }
 .e-pixgrid {
   position: absolute;

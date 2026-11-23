@@ -45,6 +45,7 @@ use crate::output::{Origin, OutputAction};
 use crate::settings::{self, WindowBackground};
 use crate::trace::{self, Mark, Trace};
 use crate::{capture_log, dev, events, output, permissions, windows, AppState};
+use glimpsfy_annotate::BeautifyStyle;
 
 /// A capture whose overlay never reported ready is closed after this, so a dead page cannot
 /// leave an invisible session that blocks the next shortcut.
@@ -132,6 +133,7 @@ struct Recent {
     displays: Vec<Display>,
     front: FrontWindow,
     taken_at: SystemTime,
+    beautify: Option<BeautifyStyle>,
 }
 
 /// A window the user clicked in window mode (or with Space), captured on its own.
@@ -140,7 +142,11 @@ pub struct Picked {
     pub display: DisplayId,
     /// The window's rectangle, display-local and logical; it may reach past the display.
     pub rect: LogicalRect,
+    /// The window's own image, without the fill of Settings › Output › Window background, so a
+    /// beautified window's shadow lies over the style's background.
     pub frame: Arc<Frame>,
+    /// That fill, which `output::take` puts behind a window that is not beautified.
+    pub fill: Option<[u8; 3]>,
     pub app_name: String,
     pub bundle_id: Option<String>,
     pub title: Option<String>,
@@ -168,6 +174,10 @@ pub struct CaptureSession {
     /// Every window on screen at capture time, frontmost first.
     pub all_windows: Vec<WindowInfo>,
     picked: Mutex<Option<Arc<Picked>>>,
+    /// The beautify style this capture's images leave with: the automatic preset of Settings ›
+    /// Beautify when the capture opened, then whatever the panel and F make of it
+    /// (`capture_set_beautify`). It belongs to this capture alone.
+    beautify: Mutex<Option<BeautifyStyle>>,
     /// The display whose overlay holds the selection; its overlay keeps the keyboard wherever
     /// the pointer goes.
     holder: Mutex<Option<DisplayId>>,
@@ -218,7 +228,17 @@ impl CaptureSession {
             pointer,
             mode: self.mode,
             after_selection: self.after,
+            beautify: self.beautify(),
         })
+    }
+
+    /// The beautify style of this capture, or `None` when its images leave as they are.
+    pub fn beautify(&self) -> Option<BeautifyStyle> {
+        self.beautify.lock().unwrap_or_else(|p| p.into_inner()).clone()
+    }
+
+    pub fn set_beautify(&self, style: Option<BeautifyStyle>) {
+        *self.beautify.lock().unwrap_or_else(|p| p.into_inner()) = style;
     }
 
     /// `display` took the selection (`held`) or lost it. Only the holder's own loss clears it: a
@@ -248,6 +268,8 @@ impl CaptureSession {
             bundle_id: self.front.bundle_id.clone(),
             window_title: self.front.title.clone(),
             taken_at: self.taken_at,
+            beautify: self.beautify(),
+            format: None,
         }
     }
 
@@ -290,6 +312,13 @@ fn after_for(mode: CaptureMode, setting: settings::AfterSelection) -> AfterSelec
         settings::AfterSelection::CopyAndClose => AfterSelection::Copy,
         settings::AfterSelection::SaveAndClose => AfterSelection::Save,
     }
+}
+
+/// The style a new capture in `mode` starts with: the automatic preset, for the modes that deliver
+/// a screenshot. Copy text delivers none.
+fn automatic_beautify(mode: CaptureMode, settings: &settings::Settings) -> Option<BeautifyStyle> {
+    let screenshot = !matches!(mode, CaptureMode::CopyText);
+    screenshot.then(|| settings.beautify.automatic()).flatten()
 }
 
 /// What a capture without the overlay does with its image: copy when the settings say copy,
@@ -533,6 +562,7 @@ fn capture_frozen(
         after: after_for(mode, settings.general.after_selection),
         all_windows,
         picked: Mutex::new(None),
+        beautify: Mutex::new(automatic_beautify(mode, &settings)),
         holder: Mutex::new(None),
         auto,
     })
@@ -765,6 +795,8 @@ fn capture_direct(
             bundle_id: front.bundle_id.clone(),
             window_title: front.title.clone(),
             taken_at,
+            beautify: automatic_beautify(kind.mode(), &settings),
+            format: None,
         };
         images.push((frame, origin));
     }
@@ -802,6 +834,8 @@ pub fn origin(app: &AppHandle, id: CaptureId, display: DisplayId) -> Option<Orig
         bundle_id: recent.front.bundle_id.clone(),
         window_title: recent.front.title.clone(),
         taken_at: recent.taken_at,
+        beautify: recent.beautify.clone(),
+        format: None,
     })
 }
 
@@ -927,6 +961,10 @@ pub fn pick_window(
         .ok_or_else(|| CommandError::not_found(format!("window {}", window.0)))?;
     let rect = info.bounds.relative_to(entry.display.frame.origin());
 
+    let fill = match state.settings.get().output.window_background {
+        WindowBackground::White => Some([255, 255, 255]),
+        WindowBackground::Transparent => None,
+    };
     let frame = if session.source == Source::Synthetic {
         // Without ScreenCaptureKit, the window's rectangle of the frozen frame stands in.
         let bounds = LogicalRect::new(0.0, 0.0, entry.display.frame.width, entry.display.frame.height);
@@ -941,10 +979,8 @@ pub fn pick_window(
             shows_cursor: settings.general.include_pointer,
             include_shadow: settings.output.window_shadow,
             keep_rounded_corners: settings.output.window_corners,
-            background: match settings.output.window_background {
-                WindowBackground::White => Some([255, 255, 255]),
-                WindowBackground::Transparent => None,
-            },
+            // The fill waits for the output (`fill`), which knows whether the window is beautified.
+            background: None,
         };
         let started = Instant::now();
         let taken = state.backend.capture_window(window, &options);
@@ -959,6 +995,7 @@ pub fn pick_window(
         display,
         rect,
         frame: Arc::new(frame),
+        fill,
         app_name: info.app_name,
         bundle_id: info.bundle_id,
         title: info.title,
@@ -1043,6 +1080,7 @@ pub fn close(app: &AppHandle, id: CaptureId, reason: CloseReason) -> Option<Arc<
         displays: session.displays.iter().map(|d| d.display.clone()).collect(),
         front: session.front.clone(),
         taken_at: session.taken_at,
+        beautify: session.beautify(),
     });
     Some(session)
 }

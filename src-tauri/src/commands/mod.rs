@@ -35,6 +35,7 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Syn
         capture::capture_windows,
         capture::overlay_failed,
         capture::capture_pick_window,
+        capture::capture_set_beautify,
         capture::capture_set_delay,
         capture::capture_delay,
         capture::capture_cancel_delay,

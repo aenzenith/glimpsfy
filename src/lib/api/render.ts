@@ -10,6 +10,7 @@ import type { CaptureId, ColorSpace, DisplayId } from "./capture";
 import type { OutputDone } from "./output";
 import type { Sent } from "./send";
 import type { ProviderId, UploadStarted } from "./upload";
+import type { ImageFormat } from "../settings";
 
 /** To the editor window: a new image is open. Payload: `EditorImage`. */
 export const EDITOR_OPENED = "editor://opened";
@@ -26,6 +27,12 @@ export type RenderedImage = {
   /** The part of the source the pixels show, in its pixels (`renderExport` gives it). From the
    * overlay it is the selection's crop of the frame, which Repeat Last Area captures again. */
   area?: { x: number; y: number; width: number; height: number } | null;
+  /** The format to use instead of the settings' (Save as PNG this time): a Save writes it, and
+   * Save as suggests it. */
+  format?: ImageFormat | null;
+  /** The editor's beautify style (`writeBeautify`), which the outputs put around the pixels; the
+   * overlay leaves it out, since its capture holds its style. */
+  beautify?: unknown;
 };
 
 export type EditorImage = {
@@ -52,6 +59,8 @@ async function rendered<T>(command: string, image: RenderedImage, providerId: Pr
     colorSpace: image.colorSpace,
     providerId,
     area: image.area ?? null,
+    format: image.format ?? null,
+    beautify: image.beautify ?? null,
   };
   // A body that is a view of a larger buffer would send the whole buffer.
   const view = image.data;

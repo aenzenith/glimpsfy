@@ -15,10 +15,14 @@
 //! - **Formats.** PNG at balanced effort for files and fast effort for the clipboard; JPEG at the
 //!   quality of the settings (50–100), over white where the image is transparent; WebP lossless
 //!   (no pure-Rust encoder makes lossy WebP), which ignores the quality.
+//! - **Beautify.** An image whose origin carries a style (`output/beautify.rs`) gets its padding,
+//!   background, corner, shadow and frame in [`finish`], after the scaling to 1×, so a copy, a
+//!   save, a path for Send to app and an upload of it hold the same pixels.
 //! - **Files.** A save never replaces a file (`output/naming.rs`). A save folder that is not
 //!   there (an unplugged drive), read-only or full sends the file to the default folder
 //!   (Pictures › Glimpsfy) instead, and the toast names the folder that failed.
 
+pub mod beautify;
 mod naming;
 mod platform;
 
@@ -29,6 +33,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use glimpsfy_annotate::BeautifyStyle;
 use glimpsfy_capture::{selection_to_frame, ColorInfo, Display, Frame, ImageEncoding, PixelFormat, PngEffort};
 use glimpsfy_history::EntryKind;
 use tauri::{AppHandle, Emitter, Manager};
@@ -80,6 +85,12 @@ pub struct Origin {
     pub window_title: Option<String>,
     /// When the pixels were taken (`{date}`, `{time}`).
     pub taken_at: SystemTime,
+    /// The beautify style the image leaves with, or `None` for the image as it is. A window
+    /// (`mode` is `Window`) gets only its padding and background.
+    pub beautify: Option<BeautifyStyle>,
+    /// The format of a Save chosen for this image alone (the beautify panel's Save as PNG this
+    /// time), over the one of the settings.
+    pub format: Option<ImageFormat>,
 }
 
 impl Origin {
@@ -100,6 +111,8 @@ impl Origin {
             bundle_id: None,
             window_title: None,
             taken_at: SystemTime::now(),
+            beautify: None,
+            format: None,
         }
     }
 }
@@ -180,13 +193,20 @@ pub(crate) fn finish(app: &AppHandle, images: Vec<(Frame, Origin)>, reason: Clos
     if let (true, Some((_, first))) = (settings.general.shutter_sound, images.first()) {
         shutter_once(first.capture_id);
     }
-    images
-        .into_iter()
-        .map(|(frame, origin)| match settings.output.retina {
-            RetinaScale::ScaleTo1x => (frame.at_1x().unwrap_or(frame), origin),
-            RetinaScale::Keep2x => (frame, origin),
-        })
-        .collect()
+    images.into_iter().map(|(frame, origin)| (finish_pixels(frame, &origin, settings.output.retina), origin)).collect()
+}
+
+/// The pixels an image leaves with: scaled to 1× when the settings say so, then beautified when
+/// its origin carries a style, so the style's points become pixels of the delivered image.
+pub(crate) fn finish_pixels(frame: Frame, origin: &Origin, retina: RetinaScale) -> Frame {
+    let frame = match retina {
+        RetinaScale::ScaleTo1x => frame.at_1x().unwrap_or(frame),
+        RetinaScale::Keep2x => frame,
+    };
+    match &origin.beautify {
+        Some(style) => beautify::apply(&frame, style, origin.mode == CaptureMode::Window),
+        None => frame,
+    }
 }
 
 // ------------------------------------------------------------------------- selection flows
@@ -197,10 +217,10 @@ pub fn copy(app: &AppHandle, selection: Selection) -> CommandResult<OutputDone> 
     deliver(app, frame, origin, OutputAction::Copy)
 }
 
-/// Saves the selection as a new file (⌘S).
-pub fn save(app: &AppHandle, selection: Selection) -> CommandResult<OutputDone> {
+/// Saves the selection as a new file (⌘S), in `format` instead of the settings' when it is set.
+pub fn save(app: &AppHandle, selection: Selection, format: Option<ImageFormat>) -> CommandResult<OutputDone> {
     let (frame, origin) = take(app, &selection)?;
-    deliver(app, frame, origin, OutputAction::Save)
+    deliver(app, frame, Origin { format, ..origin }, OutputAction::Save)
 }
 
 /// Saves the selection under a path (⇧⌘S). Without one, the overlays step aside for the save
@@ -241,7 +261,12 @@ pub(crate) fn take(app: &AppHandle, selection: &Selection) -> CommandResult<(Fra
         origin.app_name = Some(picked.app_name.clone());
         origin.bundle_id = picked.bundle_id.clone();
         origin.window_title = picked.title.clone();
-        return Ok(((*picked.frame).clone(), origin));
+        // A beautified window's shadow lies over the style's background instead of the fill.
+        let frame = match picked.fill {
+            Some(fill) if origin.beautify.is_none() && !picked.frame.is_opaque() => picked.frame.over(fill),
+            _ => (*picked.frame).clone(),
+        };
+        return Ok((frame, origin));
     }
 
     let rect = selection_to_frame(selection.rect, entry.display.frame.size(), entry.frame.size)
@@ -300,7 +325,7 @@ fn save_images(
     // The PNGs for the clipboard, with their frames and the results they belong to.
     let (mut pngs, mut frames, mut copied) = (Vec::new(), Vec::new(), Vec::new());
     for (i, (frame, origin)) in images.iter().enumerate() {
-        let format = target.and_then(format_of).unwrap_or(output.format);
+        let format = target.and_then(format_of).or(origin.format).unwrap_or(output.format);
         let (bytes, path, fallback_from) = match write_image(output, frame, origin, i, format, target) {
             Ok(written) => written,
             Err(error) => {
@@ -851,11 +876,11 @@ fn base64(bytes: &[u8]) -> String {
 
 // ------------------------------------------------------------------- the old entry points
 // `commands/render.rs` (annotation) calls these with the flattened image of the overlay or the
-// editor. They keep their first signatures and run `deliver`.
+// editor, and the origin it built with the image's beautify style; they run `deliver`.
 
 /// Puts a rendered image on the clipboard as PNG.
-pub fn copy_frame(app: &AppHandle, origin: &Selection, frame: Frame) -> CommandResult<OutputDone> {
-    deliver(app, frame, Origin::of_selection(app, origin), OutputAction::Copy)
+pub fn copy_frame(app: &AppHandle, origin: Origin, frame: Frame) -> CommandResult<OutputDone> {
+    deliver(app, frame, origin, OutputAction::Copy)
 }
 
 /// Saves a rendered image as a new file: in the folder, format and name template of
@@ -863,12 +888,11 @@ pub fn copy_frame(app: &AppHandle, origin: &Selection, frame: Frame) -> CommandR
 /// existing file is never replaced; a taken name gets " (2)".
 pub fn save_frame(
     app: &AppHandle,
-    origin: &Selection,
+    mut origin: Origin,
     frame: Frame,
     front_app: Option<&str>,
     target: Option<&Path>,
 ) -> CommandResult<OutputDone> {
-    let mut origin = Origin::of_selection(app, origin);
     if let Some(front_app) = front_app {
         origin.app_name = Some(front_app.to_string());
     }

@@ -9,6 +9,7 @@ import { on } from "../lib/api/core";
 import { SETTINGS_SECTION, window_take_settings_section, type SettingsSection } from "../lib/api/windows";
 import { t, type Key } from "../lib/i18n";
 import AboutSection from "./sections/AboutSection.vue";
+import BeautifySection from "./sections/BeautifySection.vue";
 import GeneralSection from "./sections/GeneralSection.vue";
 import OcrSection from "./sections/OcrSection.vue";
 import OutputSection from "./sections/OutputSection.vue";
@@ -25,6 +26,7 @@ const SECTIONS: { id: SectionId; icon: string; title: Key }[] = [
   { id: "general", icon: "settings", title: "settings.nav.general" },
   { id: "shortcuts", icon: "keyboard", title: "settings.nav.shortcuts" },
   { id: "output", icon: "image", title: "settings.nav.output" },
+  { id: "beautify", icon: "beautify", title: "settings.nav.beautify" },
   { id: "recording", icon: "record", title: "settings.nav.recording" },
   { id: "ocr", icon: "ocr", title: "settings.nav.ocr" },
   { id: "upload", icon: "upload", title: "settings.nav.upload" },
@@ -152,6 +154,7 @@ onBeforeUnmount(() => {
           <GeneralSection v-if="section === 'general'" :settings="settings" />
           <ShortcutsSection v-else-if="section === 'shortcuts'" :settings="settings" />
           <OutputSection v-else-if="section === 'output'" :settings="settings" />
+          <BeautifySection v-else-if="section === 'beautify'" :settings="settings" />
           <RecordingSection v-else-if="section === 'recording'" :settings="settings" />
           <OcrSection v-else-if="section === 'ocr'" :settings="settings" />
           <template v-else-if="section === 'upload'">

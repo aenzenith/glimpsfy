@@ -56,12 +56,17 @@
 //! |---|---|
 //! | 1.0 | The first format. |
 //! | 1.1 | Every object gains `hidden` and `locked` (the objects panel); both default to `false`. |
+//! | 1.2 | The document gains `beautify` ([`BeautifyStyle`]); a document without it is not beautified. |
+
+pub mod beautify;
 
 use std::collections::HashSet;
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+pub use beautify::{built_in_presets, Background, BeautifyPreset, BeautifyStyle, Shadow, WindowFrame, DEFAULT_PRESET};
 
 pub type Result<T, E = AnnotateError> = std::result::Result<T, E>;
 
@@ -95,7 +100,7 @@ impl fmt::Display for Version {
 
 /// The version this build writes. A reader accepts every document whose major version is not
 /// higher than this one.
-pub const CURRENT_VERSION: Version = Version { major: 1, minor: 1 };
+pub const CURRENT_VERSION: Version = Version { major: 1, minor: 2 };
 
 /// Gives the size of the document's image in pixels.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -408,12 +413,22 @@ pub struct Document {
     pub scale: f64,
     /// Lists the objects in stacking order, the bottom one first.
     pub objects: Vec<Object>,
+    /// The padding, background, corner, shadow and frame an export puts around the exported area;
+    /// `None` exports the area as it is. The exporter applies it after the drawings, so it never
+    /// touches the area's own pixels.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub beautify: Option<BeautifyStyle>,
 }
 
 impl Document {
     /// Creates an empty document in the current version.
     pub fn new(image: ImageSize, scale: f64) -> Self {
-        Document { version: CURRENT_VERSION, image, scale, objects: Vec::new() }
+        Document { version: CURRENT_VERSION, image, scale, objects: Vec::new(), beautify: None }
+    }
+
+    /// Whether an export differs from the plain image: a drawing, a crop or a beautification.
+    pub fn changes_image(&self) -> bool {
+        !self.objects.is_empty() || self.beautify.is_some()
     }
 
     /// Reads a document from JSON text. See [`Document::from_value`].
@@ -485,6 +500,9 @@ impl Document {
         if crops > 1 {
             return invalid(format!("the document has {crops} crop objects, and at most one is allowed"));
         }
+        if let Some(style) = &self.beautify {
+            style.check().map_err(AnnotateError::Invalid)?;
+        }
         Ok(())
     }
 }
@@ -519,6 +537,8 @@ pub fn migrate(mut value: Value) -> Result<Value> {
             }
         }
     }
+    // 1.1 → 1.2: `beautify` is optional and absent means no beautification, so nothing is filled
+    // in; only the version changes.
     document.insert("version".into(), serde_json::to_value(CURRENT_VERSION)?);
     Ok(value)
 }

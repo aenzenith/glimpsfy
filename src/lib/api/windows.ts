@@ -45,7 +45,7 @@ export type Toast = {
 
 export const window_open = (kind: WindowKind) => call<void>("window_open", { kind });
 
-export type SettingsSection = "general" | "shortcuts" | "output" | "recording" | "ocr" | "upload" | "about";
+export type SettingsSection = "general" | "shortcuts" | "output" | "beautify" | "recording" | "ocr" | "upload" | "about";
 /** Opens Settings at `section` (Upload, when no upload host is chosen yet) instead of the section
  * shown last. */
 export const window_open_settings = (section: SettingsSection) => call<void>("window_open_settings", { section });

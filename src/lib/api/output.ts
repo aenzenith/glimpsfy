@@ -2,6 +2,7 @@
 
 import type { CaptureId, CaptureMode, ColorSpace, Selection } from "./capture";
 import { call, type ErrorCode } from "./core";
+import type { ImageFormat } from "../settings";
 
 /** With `output://copied` and `output://saved`, and as the commands' result. */
 export type OutputDone = {
@@ -51,7 +52,8 @@ export const OUTPUT_HANDOFF = "output://handoff";
 export type OutputFailed = { captureId: CaptureId; code: ErrorCode; message: string };
 
 export const output_copy = (selection: Selection) => call<OutputDone>("output_copy", { selection });
-export const output_save = (selection: Selection) => call<OutputDone>("output_save", { selection });
+export const output_save = (selection: Selection, format: ImageFormat | null = null) =>
+  call<OutputDone>("output_save", { selection, format });
 /** Saves under `path`, or asks with the system's save panel when it is left out; a cancelled
  * panel rejects with `cancelled` and the overlay comes back. */
 export const output_save_as = (selection: Selection, path?: string) =>

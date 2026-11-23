@@ -78,6 +78,7 @@ pub enum SettingsSection {
     General,
     Shortcuts,
     Output,
+    Beautify,
     Recording,
     Ocr,
     Upload,
@@ -208,16 +209,35 @@ pub async fn app_choose_folder(app: AppHandle, start: Option<PathBuf>) -> Option
     dialog.blocking_pick_folder().and_then(|p| p.into_path().ok()).map(|p| p.to_string_lossy().into_owned())
 }
 
-/// Lets the user pick one file of the given types; `None` when they cancel.
+/// Lets the user pick one file of the given types; `None` when they cancel. While a capture is
+/// open (the beautify panel's image), its overlays step aside for the panel, as they do for Save
+/// as, and come back with the capture as it was.
 #[tauri::command]
 pub async fn app_choose_file(app: AppHandle, filters: Vec<FileFilter>) -> Option<String> {
+    use tauri::Manager;
     use tauri_plugin_dialog::DialogExt;
     let mut dialog = app.dialog().file();
     for filter in &filters {
         let extensions: Vec<&str> = filter.extensions.iter().map(String::as_str).collect();
         dialog = dialog.add_filter(&filter.name, &extensions);
     }
-    dialog.blocking_pick_file().and_then(|p| p.into_path().ok()).map(|p| p.to_string_lossy().into_owned())
+    let capture = app.state::<crate::AppState>().sessions.current().map(|s| s.id);
+    if capture.is_some() {
+        // The overlays sit above every panel, and a menu bar app's panel opens behind the front
+        // app.
+        crate::windows::hide_overlays(&app);
+        crate::output::bring_forward(&app);
+    }
+    let picked = dialog.blocking_pick_file().and_then(|p| p.into_path().ok());
+    if let Some(path) = &picked {
+        // A beautify panel shows the picked image before any style names it (`frames.rs`).
+        crate::frames::allow_background(path);
+    }
+    let picked = picked.map(|p| p.to_string_lossy().into_owned());
+    if let Some(id) = capture {
+        crate::session::reshow(&app, id);
+    }
+    picked
 }
 
 // ----------------------------------------------------------------------------------- popover

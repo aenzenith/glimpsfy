@@ -9,6 +9,7 @@
 // while still invisible, then calls `overlay_ready`, and the core shows the window.
 import { computed, nextTick, onMounted, onUnmounted, provide, reactive, ref, shallowRef, watch, watchEffect } from "vue";
 
+import BeautifyPanel, { type PreviewSource } from "../components/BeautifyPanel.vue";
 import GIcon from "../components/GIcon.vue";
 import SendList from "../components/SendList.vue";
 import OptionsStrip from "../annotate/OptionsStrip.vue";
@@ -17,6 +18,8 @@ import Surface from "../annotate/Surface.vue";
 import type { ToolId as AnnotateTool } from "../annotate/prefs";
 import { TEXT_LAYER, textLayerComponent } from "../annotate/textLayer";
 import { thumbnail, thumbnailOfPixels, uploadFlow } from "../annotate/upload";
+import { clamped, edgeMedian, useBackgroundImage } from "../annotate/beautify";
+import { writeBeautify, type BeautifyStyle } from "../lib/annotate";
 import {
   editor_open_capture,
   output_copy_rendered,
@@ -54,6 +57,7 @@ import { ACTIONS, TOOLS, WORKING_ACTIONS, actionForChord, toolForKey, type Actio
 import FirstUploadDialog from "../upload/FirstUploadDialog.vue";
 import "./overlay.css";
 import * as modes from "./modes";
+import { useOverlayBeautify } from "./beautify";
 
 type Mode = "idle" | "drag" | "sel" | "move" | "resize";
 type Point = { x: number; y: number };
@@ -108,7 +112,13 @@ const loupeShown = ref(false);
 const sendList = shallowRef<SendTargets | null>(null);
 const sendAt = ref<Point>({ x: -9999, y: -9999 });
 /** The action bar's buttons; Send only where the core can press keys in another app. */
-const actions = computed(() => ACTIONS.filter((a) => a?.id !== "send" || can("sendToApp")));
+const actions = computed(() => ACTIONS.filter((a) => (a?.id !== "send" || can("sendToApp")) && (a?.id !== "beautify" || beautifiable.value)));
+/** Beautify for this capture (`beautify.ts`); its panel stands beside the action bar. */
+const beautify = useOverlayBeautify(say);
+const beautifyEl = ref<InstanceType<typeof BeautifyPanel> | null>(null);
+const beautifyAt = ref<Point>({ x: -9999, y: -9999 });
+/** The window's own image in frame pixels, shadow included, once a click took it. */
+const pickedSize = shallowRef<{ id: number; width: number; height: number } | null>(null);
 
 const frameHost = ref<HTMLElement | null>(null);
 const lensHost = ref<HTMLElement | null>(null);
@@ -490,6 +500,8 @@ function resetSelection(): void {
   start = null;
   grab = null;
   pickedWindow = null;
+  pickedSize.value = null;
+  beautify.open.value = false;
   closeSend();
   annotations.clear();
 }
@@ -517,6 +529,7 @@ async function begin(next: OverlayFrame): Promise<void> {
   if (next.display.id !== displayId) return;
   resetAll();
   frame.value = next;
+  void beautify.start(next);
   windowMode.value = next.mode === "window";
   view.w = window.innerWidth;
   view.h = window.innerHeight;
@@ -562,6 +575,7 @@ async function begin(next: OverlayFrame): Promise<void> {
 function end(closed: CaptureClosed): void {
   if (frame.value?.captureId !== closed.captureId) return;
   resetAll();
+  beautify.stop();
   frame.value = null;
   pixels = null;
   annotations.detach();
@@ -570,6 +584,7 @@ function end(closed: CaptureClosed): void {
 function finishSelection(r: Rect, windowId: number | null = null): void {
   sel.value = r;
   pickedWindow = windowId;
+  pickedSize.value = null;
   annotations.setSelection(frameRect(r));
   hovered.value = null;
   mode.value = "sel";
@@ -585,7 +600,10 @@ async function finishByMode(r: Rect, windowId: number | null): Promise<void> {
   busy = true;
   try {
     const selection = { captureId: f.captureId, displayId, rect: { x: r.x, y: r.y, width: r.w, height: r.h } };
-    const finished = await modes.finish(f, selection, windowId);
+    const finished = await modes.finish(f, selection, windowId, {
+      settled: beautify.settled,
+      picked: (w) => (pickedSize.value = { id: w.windowId, width: w.width, height: w.height }),
+    });
     if (finished === "empty") say(t("ocr.empty"));
     if (finished !== "done") void showBars();
   } catch (error) {
@@ -626,6 +644,7 @@ function errorText(error: unknown): string {
 
 async function act(id: ActionId): Promise<void> {
   if (id === "close") return close();
+  if (id === "beautify") return toggleBeautify();
   if (id === "send") return toggleSend();
   if (id === "copy-text") return toggleTextLayer();
   if (id === "record") return record();
@@ -642,14 +661,15 @@ async function act(id: ActionId): Promise<void> {
   try {
     engine.finishText();
     const rendered = renderedSelection(f, r);
+    await beautify.settled();
     if (id === "pin") {
       // A pin with drawings opens where the selection was, as a plain capture's pin does.
       await pin_open(rendered ? { kind: "rendered", path: await output_stage_rendered(rendered), selection } : { kind: "capture", selection });
       await capture_close(f.captureId, "pinned");
     } else if (rendered) {
-      await (id === "copy" ? output_copy_rendered(rendered) : output_save_rendered(rendered));
+      await (id === "copy" ? output_copy_rendered(rendered) : output_save_rendered({ ...rendered, format: saveFormat() }));
     } else {
-      await (id === "copy" ? output_copy(selection) : output_save(selection));
+      await (id === "copy" ? output_copy(selection) : output_save(selection, saveFormat()));
     }
   } catch (error) {
     say(errorText(error));
@@ -669,6 +689,7 @@ async function saveAs(): Promise<void> {
     engine.finishText();
     const rendered = renderedSelection(f, r);
     const selection = { captureId: f.captureId, displayId, rect: { x: r.x, y: r.y, width: r.w, height: r.h } };
+    await beautify.settled();
     await (rendered ? output_save_as_rendered(rendered) : output_save_as(selection));
   } catch (error) {
     if (!(error instanceof ApiError && error.code === "cancelled")) say(errorText(error));
@@ -723,6 +744,7 @@ async function toggleSend(): Promise<void> {
   if (sendList.value) return closeSend();
   const f = frame.value;
   if (!f || !sel.value || busy || mode.value !== "sel" || !can("sendToApp")) return;
+  beautify.open.value = false;
   try {
     const list = await send_list_targets();
     if (frame.value?.captureId !== f.captureId || mode.value !== "sel") return;
@@ -762,6 +784,106 @@ watch(sel, () => {
   if (sendList.value) closeSend();
 });
 
+// ------------------------------------------------------------------------------ beautify
+
+/** Beautify changes the image Copy, Save and Upload deliver; copy text, a series and an agent
+ * take none, so F and the button are left out there. */
+const beautifiable = computed(() => {
+  const after = frame.value?.afterSelection;
+  return after === "annotate" || after === "copy" || after === "save";
+});
+const beautifyShown = computed(() => beautify.open.value && barsShown.value && mode.value === "sel" && hasSel.value);
+/** The selection is the window a click took, so only the padding and the background apply. */
+const beautifyWindow = computed(() => pickedSize.value !== null);
+/** The image the panel sizes, in points: the window's own image or the selection. */
+const beautifyPoints = computed(() => {
+  const size = pickedSize.value;
+  const area = sel.value ? frameRect(sel.value) : null;
+  const px = size ?? area ?? { width: 0, height: 0 };
+  return { width: px.width / ratio.value.x, height: px.height / ratio.value.y };
+});
+/** The Match colour of the selection's outer band, as the core takes it. */
+const beautifyMatch = computed<[number, number, number] | null>(() => {
+  const f = frame.value;
+  const area = beautifyShown.value && sel.value ? frameRect(sel.value) : null;
+  if (!f || !area || !ctx) return null;
+  if (pixels) return edgeMedian({ data: pixels, width: f.frameSize.width, height: f.frameSize.height }, area);
+  try {
+    return edgeMedian(ctx.getImageData(area.x, area.y, area.width, area.height, { colorSpace: f.colorSpace }));
+  } catch {
+    return null;
+  }
+});
+/** The frozen frame under the selection; a window's own image has its rounded corners. */
+const beautifyPreview = computed<PreviewSource | null>(() => {
+  const area = beautifyShown.value && sel.value ? frameRect(sel.value) : null;
+  if (!area || !ctx) return null;
+  const picked = pickedSize.value;
+  const win = picked ? frame.value?.windows.find((w) => w.id === picked.id) : null;
+  const corners = beautify.settings.value?.output.windowCorners ?? true;
+  const imageRadius = win && corners ? (win.cornerRadius ?? 10) * ratio.value.x : 0;
+  return { image: ctx.canvas, from: area, scale: ratio.value.x, imageRadius };
+});
+const beautifyImage = useBackgroundImage(() => {
+  const bg = beautify.style.value.background;
+  return bg.kind === "image" ? bg.path : null;
+}, 640);
+
+/** The action bar's button opens the panel beside the bar, or closes it. */
+function toggleBeautify(): void {
+  if (beautify.open.value) {
+    beautify.open.value = false;
+    return;
+  }
+  if (!frame.value || !sel.value || mode.value !== "sel" || !beautifiable.value) return;
+  closeSend();
+  beautify.open.value = true;
+}
+
+/** The panel stands 8 px beside the action bar, its top at the bar's, on the bar's far side from
+ * the selection, or on the other side when that side has no room. */
+async function placeBeautify(): Promise<void> {
+  await nextTick();
+  const el = beautifyEl.value?.$el as HTMLElement | undefined;
+  const bar = actionsEl.value;
+  const p = placement.value;
+  if (!el || !bar || !p) return;
+  const w = el.offsetWidth;
+  const h = el.offsetHeight;
+  const right = p.actions.x + bar.offsetWidth + 8;
+  const left = p.actions.x - 8 - w;
+  const fitsRight = right + w <= view.w - 8;
+  const fitsLeft = left >= 8;
+  const x = p.aSide === "left" ? (fitsLeft ? left : right) : fitsRight ? right : fitsLeft ? left : clamp(right, 8, view.w - 8 - w);
+  // The button leads the bar, so the panel's top meets the bar's (row 12, Y1); a button further
+  // down would lower it by its distance from the first.
+  const top = (b: HTMLElement | null) => (b ? b.parentElement!.offsetTop + b.offsetTop : 0);
+  const y = p.actions.y + top(bar.querySelector<HTMLElement>('.g-btn[data-id="beautify"]')) - top(bar.querySelector<HTMLElement>(".g-btn"));
+  const next = { x: Math.round(x), y: Math.round(clamp(y, 8, view.h - 8 - h)) };
+  if (next.x !== beautifyAt.value.x || next.y !== beautifyAt.value.y) beautifyAt.value = next;
+}
+
+watch([beautifyShown, placement], ([shown]) => {
+  if (shown) void placeBeautify();
+  else beautifyAt.value = { x: -9999, y: -9999 };
+});
+// The panel grows with its warnings and its name field, and keeps to the screen.
+let beautifySized: ResizeObserver | null = null;
+watch(beautifyEl, (panel) => {
+  beautifySized?.disconnect();
+  beautifySized = null;
+  const el = panel?.$el as HTMLElement | undefined;
+  if (!el) return;
+  beautifySized = new ResizeObserver(() => void placeBeautify());
+  beautifySized.observe(el);
+});
+
+/** The panel's style for this capture: a change of the panel's values is the capture's own. */
+const changeBeautify = (style: BeautifyStyle) => beautify.change(style);
+const beautifyPng = () => (beautify.pngOnce.value = true);
+/** Save's format for this image alone: PNG once the panel chose it over JPEG. */
+const saveFormat = () => (beautify.pngOnce.value ? ("png" as const) : null);
+
 /** Sends the selection to the target, or copies its path (`target` null). With drawings the page
  * renders the selection, as Copy does. The capture closes once the target is known to be
  * sendable; a missing target leaves it open and says so. */
@@ -775,6 +897,7 @@ async function sendSelection(target: string | null): Promise<void> {
   try {
     engine.finishText();
     const rendered = renderedSelection(f, r);
+    await beautify.settled();
     if (rendered) await send_rendered(rendered, target);
     else if (target) await send_to_app({ kind: "selection", selection }, target);
     else await send_copy_path({ kind: "selection", selection });
@@ -813,6 +936,7 @@ const uploads = uploadFlow({
       engine.finishText();
       const rendered = renderedSelection(f, r);
       const selection = { captureId: f.captureId, displayId, rect: { x: r.x, y: r.y, width: r.w, height: r.h } };
+      await beautify.settled();
       await (rendered ? upload_capture_rendered(rendered, provider) : upload_capture(selection, provider));
     } finally {
       busy = false;
@@ -841,7 +965,12 @@ async function handOff(): Promise<void> {
   try {
     engine.finishText();
     annotations.setSelection(frameRect(r));
-    await editor_open_capture(f.captureId, displayId, annotations.documentJson());
+    // The editor keeps the capture's beautify style in the document, where it stays editable.
+    const doc = JSON.parse(annotations.documentJson()) as Record<string, unknown>;
+    if (beautify.on.value) doc.beautify = writeBeautify(clamped(beautify.style.value));
+    else delete doc.beautify;
+    await beautify.settled();
+    await editor_open_capture(f.captureId, displayId, JSON.stringify(doc));
   } catch (error) {
     say(errorText(error));
   } finally {
@@ -1104,6 +1233,14 @@ function onKeyDown(e: KeyboardEvent): void {
   if (!frame.value || uploadAsk.value || e.defaultPrevented) return;
   // A text being typed takes its own keys.
   if (e.target instanceof HTMLElement && e.target.isContentEditable) return;
+  // The beautify panel's sliders and switch keep only their own keys (`BeautifyPanel.vue`).
+  if (e.target instanceof HTMLInputElement && e.target.type !== "range" && e.target.type !== "checkbox") return;
+  // F turns beautify on or off for this capture at any moment, during a drag too; ⇧F is free.
+  if (e.key.toLowerCase() === "f" && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && beautifiable.value) {
+    e.preventDefault();
+    beautify.toggle();
+    return;
+  }
   if (sendList.value) {
     // Esc and Tab only close the send list; ↑↓, Return and 1–9 are its own.
     if (e.key === "Escape" || e.key === "Tab") {
@@ -1117,9 +1254,13 @@ function onKeyDown(e: KeyboardEvent): void {
   }
   if (e.key === "Escape") {
     e.preventDefault();
-    // Esc first ends a drawing gesture or drops the selected object, then hides the text layer,
-    // and only then closes the capture.
+    // Esc first ends a drawing gesture or drops the selected object, then closes the beautify
+    // panel's menu and the panel, then hides the text layer, and only then closes the capture.
     if (annotations.key(e)) return;
+    if (beautify.open.value) {
+      if (!beautifyEl.value?.escape()) beautify.open.value = false;
+      return;
+    }
     if (textLayerVisible.value) {
       textLayerVisible.value = false;
       return;
@@ -1340,6 +1481,34 @@ onUnmounted(() => {
         @edit="editTargets"
         @permission="openAccessibility"
       />
+      <BeautifyPanel
+        v-if="beautifyShown"
+        ref="beautifyEl"
+        class="o-float o-beautify"
+        :style="{ ...at(beautifyAt), position: 'absolute' }"
+        variant="glass"
+        scope="capture"
+        :on="beautify.on.value"
+        :current="beautify.style.value"
+        :presets="beautify.presets.value"
+        :auto-id="beautify.autoId.value"
+        :window="beautifyWindow"
+        :format="beautify.format.value"
+        :png-once="beautify.pngOnce.value"
+        :points="beautifyPoints"
+        :match="beautifyMatch"
+        :missing="beautifyImage.missing.value"
+        :background-image="beautifyImage.image.value"
+        :space="frame.colorSpace"
+        :preview="beautifyPreview"
+        @toggle="beautify.toggle"
+        @change="changeBeautify"
+        @pick="beautify.pick"
+        @png="beautifyPng"
+        @choose-image="beautify.chooseImage"
+        @update="beautify.updatePreset"
+        @create="beautify.createPreset"
+      />
       <!-- Mount point of the text recognition layer (src/ocr/TextLayer.vue); its context comes
            from `provide(TEXT_LAYER)` above. -->
       <div v-if="textLayerComponent && hasSel && mode === 'sel'" class="o-textlayer">
@@ -1436,13 +1605,16 @@ onUnmounted(() => {
             class="g-btn"
             :data-id="item.id"
             :aria-label="t(item.label)"
-            :aria-expanded="item.id === 'send' ? !!sendList : undefined"
-            :data-state="item.id === 'send' && sendList ? 'pressed' : undefined"
+            :aria-expanded="item.id === 'send' ? !!sendList : item.id === 'beautify' ? beautifyShown : undefined"
+            :data-state="(item.id === 'send' && sendList) || (item.id === 'beautify' && beautifyShown) ? 'pressed' : undefined"
+            :data-on="item.id === 'beautify' && beautify.on.value ? '' : undefined"
             @click="act(item.id)"
           >
             <GIcon :name="item.icon" />
           </button>
-          <span class="g-tip" role="tooltip" :data-state="allTips ? 'show' : undefined">{{ t(item.label) }}<kbd class="g-kbd">{{ item.key }}</kbd></span>
+          <span class="g-tip" role="tooltip" :data-state="allTips ? 'show' : undefined"
+            >{{ item.id === "beautify" && beautify.on.value ? t("beautify.turnOff") : t(item.label) }}<kbd class="g-kbd">{{ item.key }}</kbd></span
+          >
         </span>
       </template>
     </div>
@@ -1496,8 +1668,13 @@ onUnmounted(() => {
 .notice {
   bottom: 168px;
 }
-.o-sendlist {
+.o-sendlist,
+.o-beautify {
   z-index: 13;
+}
+/* Beautify is on for this capture: its button's glyph is iris (B11). */
+.o-actions .g-btn[data-on] {
+  color: var(--surface-iris-text);
 }
 .o-textlayer {
   position: absolute;
