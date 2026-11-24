@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.1](https://github.com/aenzenith/glimpsfy/compare/v0.5.0...v0.5.1) (2026-11-24)
+
+
+### Bug Fixes
+
+* **shortcuts:** the Print Screen key no longer opened the Windows screen capture next to Glimpsfy ([245c0c7](https://github.com/aenzenith/glimpsfy/commit/245c0c7ec11c151298077047ef0f773f441247a1))
+
 ## [0.5.0](https://github.com/aenzenith/glimpsfy/compare/v0.4.2...v0.5.0) (2026-11-24)
 
 
