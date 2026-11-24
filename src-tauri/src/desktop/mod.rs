@@ -1238,6 +1238,13 @@ pub fn open_system_settings(app: &AppHandle, pane: SystemPane) -> Result<bool, S
     }
 }
 
+/// Keeps Print Screen from Windows' own screen capture and runs `press` with it instead, or
+/// gives the key back with `None` (`platform::hold_print_screen`).
+#[cfg(target_os = "windows")]
+pub fn hold_print_screen(press: Option<std::sync::Arc<dyn Fn() + Send + Sync>>) {
+    platform::hold_print_screen(press);
+}
+
 /// Opens the pane of the system's settings where `permission` is granted, when there is one.
 pub fn open_permission_settings(app: &AppHandle, permission: Permission) {
     use tauri_plugin_opener::OpenerExt;

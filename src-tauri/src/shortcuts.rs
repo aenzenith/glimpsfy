@@ -335,6 +335,9 @@ pub fn apply(app: &AppHandle, shortcuts: &Shortcuts) -> Vec<ShortcutProblem> {
 
     let mut problems = Vec::new();
     let mut take_keys = Vec::new();
+    // An action whose Print Screen the system refused; the hook still takes the key (Windows).
+    #[cfg(target_os = "windows")]
+    let mut print_screen = None;
     for (action, accelerator) in wanted {
         let Some(accelerator) = accelerator.as_deref().filter(|a| !a.is_empty()) else {
             continue;
@@ -350,10 +353,19 @@ pub fn apply(app: &AppHandle, shortcuts: &Shortcuts) -> Vec<ShortcutProblem> {
         match Shortcut::from_str(accelerator) {
             Ok(shortcut) => match manager.register(shortcut) {
                 Ok(()) => bound.push((shortcut, action)),
+                // Windows may hold Print Screen for its own screen capture; the hook takes the
+                // key from it all the same.
+                #[cfg(target_os = "windows")]
+                Err(_) if is_print_screen(&shortcut) => print_screen = print_screen.or(Some(action)),
                 Err(error) => problems.push(problem(error.to_string())),
             },
             Err(error) => problems.push(problem(error.to_string())),
         }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let registered = bound.iter().find(|(shortcut, _)| is_print_screen(shortcut)).map(|(_, action)| *action);
+        hold_print_screen(app, print_screen.or(registered));
     }
     // Added to rather than replaced, so a key registered here is always one a later apply
     // unregisters.
@@ -369,6 +381,30 @@ pub fn apply(app: &AppHandle, shortcuts: &Shortcuts) -> Vec<ShortcutProblem> {
     *lock(&TAKE_KEYS) = take_keys;
     settle(app, &TAKE, take_wanted, take_refused);
     problems
+}
+
+/// Print Screen without modifiers.
+#[cfg(target_os = "windows")]
+fn is_print_screen(shortcut: &Shortcut) -> bool {
+    Shortcut::from_str("PrintScreen").is_ok_and(|print_screen| print_screen == *shortcut)
+}
+
+/// When an action's key is Print Screen alone, Windows would open its own screen capture with it
+/// too, until the user turned that off in Settings. Glimpsfy keeps the key from Windows instead,
+/// as other screenshot tools do, and runs the action from there (`desktop::hold_print_screen`).
+#[cfg(target_os = "windows")]
+fn hold_print_screen(app: &AppHandle, action: Option<Action>) {
+    let press = action.map(|action| {
+        let app = app.clone();
+        std::sync::Arc::new(move || {
+            let at = Instant::now();
+            let handle = app.clone();
+            if let Err(error) = app.run_on_main_thread(move || run(&handle, action, at)) {
+                trace::log(format!("[glimpsfy] Print Screen for {action:?}: {error}"));
+            }
+        }) as std::sync::Arc<dyn Fn() + Send + Sync>
+    });
+    crate::desktop::hold_print_screen(press);
 }
 
 /// Registers the take's keys (Draw on screen, Spotlight) when a take goes live.
