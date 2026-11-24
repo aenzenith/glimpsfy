@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.2](https://github.com/aenzenith/glimpsfy/compare/v0.4.1...v0.4.2) (2026-11-24)
+
+
+### Bug Fixes
+
+* **scroll:** scrolling captures no longer repeated parts of the page ([b1a0708](https://github.com/aenzenith/glimpsfy/commit/b1a070829b0f868802543094ba000da6a910ea5b))
+
 ## [0.4.1](https://github.com/aenzenith/glimpsfy/compare/v0.4.0...v0.4.1) (2026-11-23)
 
 
