@@ -2011,7 +2011,7 @@ dependencies = [
 
 [[package]]
 name = "glimpsfy-mcp"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "libc",
  "serde",
@@ -2021,7 +2021,7 @@ dependencies = [
 
 [[package]]
 name = "glimpsfy-models"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "sha2 0.10.9",
  "tempfile",
@@ -2090,7 +2090,7 @@ dependencies = [
 
 [[package]]
 name = "glimpsfy-speech"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "glimpsfy-models",
  "hound",
