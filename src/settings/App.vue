@@ -125,7 +125,7 @@ onBeforeUnmount(() => {
           :data-nav="item.id"
           :aria-current="section === item.id ? 'page' : undefined"
           @click.prevent="go(item.id)"
-          ><GIcon :name="item.icon" :size="16" />{{ t(item.title) }}</a
+          ><GIcon :name="item.icon" :size="16" /><span class="p-nav-label">{{ t(item.title) }}</span></a
         >
       </nav>
     </aside>
@@ -178,11 +178,19 @@ onBeforeUnmount(() => {
    fills the page without its own corners, shadow or rim. */
 .p-settings.g-window { height: 100%; border-radius: 0; box-shadow: none; }
 .p-settings.g-window::after { display: none; }
-.p-settings > .g-sidebar { --sidebar-w: 188px; padding-top: 12px; }
+/* The sidebar grows past 188 pt to fit the longest section name ("Reconocimiento de texto",
+   "Распознавание текста"), up to 240 pt; a name longer than that ends in an ellipsis. */
+.p-settings > .g-sidebar { --sidebar-w: 188px; width: auto; min-width: var(--sidebar-w); max-width: 240px; padding-top: 12px; }
+.p-settings .g-nav { overflow-x: hidden; }
 .p-settings .g-nav-item { text-decoration: none; cursor: default; }
+.p-nav-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .p-settings .g-nav-item:focus { outline: 0; }
 .p-settings .g-nav-item:focus-visible { outline: 2px solid var(--win-focus); outline-offset: -2px; }
 .p-settings .g-toolbar > .g-btn { margin-left: -6px; }
+/* A menu is as wide as its longest option, and a device name can be any length (a microphone
+   called "Elgato Wave:3 USB Condenser Microphone"); past 260 pt the shown name is cut short. */
+.p-settings .g-form-control > .g-select { max-width: 260px; }
+.p-settings .g-form-control > .g-select > select { text-overflow: ellipsis; }
 
 /* A save that failed, with the way out. */
 .p-banner {
@@ -277,4 +285,8 @@ onBeforeUnmount(() => {
 .p-about-name { margin: 0; font: var(--type-display); color: var(--win-text); }
 .p-about-meta { margin: 0; font: var(--type-body); color: var(--win-text-2); }
 .p-table { padding: 4px 6px 6px; }
+/* A project's use and licence wrap to a second line instead of pushing the table past the window;
+   the 7 pt above and below give a one-line row the kit's 32 pt. */
+.p-table .g-table td { height: auto; padding-top: 7px; padding-bottom: 7px; white-space: normal; overflow-wrap: break-word; }
+.p-table .g-table td:first-child { white-space: nowrap; }
 </style>

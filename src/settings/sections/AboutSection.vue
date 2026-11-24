@@ -53,6 +53,10 @@ const ACK: { project: string; use: Key; licence: Key }[] = [
   { project: "ureq", use: "settings.about.ackUreq", licence: "settings.about.mitOrApache" },
 ];
 
+/** A licence name with its version glued on ("Apache 2.0"), so a wrapping cell never leaves the
+ * number alone on the next line. */
+const licence = (key: Key): string => t(key).replace(/ (?=\d)/g, "\u00a0");
+
 function open(url: string): void {
   void app_open_url(url).catch((error) => (banner.value = { tone: "danger", text: describeError(error) }));
 }
@@ -111,7 +115,7 @@ function welcome(): void {
           <tr v-for="row in ACK" :key="row.project">
             <td>{{ row.project }}</td>
             <td class="g-cell-sub">{{ tp(row.use) }}</td>
-            <td class="g-cell-sub">{{ t(row.licence) }}</td>
+            <td class="g-cell-sub">{{ licence(row.licence) }}</td>
           </tr>
         </tbody>
       </table>
