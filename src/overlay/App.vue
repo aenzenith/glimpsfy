@@ -1112,7 +1112,8 @@ const beautifyImage = useBackgroundImage(() => {
 /** The size label's glyph: iris while on, faint when F skipped the automatic preset. */
 const beautifyGlyph = computed(() => (!beautifiable.value ? null : beautify.on.value ? "on" : beautify.autoId.value ? "off" : null));
 
-/** The action bar's button opens the panel beside the bar, or closes it. */
+/** The action bar's button opens the panel beside the bar, or closes it; opening turns beautify
+ * on unless F or the panel's switch already set it for this capture (`beautify.ts`). */
 function toggleBeautify(): void {
   if (beautify.open.value) {
     beautify.open.value = false;
@@ -1122,7 +1123,7 @@ function toggleBeautify(): void {
   closeSend();
   menu.value = null;
   sensitive.close();
-  beautify.open.value = true;
+  beautify.show();
 }
 
 /** The panel stands 8 px beside the action bar, its top at the bar's, on the bar's far side from

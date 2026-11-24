@@ -1,7 +1,9 @@
 // The overlay's beautify state for one capture (B11): whether it is on, the style its panel shows,
 // and Save as PNG this time. The core holds the style the outputs use (`capture_set_beautify`);
 // every change is sent at once, and an output first waits for the changes sent before it
-// (`settled`), so F pressed during a drag in "copy and close" still reaches the copy.
+// (`settled`), so F pressed during a drag in "copy and close" still reaches the copy. Opening the
+// panel turns beautify on, so its preview shows the output at once, unless F or the switch already
+// decided this capture.
 
 import { computed, ref, shallowRef } from "vue";
 
@@ -30,6 +32,8 @@ export function useOverlayBeautify(say: (text: string) => void) {
   const style = shallowRef<BeautifyStyle>(chosenStyle(null));
   const pngOnce = ref(false);
   const open = ref(false);
+  /** F or the panel's switch set this capture's beautify, so opening the panel leaves it alone. */
+  let decided = false;
   let pending: Promise<void> = Promise.resolve();
 
   const presets = computed(() => readPresets(settings.value?.beautify));
@@ -55,6 +59,7 @@ export function useOverlayBeautify(say: (text: string) => void) {
     captureId.value = frame.captureId;
     open.value = false;
     pngOnce.value = false;
+    decided = false;
     let given: BeautifyStyle | null = null;
     try {
       given = frame.beautify ? readBeautify(frame.beautify) : null;
@@ -63,11 +68,16 @@ export function useOverlayBeautify(say: (text: string) => void) {
     }
     on.value = given !== null;
     style.value = given ?? chosenStyle(settings.value);
+    const first = style.value;
     try {
       const s = await settings_get();
       if (captureId.value !== frame.captureId) return;
       settings.value = s;
-      if (!given && !on.value) style.value = chosenStyle(s);
+      // F or the panel may have turned the guessed style on before the presets arrived.
+      if (!given && style.value === first) {
+        style.value = chosenStyle(s);
+        if (on.value) sync();
+      }
     } catch (error) {
       console.warn("[glimpsfy] the beautify presets were not read", error);
     }
@@ -78,8 +88,17 @@ export function useOverlayBeautify(say: (text: string) => void) {
     open.value = false;
   }
 
+  /** The action bar's button: the panel opens on the output it previews. */
+  function show(): void {
+    open.value = true;
+    if (on.value || decided) return;
+    on.value = true;
+    sync();
+  }
+
   /** F and the panel's switch. */
   function toggle(next = !on.value): void {
+    decided = true;
     if (on.value === next) return;
     on.value = next;
     sync();
@@ -141,5 +160,5 @@ export function useOverlayBeautify(say: (text: string) => void) {
     }
   }
 
-  return { settings, on, style, pngOnce, open, presets, autoId, format, start, stop, sync, settled, toggle, change, pick, chooseImage, updatePreset, createPreset };
+  return { settings, on, style, pngOnce, open, presets, autoId, format, start, stop, sync, settled, show, toggle, change, pick, chooseImage, updatePreset, createPreset };
 }
