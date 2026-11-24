@@ -428,7 +428,7 @@ onUnmounted(() => {
         </div>
         <div v-if="choice === 'replace'" class="s-replace">
           <p class="g-help">{{ tp("firstrun.fin.replaceSteps") }}</p>
-          <button v-if="can('systemSettingsPanes')" type="button" class="g-button" @click="openPane('keyboardShortcuts')">
+          <button v-if="can('systemSettingsPanes') && platform.os !== 'windows'" type="button" class="g-button" @click="openPane('keyboardShortcuts')">
             <GIcon name="keyboard" :size="16" />{{ tp("firstrun.fin.replaceOpen") }}
           </button>
         </div>

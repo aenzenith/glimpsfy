@@ -1956,3 +1956,131 @@ pub fn bubble_hide() {}
 pub fn bubble_window_id() -> Option<WindowId> {
     None
 }
+
+// ------------------------------------------------------------------------------- Print Screen
+
+/// What a press of Print Screen runs while Glimpsfy holds the key.
+type PrintScreenPress = std::sync::Arc<dyn Fn() + Send + Sync>;
+
+/// The press to run, while a shortcut of Settings › Shortcuts is Print Screen alone.
+static PRINT_SCREEN: Mutex<Option<PrintScreenPress>> = Mutex::new(None);
+/// The thread id of the hook thread that holds Print Screen now.
+static PRINT_SCREEN_HOOK: Mutex<Option<u32>> = Mutex::new(None);
+/// Counts the holds, so a hook thread told to stop before it got going does not start.
+static PRINT_SCREEN_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+thread_local! {
+    /// Print Screen went down without modifiers and the hook kept it, so its release is kept too.
+    static PRINT_SCREEN_DOWN: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Takes Print Screen from Windows' own screen capture while a shortcut is Print Screen alone, as
+/// other screenshot tools do, so nobody has to turn off "Use the Print screen key to open screen
+/// capture" under Accessibility › Keyboard. Windows opens that capture from the key itself, before
+/// any registered hotkey, so a `WH_KEYBOARD_LL` hook keeps the key (down and up) from the system
+/// and runs `press` instead. The setting is never changed. With Ctrl, Alt, Shift or Win held the
+/// key goes on unchanged. The hotkey `shortcuts::apply` registers stays as well: a hook is not
+/// called while an elevated app is in front, and there the hotkey still runs the shortcut, next to
+/// Windows' capture. `None` gives the key back.
+pub fn hold_print_screen(press: Option<PrintScreenPress>) {
+    let start = press.is_some();
+    *lock(&PRINT_SCREEN) = press;
+    if start && lock(&PRINT_SCREEN_HOOK).is_some() {
+        return;
+    }
+    if !start {
+        // Also stops a hook thread that has not published its id yet.
+        let thread = {
+            let mut hook = lock(&PRINT_SCREEN_HOOK);
+            PRINT_SCREEN_GENERATION.fetch_add(1, Ordering::SeqCst);
+            hook.take()
+        };
+        if let Some(thread) = thread {
+            // SAFETY: the hook thread made its queue before it published its id; a thread that
+            // has ended meanwhile makes the call fail.
+            unsafe { PostThreadMessageW(thread, WM_QUIT, 0, 0) };
+        }
+        return;
+    }
+    let generation = PRINT_SCREEN_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
+    let spawned = std::thread::Builder::new()
+        .name("glimpsfy-print-screen".into())
+        .spawn(move || run_print_screen_hook(generation));
+    if let Err(error) = spawned {
+        trace::log(format!("[glimpsfy] Print Screen hook: {error}"));
+    }
+}
+
+fn run_print_screen_hook(generation: u64) {
+    let mut message = MSG::default();
+    // SAFETY: peeking makes this thread's message queue, so a WM_QUIT posted to it is kept.
+    unsafe { PeekMessageW(&mut message, null_mut(), WM_USER, WM_USER, PM_NOREMOVE) };
+    // SAFETY: a plain query without arguments.
+    let thread = unsafe { GetCurrentThreadId() };
+    {
+        let mut hook = lock(&PRINT_SCREEN_HOOK);
+        if PRINT_SCREEN_GENERATION.load(Ordering::SeqCst) != generation || hook.is_some() {
+            return;
+        }
+        *hook = Some(thread);
+    }
+    // SAFETY: a null name asks for the module of the running executable, which holds the hook
+    // procedure.
+    let module = unsafe { GetModuleHandleW(null()) };
+    // SAFETY: a global low-level hook with a procedure of this module; it is called on this thread
+    // while it waits for messages below.
+    let hook = unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(print_screen_hook), module, 0) };
+    if hook.is_null() {
+        trace::log("[glimpsfy] Print Screen hook: Windows refused a low-level hook");
+    } else {
+        // SAFETY: `message` is a valid place for each message; WM_QUIT from `hold_print_screen`
+        // ends the loop.
+        while unsafe { GetMessageW(&mut message, null_mut(), 0, 0) } > 0 {
+            // SAFETY: a message this thread's queue just handed out.
+            unsafe { DispatchMessageW(&message) };
+        }
+        // SAFETY: the hook this thread installed above.
+        unsafe { UnhookWindowsHookEx(hook) };
+    }
+    let mut held = lock(&PRINT_SCREEN_HOOK);
+    if *held == Some(thread) {
+        *held = None;
+    }
+}
+
+unsafe extern "system" fn print_screen_hook(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    if code == HC_ACTION as i32 && lparam != 0 {
+        // SAFETY: for a keyboard event `lparam` points at its KBDLLHOOKSTRUCT.
+        let event = unsafe { &*(lparam as *const KBDLLHOOKSTRUCT) };
+        if event.vkCode == u32::from(windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_SNAPSHOT)
+            && print_screen_kept(matches!(wparam as u32, WM_KEYDOWN | WM_SYSKEYDOWN))
+        {
+            // Kept: Windows never sees the key.
+            return 1;
+        }
+    }
+    // SAFETY: any other event goes on unchanged.
+    unsafe { CallNextHookEx(null_mut(), code, wparam, lparam) }
+}
+
+/// In the hook: whether this Print Screen event is Glimpsfy's. A press runs the shortcut once,
+/// however long the key repeats, and only from the main thread's queue, so the hook answers at
+/// once.
+fn print_screen_kept(down: bool) -> bool {
+    if !down {
+        return PRINT_SCREEN_DOWN.replace(false);
+    }
+    if PRINT_SCREEN_DOWN.get() {
+        return true;
+    }
+    let modified = [VK_CONTROL, VK_MENU, VK_SHIFT, VK_LWIN, VK_RWIN].into_iter().any(key_down);
+    if modified {
+        return false;
+    }
+    let Some(press) = lock(&PRINT_SCREEN).clone() else {
+        return false;
+    };
+    PRINT_SCREEN_DOWN.set(true);
+    press();
+    true
+}

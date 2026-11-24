@@ -266,13 +266,11 @@ const MAC_SHORTCUTS: Record<string, string> = {
 
 /** The combinations Windows keeps for itself, by canonical accelerator (Super is the Win key).
  * Ctrl+Alt+Del and Alt+Tab are left out: the recorder never takes Delete or Tab. Print Screen is
- * a hint, since it is Windows' only while its own setting holds it, and the core reports a key
- * that the system refused anyway. */
+ * left out: Glimpsfy takes it from the Windows screen capture itself (`desktop::hold_print_screen`). */
 const WINDOWS_SHORTCUTS: Record<string, string> = {
   "Super+L": "settings.shortcuts.system.win.lock",
   "Super+D": "settings.shortcuts.system.win.desktop",
   "Alt+F4": "settings.shortcuts.system.win.close",
-  PRINTSCREEN: "settings.shortcuts.system.win.printScreen",
   "Shift+Super+S": "settings.shortcuts.system.win.snip",
   "Super+PRINTSCREEN": "settings.shortcuts.system.win.screenFile",
 };
