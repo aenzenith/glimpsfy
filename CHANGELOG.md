@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.5.0](https://github.com/aenzenith/glimpsfy/compare/v0.4.2...v0.5.0) (2026-11-24)
+
+
+### Features
+
+* **settings:** the settings sidebar showed the version and the update check at its foot ([9b41af1](https://github.com/aenzenith/glimpsfy/commit/9b41af1ae9612945457b98024555a8d1d6614e98))
+
+
+### Bug Fixes
+
+* **beautify:** the capture's beautify panel showed its preview as soon as it opened ([858e77d](https://github.com/aenzenith/glimpsfy/commit/858e77d6a97c6fecc59475994ad631e4cdfcc445))
+* **settings:** the About table and long section names no longer overflowed the settings window ([bfdb51f](https://github.com/aenzenith/glimpsfy/commit/bfdb51f1dcb22a1bdfb9173dc56b88843d64e5b3))
+
 ## [0.4.2](https://github.com/aenzenith/glimpsfy/compare/v0.4.1...v0.4.2) (2026-11-24)
 
 
