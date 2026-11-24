@@ -18,6 +18,7 @@ import OutputSection from "./sections/OutputSection.vue";
 import RecordingSection from "./sections/RecordingSection.vue";
 import ShortcutsSection from "./sections/ShortcutsSection.vue";
 import { banner, loadError, reload, settings, start } from "./store";
+import UpdateFoot from "./UpdateFoot.vue";
 import ProviderPage from "./upload/ProviderPage.vue";
 import UploadSection from "./upload/UploadSection.vue";
 import type { Provider } from "./upload";
@@ -128,6 +129,7 @@ onBeforeUnmount(() => {
           ><GIcon :name="item.icon" :size="16" /><span class="p-nav-label">{{ t(item.title) }}</span></a
         >
       </nav>
+      <UpdateFoot />
     </aside>
     <div class="g-window-main">
       <header class="g-toolbar">
