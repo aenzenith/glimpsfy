@@ -68,8 +68,8 @@ pub struct StreamConfig {
     /// The size of the delivered frames; `None` keeps the native pixel size divided by
     /// `size_divisor`.
     pub output_size: Option<PhysicalSize>,
-    /// Divides the native pixel size (2 halves it); rounded to even sizes, which video encoders
-    /// need.
+    /// Divides the native pixel size (2 halves it); rounded to even sizes for `Nv12`, which video
+    /// encoders need, and kept exact for `Bgra`.
     #[serde(default = "one")]
     pub size_divisor: u32,
     pub shows_cursor: bool,

@@ -165,9 +165,11 @@ pub fn start(app: &AppHandle, selection: Selection) -> CommandResult<ScrollProgr
         .display(selection.display_id)
         .ok_or_else(|| CommandError::not_found(format!("display {}", selection.display_id.0)))?;
     let bounds = LogicalRect::new(0.0, 0.0, entry.display.frame.width, entry.display.frame.height);
+    let scale = entry.display.scale.0.max(1.0);
     let rect = selection
         .rect
         .intersection(&bounds)
+        .map(|r| on_pixels(r, scale))
         .filter(|r| r.width >= 8.0 && r.height >= 8.0)
         .ok_or_else(|| CommandError::invalid("the selection is too small to scroll"))?;
     let at = LogicalPoint {
@@ -410,6 +412,15 @@ fn stop(app: &AppHandle, mut active: Active) -> Arc<Shared> {
     lock(&active.shared.frames).clear();
     hole(app, active.display, None);
     active.shared.clone()
+}
+
+/// `rect` with its edges on the display's pixels. The stitcher matches rows exactly, and a stream
+/// of a rect off the pixel grid hands over rows scaled between pixels, which differ from the same
+/// rows one scroll later.
+fn on_pixels(rect: LogicalRect, scale: f64) -> LogicalRect {
+    let snap = |v: f64| (v * scale).round() / scale;
+    let (x, y) = (snap(rect.x), snap(rect.y));
+    LogicalRect::new(x, y, snap(rect.x + rect.width) - x, snap(rect.y + rect.height) - y)
 }
 
 fn auto_allowed() -> bool {

@@ -663,11 +663,18 @@ fn watch_desktop(
 }
 
 fn configuration(config: &StreamConfig, source: &Source) -> Retained<SCStreamConfiguration> {
+    // Video encoders take even sizes. Frames read in memory (the scrolling capture's) keep the
+    // region's own pixel size: one pixel less scales the whole frame, and a scaled row no longer
+    // matches the same row one scroll later.
+    let fit = |value: f64| match config.pixel_format {
+        StreamPixelFormat::Nv12 => even(value),
+        StreamPixelFormat::Bgra => (value.round() as usize).max(1),
+    };
     let (width, height) = match config.output_size {
-        Some(size) => (even(size.width as f64), even(size.height as f64)),
+        Some(size) => (fit(size.width as f64), fit(size.height as f64)),
         None => {
             let divisor = config.size_divisor.max(1) as f64;
-            (even(source.points.width * source.scale / divisor), even(source.points.height * source.scale / divisor))
+            (fit(source.points.width * source.scale / divisor), fit(source.points.height * source.scale / divisor))
         }
     };
     // SAFETY: plain property setters on a configuration this function owns, with constant

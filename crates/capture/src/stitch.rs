@@ -3,6 +3,11 @@
 //!
 //! - Every physical row of a frame is signed with a 64-bit hash. A row of one colour says nothing
 //!   about where it is, so flat rows never vote and never count towards a match.
+//! - A row is signed over the columns that move with the page alone. An area often holds more
+//!   than the page: a side bar that stays in place, or a scroll bar whose knob runs its own way,
+//!   and either keeps every row from matching the place the page moved it to. The first movement
+//!   is read in strips of a few columns, the strips that did not move with it leave the signature,
+//!   and the result keeps the columns between the outermost strips that did.
 //! - A frame's band is what changed since the frame before. Rows that stay in place at the top and
 //!   the bottom while the rest moves are a sticky header and a bottom bar: they leave the band,
 //!   enter the result once, and count as found once a second move shows them again. A spinner or
@@ -56,6 +61,13 @@ const EDGE_CHANGE: usize = 48;
 /// repeats itself (cards, a skeleton) agrees with a placement one item off almost everywhere, but
 /// the few rows that tell the items apart contradict it.
 const MISMATCH_WEIGHT: usize = 4;
+/// The width in pixels of the strips the first movement is read in.
+const COLUMN_STRIP: usize = 4;
+/// A strip moves with the page when this share of its distinctive rows agree with the move. A
+/// scroll bar's knob changes a few rows in a hundred, so the share sits above that.
+const MOVING_SHARE: f64 = 0.97;
+/// The strip rows that must agree on a shift before it counts as the page's move.
+const MIN_SUPPORT: f64 = 48.0;
 
 /// A place on the result: a piece's id and a position in its rows.
 type Spot = (u32, i64);
@@ -68,25 +80,225 @@ struct Sig {
     flat: bool,
 }
 
-/// The signature of one row of 4-byte pixels.
-fn sign(row: &[u8]) -> Sig {
+/// The signature of one row of 4-byte pixels, read over the pixel ranges `columns` alone.
+fn sign(row: &[u8], columns: &[Range<usize>]) -> Sig {
     const K: u64 = 0x517c_c1b7_2722_0a95;
-    let mut hash: u64 = 0xcbf2_9ce4_8422_2325 ^ row.len() as u64;
-    let mut chunks = row.chunks_exact(8);
-    for chunk in &mut chunks {
-        let value =
-            u64::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5], chunk[6], chunk[7]]);
-        hash = (hash.rotate_left(5) ^ value).wrapping_mul(K);
-    }
-    for &byte in chunks.remainder() {
-        hash = (hash.rotate_left(5) ^ byte as u64).wrapping_mul(K);
+    let len: usize = columns.iter().map(|c| c.len() * 4).sum();
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325 ^ len as u64;
+    let mut first: Option<&[u8]> = None;
+    let mut flat = true;
+    for range in columns {
+        let part = &row[range.start * 4..range.end * 4];
+        let mut chunks = part.chunks_exact(8);
+        for chunk in &mut chunks {
+            let value =
+                u64::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5], chunk[6], chunk[7]]);
+            hash = (hash.rotate_left(5) ^ value).wrapping_mul(K);
+        }
+        for &byte in chunks.remainder() {
+            hash = (hash.rotate_left(5) ^ byte as u64).wrapping_mul(K);
+        }
+        if flat {
+            let first = *first.get_or_insert_with(|| part.get(..4).unwrap_or(&[]));
+            flat = part.chunks_exact(4).all(|pixel| pixel == first);
+        }
     }
     // The finaliser of MurmurHash3, so neighbouring rows spread over the whole range.
     hash ^= hash >> 33;
     hash = hash.wrapping_mul(0xff51_afd7_ed55_8ccd);
     hash ^= hash >> 33;
-    let first = row.get(..4).unwrap_or(&[]);
-    Sig { hash, flat: row.chunks_exact(4).all(|pixel| pixel == first) }
+    Sig { hash, flat }
+}
+
+/// The columns of the area that move with the page.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Columns {
+    /// The pixel ranges a row is signed over.
+    signed: Vec<Range<usize>>,
+    /// The columns the result keeps.
+    kept: Range<usize>,
+}
+
+impl Columns {
+    fn all(width: usize) -> Columns {
+        Columns { signed: std::iter::once(0..width).collect(), kept: 0..width }
+    }
+}
+
+/// What a strip of columns did during a move.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum StripKind {
+    /// It moved with the page.
+    Moving,
+    /// It showed too little to tell (a margin of one colour).
+    Blank,
+    /// It stayed in place or ran its own way: a side bar, a scroll bar's knob, a video.
+    Apart,
+}
+
+/// The columns that moved with the page from `before` to `now`, read in strips of `COLUMN_STRIP`
+/// pixels. The page's move is the shift the most strip rows agree on (rows that stayed in place
+/// across the whole width, a sticky edge, say nothing about it), and a strip moved with it when
+/// `MOVING_SHARE` of its distinctive rows agree. `None` when the frames show no such move.
+fn moving_columns(before: &Frame, now: &Frame) -> Option<Columns> {
+    let (w, h) = (now.size.width as usize, now.size.height as usize);
+    let n = w.div_ceil(COLUMN_STRIP);
+    let strip = |s: usize| s * COLUMN_STRIP..((s + 1) * COLUMN_STRIP).min(w);
+    let signs = |frame: &Frame| -> Vec<Sig> {
+        let mut out = Vec::with_capacity(n * h);
+        for y in 0..h {
+            let row = row_of(frame, y);
+            out.extend((0..n).map(|s| sign(row, &[strip(s)])));
+        }
+        out
+    };
+    let (was, is) = (signs(before), signs(now));
+    let at = |sigs: &[Sig], y: usize, s: usize| sigs[y * n + s];
+    let changed: Vec<bool> = (0..h).map(|y| (0..n).any(|s| at(&was, y, s) != at(&is, y, s))).collect();
+
+    // Row y of `now` shows what `before` showed at y + shift.
+    let mut votes: HashMap<i64, f64> = HashMap::new();
+    let mut rows: HashMap<u64, Vec<usize>> = HashMap::new();
+    for s in 0..n {
+        rows.clear();
+        for y in (0..h).filter(|&y| changed[y]) {
+            let sig = at(&was, y, s);
+            if !sig.flat {
+                rows.entry(sig.hash).or_default().push(y);
+            }
+        }
+        for y in (0..h).filter(|&y| changed[y]) {
+            let sig = at(&is, y, s);
+            if sig.flat {
+                continue;
+            }
+            // A few columns repeat often (the stem of a letter); such a row cannot tell where it was.
+            let Some(found) = rows.get(&sig.hash).filter(|f| f.len() <= MIN_DISTINCT) else { continue };
+            for &p in found {
+                let shift = p as i64 - y as i64;
+                if shift != 0 {
+                    *votes.entry(shift).or_default() += 1.0 / found.len() as f64;
+                }
+            }
+        }
+    }
+    let (shift, support) =
+        votes.into_iter().max_by(|a, b| a.1.total_cmp(&b.1).then(b.0.abs().cmp(&a.0.abs())).then(b.0.cmp(&a.0)))?;
+    if support < MIN_SUPPORT {
+        return None;
+    }
+    // The rows the page carried: a row no strip of which moved with the shift (a spinner, a menu
+    // that opened) tells nothing about the columns.
+    let overlap: Vec<(usize, usize)> = (0..h)
+        .filter_map(|y| {
+            let p = usize::try_from(y as i64 + shift).ok().filter(|&p| p < h)?;
+            let carried = (0..n).any(|s| {
+                let now = at(&is, y, s);
+                !now.flat && at(&was, p, s) == now
+            });
+            (changed[y] && changed[p] && carried).then_some((y, p))
+        })
+        .collect();
+    if overlap.len() < MIN_OVERLAP {
+        return None;
+    }
+    let kinds: Vec<StripKind> = (0..n)
+        .map(|s| {
+            let (mut distinct, mut agree, mut moved) = (0usize, 0usize, 0usize);
+            for &(y, p) in &overlap {
+                let (then, now) = (at(&was, p, s), at(&is, y, s));
+                if then == now && now.flat {
+                    continue;
+                }
+                distinct += 1;
+                agree += usize::from(then == now);
+                moved += usize::from(at(&was, y, s) != now);
+            }
+            // A strip whose rows are all alike (a window's border) agrees with any shift without
+            // having moved; it tells nothing either way.
+            if distinct < MIN_DISTINCT || (moved < MIN_DISTINCT && agree as f64 >= MOVING_SHARE * distinct as f64) {
+                StripKind::Blank
+            } else if agree as f64 >= MOVING_SHARE * distinct as f64 {
+                StripKind::Moving
+            } else {
+                StripKind::Apart
+            }
+        })
+        .collect();
+    if kinds.iter().filter(|k| **k == StripKind::Moving).count() < MIN_DISTINCT {
+        return None;
+    }
+    let first = kinds.iter().position(|k| *k == StripKind::Moving)?;
+    let last = kinds.iter().rposition(|k| *k == StripKind::Moving)?;
+    // A margin of the page's own colour belongs to it. One of another colour (the empty part of a
+    // side bar) or one past a strip that stood apart belongs to the window around it.
+    let ground = |s: usize| background(now, strip(s));
+    let joins = |s: usize, page: Option<[u8; 4]>| {
+        kinds[s] == StripKind::Blank && (page.is_none() || ground(s).is_none_or(|c| Some(c) == page))
+    };
+    let mut start = first;
+    let page = ground(first);
+    while start > 0 && joins(start - 1, page) {
+        start -= 1;
+    }
+    let mut end = last + 1;
+    let page = ground(last);
+    while end < n && joins(end, page) {
+        end += 1;
+    }
+    // A strip that joined may still start with a few columns of the side bar's colour.
+    let mut from = strip(start).start;
+    let page = ground(first);
+    while from < strip(first).start && column_colour(now, from).is_some_and(|c| Some(c) != page) {
+        from += 1;
+    }
+    let mut to = strip(end - 1).end;
+    let page = ground(last);
+    while to > strip(last).end && column_colour(now, to - 1).is_some_and(|c| Some(c) != page) {
+        to -= 1;
+    }
+    // A strip inside the page that ran its own way (a video, a spinner) stays in the result but
+    // signs nothing.
+    let mut signed: Vec<Range<usize>> = Vec::new();
+    for s in (start..end).filter(|&s| kinds[s] != StripKind::Apart) {
+        let range = strip(s).start.max(from)..strip(s).end.min(to);
+        if range.is_empty() {
+            continue;
+        }
+        match signed.last_mut() {
+            Some(last) if last.end == range.start => last.end = range.end,
+            _ => signed.push(range),
+        }
+    }
+    Some(Columns { signed, kept: from..to })
+}
+
+/// The colour most rows of `columns` in `frame` are filled with, when half of them are of one
+/// colour; `None` for columns that hold a picture on most rows.
+fn background(frame: &Frame, columns: Range<usize>) -> Option<[u8; 4]> {
+    let h = frame.size.height as usize;
+    let mut counts: HashMap<[u8; 4], usize> = HashMap::new();
+    for y in 0..h {
+        let part = &row_of(frame, y)[columns.start * 4..columns.end * 4];
+        let first = [part[0], part[1], part[2], part[3]];
+        if part.chunks_exact(4).all(|pixel| pixel == first) {
+            *counts.entry(first).or_default() += 1;
+        }
+    }
+    let (colour, count) = counts.into_iter().max_by_key(|&(colour, count)| (count, colour))?;
+    (count * 2 >= h).then_some(colour)
+}
+
+/// The colour of column `x` of `frame` when nine rows in ten have it.
+fn column_colour(frame: &Frame, x: usize) -> Option<[u8; 4]> {
+    let h = frame.size.height as usize;
+    let mut counts: HashMap<[u8; 4], usize> = HashMap::new();
+    for y in 0..h {
+        let p = &row_of(frame, y)[x * 4..x * 4 + 4];
+        *counts.entry([p[0], p[1], p[2], p[3]]).or_default() += 1;
+    }
+    let (colour, count) = counts.into_iter().max_by_key(|&(colour, count)| (count, colour))?;
+    (count * 10 >= h * 9).then_some(colour)
 }
 
 /// The rows at the top and the bottom that stayed in place from `before` to `now`. Each counts only
@@ -171,6 +383,10 @@ struct Store {
     pending: Vec<u8>,
     /// RGBA, `thumb_width` pixels per row.
     thumbs: Vec<u8>,
+    /// How far inside its band each row was when it was taken, in rows from the nearer edge.
+    depth: Vec<u16>,
+    /// Whether a later frame showed the row again as it was.
+    confirmed: Vec<bool>,
 }
 
 impl Store {
@@ -182,11 +398,13 @@ impl Store {
             strips: Vec::new(),
             pending: Vec::new(),
             thumbs: Vec::new(),
+            depth: Vec::new(),
+            confirmed: Vec::new(),
         }
     }
 
-    /// Keeps one row of `format` pixels and gives its number.
-    fn push(&mut self, row: &[u8], format: PixelFormat, sig: Sig) -> u32 {
+    /// Keeps one row of `format` pixels, taken `depth` rows inside its band, and gives its number.
+    fn push(&mut self, row: &[u8], format: PixelFormat, sig: Sig, depth: u16) -> u32 {
         let bytes = self.width * 4;
         let at = self.pending.len();
         self.pending.resize(at + bytes, 0);
@@ -211,6 +429,8 @@ impl Store {
         }
         let number = self.sigs.len() as u32;
         self.sigs.push(sig);
+        self.depth.push(depth);
+        self.confirmed.push(false);
         if self.pending.len() == STRIP_ROWS * bytes {
             self.compress();
         }
@@ -250,6 +470,29 @@ impl Store {
         }
     }
 
+    /// Signs every row again over `columns`, laid out as `format` as the frames were, so the rows
+    /// kept so far match the frames that come next. The signatures stay as they were when a strip
+    /// cannot be read.
+    fn resign(&mut self, columns: &[Range<usize>], format: PixelFormat) -> Result<()> {
+        let bytes = self.width * 4;
+        let mut row = vec![0u8; bytes];
+        let mut sigs = Vec::with_capacity(self.sigs.len());
+        for i in 0..=self.strips.len() {
+            for source in self.strip(i)?.chunks_exact(bytes) {
+                match format {
+                    PixelFormat::Bgra8 => swizzle_bgra_rgba(source, &mut row),
+                    PixelFormat::Rgba8 => row.copy_from_slice(source),
+                }
+                sigs.push(sign(&row, columns));
+            }
+        }
+        if sigs.len() != self.sigs.len() {
+            return Err(CaptureError::Backend("the scrolling capture lost rows while it read them again".into()));
+        }
+        self.sigs = sigs;
+        Ok(())
+    }
+
     fn thumb(&self, number: u32) -> &[u8] {
         let size = self.thumb_width * 4;
         let at = number as usize * size;
@@ -264,7 +507,8 @@ impl Store {
                 Strip::Png(b) | Strip::Raw(b) => b.len(),
             })
             .sum();
-        (strips + self.pending.len() + self.thumbs.len() + self.sigs.len() * std::mem::size_of::<Sig>()) as u64
+        let per_row = std::mem::size_of::<Sig>() + std::mem::size_of::<u16>() + std::mem::size_of::<bool>();
+        (strips + self.pending.len() + self.thumbs.len() + self.sigs.len() * per_row) as u64
     }
 }
 
@@ -375,6 +619,14 @@ pub struct Stitcher {
     movement_due: bool,
     next_id: u32,
     full: bool,
+    /// The columns rows are signed over and the result keeps.
+    columns: Columns,
+    /// The frame before, until a move showed which columns move with the page.
+    learning: Option<Frame>,
+    /// The layout of the frames' pixels, which signing the kept rows again repeats.
+    format: PixelFormat,
+    /// How many rows the last move brought in at the band's edge.
+    brought: usize,
 }
 
 impl Stitcher {
@@ -394,6 +646,10 @@ impl Stitcher {
             movement_due: false,
             next_id: 1,
             full: false,
+            columns: Columns::all(size.width as usize),
+            learning: None,
+            format: PixelFormat::Rgba8,
+            brought: 0,
         }
     }
 
@@ -420,6 +676,7 @@ impl Stitcher {
         self.layout = layout;
         self.full = false;
         self.movement_due = true;
+        self.brought = 0;
         self.reindex();
         true
     }
@@ -439,11 +696,21 @@ impl Stitcher {
             return Step::Ignored;
         }
         let h = self.size.height as usize;
-        let sigs: Vec<Sig> = (0..h).map(|y| sign(row_of(frame, y))).collect();
+        let mut sigs = self.sign_frame(frame);
         if self.layout.pieces.is_empty() {
             return self.first(frame, sigs);
         }
         if sigs == self.last {
+            return Step::Still;
+        }
+        if self.learn(frame) {
+            sigs = self.sign_frame(frame);
+            if sigs == self.last {
+                return Step::Still;
+            }
+        }
+        if self.repainted(frame, &sigs) {
+            self.last = sigs;
             return Step::Still;
         }
         let before = std::mem::replace(&mut self.last, sigs);
@@ -451,8 +718,10 @@ impl Stitcher {
         let (top, bottom) = static_edges(&before, &sigs);
         let t = top.max(self.layout.header.len());
         let b = bottom.max(self.layout.footer.len());
-        // Only a thin band changed: a clock, a caret or a hover, not a move.
+        // Only a thin band changed: a clock, a caret or a hover, not a move, or the page painted
+        // the rows the last move brought in.
         if t + b + MIN_OVERLAP > h {
+            self.refresh_view(frame, &sigs);
             return Step::Still;
         }
         let band = t..h - b;
@@ -463,9 +732,13 @@ impl Stitcher {
             lifted = placement.is_some();
         }
         let Some((id, placed, others)) = placement else {
+            if self.in_place(&sigs, &band) {
+                return Step::Still;
+            }
             return self.open(frame, &sigs, band);
         };
         if self.layout.current == Some((id, placed)) {
+            self.refresh_view(frame, &sigs);
             return Step::Still;
         }
 
@@ -478,11 +751,14 @@ impl Stitcher {
             return Step::Still;
         };
         self.layout.pieces[at].tentative = false;
+        self.brought = 0;
         if let Some((was, from)) = previous {
             if was == id && placed != from {
                 self.layout.direction = if placed > from { 1 } else { -1 };
+                self.brought = placed.abs_diff(from) as usize;
             }
         }
+        self.refresh(at, placed, frame, &sigs, band.clone(), false);
         let grown = self.extend(at, placed, frame, &sigs, band.clone());
         let joined = self.join(at, placed, &others);
         self.layout.current = Some((id, placed));
@@ -505,15 +781,46 @@ impl Stitcher {
     fn first(&mut self, frame: &Frame, sigs: Vec<Sig>) -> Step {
         let id = self.new_id();
         let room = MAX_HEIGHT as usize;
-        let rows =
-            (0..sigs.len().min(room)).map(|y| self.store.push(row_of(frame, y), frame.format, sigs[y])).collect();
+        let rows = (0..sigs.len().min(room))
+            .map(|y| self.store.push(row_of(frame, y), frame.format, sigs[y], depth(&(0..sigs.len()), y)))
+            .collect();
         self.layout.pieces.push(Piece { id, top: 0, rows, tentative: false });
         self.layout.current = Some((id, 0));
         self.layout.frames = 1;
         self.band = 0..sigs.len();
         self.last = sigs;
+        self.format = frame.format;
+        self.learning = Some(frame.clone());
         self.reindex();
         Step::First
+    }
+
+    fn sign_frame(&self, frame: &Frame) -> Vec<Sig> {
+        (0..self.size.height as usize).map(|y| sign(row_of(frame, y), &self.columns.signed)).collect()
+    }
+
+    /// Until a move showed which columns move with the page, each changed frame is compared with
+    /// the one before. Once one did, the rows kept so far and the frame before are signed again
+    /// over those columns; whether that happened.
+    fn learn(&mut self, frame: &Frame) -> bool {
+        let Some(before) = self.learning.take() else {
+            return false;
+        };
+        let Some(columns) = moving_columns(&before, frame) else {
+            self.learning = Some(frame.clone());
+            return false;
+        };
+        if columns == self.columns {
+            return false;
+        }
+        // A store that cannot be read again keeps every column, as before the move.
+        if self.store.resign(&columns.signed, self.format).is_err() {
+            return false;
+        }
+        self.columns = columns;
+        self.last = self.sign_frame(&before);
+        self.reindex();
+        true
     }
 
     fn new_id(&mut self) -> u32 {
@@ -599,11 +906,13 @@ impl Stitcher {
             let Some(number) = piece.at(placed + y as i64) else { continue };
             overlap += 1;
             let sig = sigs[y];
-            if sig.flat {
+            let kept = self.store.sigs[number as usize];
+            // An empty row no frame confirmed may be one the page had not painted yet.
+            if sig.flat || (kept.flat && !self.store.confirmed[number as usize]) {
                 continue;
             }
             distinct += 1;
-            if self.store.sigs[number as usize].hash == sig.hash {
+            if kept.hash == sig.hash {
                 matched += 1;
             }
         }
@@ -616,6 +925,7 @@ impl Stitcher {
     fn open(&mut self, frame: &Frame, sigs: &[Sig], band: Range<usize>) -> Step {
         self.start_movement();
         self.drop_tentative(0);
+        self.brought = 0;
         let room = self.room();
         if room == 0 {
             self.full = true;
@@ -623,7 +933,8 @@ impl Stitcher {
         }
         let id = self.new_id();
         let take = band.start..band.end.min(band.start + room);
-        let rows = take.clone().map(|y| self.store.push(row_of(frame, y), frame.format, sigs[y])).collect();
+        let rows =
+            take.clone().map(|y| self.store.push(row_of(frame, y), frame.format, sigs[y], depth(&band, y))).collect();
         let piece = Piece { id, top: band.start as i64, rows, tentative: true };
         let current = self.layout.current.and_then(|(cid, _)| self.layout.pieces.iter().position(|p| p.id == cid));
         let at = match current {
@@ -665,7 +976,9 @@ impl Stitcher {
                 moved |= taken.is_some();
                 self.layout.header = match taken {
                     Some(rows) => rows,
-                    None => (0..top).map(|y| self.store.push(row_of(frame, y), frame.format, self.last[y])).collect(),
+                    None => (0..top)
+                        .map(|y| self.store.push(row_of(frame, y), frame.format, self.last[y], u16::MAX))
+                        .collect(),
                 };
             }
         }
@@ -677,9 +990,9 @@ impl Stitcher {
                 moved |= taken.is_some();
                 self.layout.footer = match taken {
                     Some(rows) => rows,
-                    None => {
-                        (h - bottom..h).map(|y| self.store.push(row_of(frame, y), frame.format, self.last[y])).collect()
-                    }
+                    None => (h - bottom..h)
+                        .map(|y| self.store.push(row_of(frame, y), frame.format, self.last[y], u16::MAX))
+                        .collect(),
                 };
             }
         }
@@ -754,6 +1067,104 @@ impl Stitcher {
         None
     }
 
+    /// Takes the band's view of rows of piece `at` that no frame confirmed yet. A row taken at a
+    /// band's edge may be one the page had not painted yet, or a line of the window that stays at
+    /// the edge (a border one row high), and either would stay in the result between rows of the
+    /// page. A row is confirmed once a later frame shows it again as it was; until then, a view of
+    /// it farther inside a band that differs replaces it. A confirmed row stays, so a button that
+    /// floats in the middle of the page never enters the rows that pass under it.
+    ///
+    /// A frame of the same view (`same`, nothing moved) neither confirms a row, since it may
+    /// show the page before it painted as well, nor needs to see it farther inside: it is newer.
+    fn refresh(&mut self, at: usize, placed: i64, frame: &Frame, sigs: &[Sig], band: Range<usize>, same: bool) {
+        let id = self.layout.pieces[at].id;
+        for y in band.clone() {
+            let position = placed + y as i64;
+            let Some(number) = self.layout.pieces[at].at(position) else { continue };
+            let n = number as usize;
+            if self.store.confirmed[n] {
+                continue;
+            }
+            let inside = depth(&band, y);
+            // An empty row stays open: the page may not have painted it on either frame.
+            if self.store.sigs[n] == sigs[y] {
+                self.store.confirmed[n] |= !same && !sigs[y].flat;
+                self.store.depth[n] = self.store.depth[n].max(inside);
+                continue;
+            }
+            if inside < self.store.depth[n] || (inside == self.store.depth[n] && !same) {
+                continue;
+            }
+            let old = self.store.sigs[n];
+            if !old.flat {
+                if let Some(spots) = self.index.get_mut(&old.hash) {
+                    spots.retain(|&spot| spot != (id, position));
+                    if spots.is_empty() {
+                        self.index.remove(&old.hash);
+                    }
+                }
+            }
+            let fresh = self.store.push(row_of(frame, y), frame.format, sigs[y], inside);
+            let piece = &mut self.layout.pieces[at];
+            let i = (position - piece.top) as usize;
+            piece.rows[i] = fresh;
+            self.remember(id, position, sigs[y]);
+        }
+    }
+
+    /// Whether the frame only painted, in place, rows the last move brought in: every row that
+    /// changed lies no deeper inside the band than that move reached, where the result holds a
+    /// row no frame confirmed and no deeper view took, and less than half the frame changed. A page paints what
+    /// scrolled in a moment late, and with a still header above it that would look like a move.
+    /// The new rows replace the old ones.
+    fn repainted(&mut self, frame: &Frame, sigs: &[Sig]) -> bool {
+        let Some((id, placed)) = self.layout.current else { return false };
+        let Some(at) = self.layout.pieces.iter().position(|p| p.id == id) else { return false };
+        let changed: Vec<usize> = (0..sigs.len()).filter(|&y| self.last[y] != sigs[y]).collect();
+        if changed.is_empty() || changed.len() * 2 > sigs.len() {
+            return false;
+        }
+        let piece = &self.layout.pieces[at];
+        let fresh = changed.iter().all(|&y| {
+            let inside = depth(&self.band, y);
+            self.band.contains(&y)
+                && inside as usize <= self.brought
+                && piece
+                    .at(placed + y as i64)
+                    .is_some_and(|n| !self.store.confirmed[n as usize] && self.store.depth[n as usize] <= inside)
+        });
+        if fresh {
+            self.refresh(at, placed, frame, sigs, self.band.clone(), true);
+        }
+        fresh
+    }
+
+    /// Whether a band that fits nowhere changed in place: more distinctive rows of the view stayed
+    /// where they were, matching the result there, than the band holds. A caret that blinks on
+    /// the last line or a line being typed is not a move, and a piece of its own would repeat it.
+    fn in_place(&self, sigs: &[Sig], band: &Range<usize>) -> bool {
+        let Some((id, placed)) = self.layout.current else { return false };
+        let Some(piece) = self.layout.pieces.iter().find(|p| p.id == id) else { return false };
+        let held = self
+            .band
+            .clone()
+            .filter(|y| !band.contains(y))
+            .filter(|&y| {
+                let sig = sigs[y];
+                !sig.flat && piece.at(placed + y as i64).is_some_and(|n| self.store.sigs[n as usize] == sig)
+            })
+            .count();
+        held >= MIN_OVERLAP.max(band.len())
+    }
+
+    /// A frame that did not move the view: the rows of the view it shows anew replace those no
+    /// frame confirmed yet.
+    fn refresh_view(&mut self, frame: &Frame, sigs: &[Sig]) {
+        let Some((id, placed)) = self.layout.current else { return };
+        let Some(at) = self.layout.pieces.iter().position(|p| p.id == id) else { return };
+        self.refresh(at, placed, frame, sigs, self.band.clone(), true);
+    }
+
     /// Adds the band's rows that lie outside piece `at` to it, above and below.
     fn extend(&mut self, at: usize, placed: i64, frame: &Frame, sigs: &[Sig], band: Range<usize>) -> Grown {
         let mut room = self.room();
@@ -769,7 +1180,7 @@ impl Stitcher {
                 grown.full = true;
                 break;
             }
-            let number = self.store.push(row_of(frame, y), frame.format, sigs[y]);
+            let number = self.store.push(row_of(frame, y), frame.format, sigs[y], depth(&band, y));
             let piece = &mut self.layout.pieces[at];
             piece.rows.push_front(number);
             piece.top -= 1;
@@ -777,12 +1188,12 @@ impl Stitcher {
             room -= 1;
             self.remember(id, position, sigs[y]);
         }
-        for y in band.filter(|&y| placed + (y as i64) >= end) {
+        for y in band.clone().filter(|&y| placed + (y as i64) >= end) {
             if room == 0 {
                 grown.full = true;
                 break;
             }
-            let number = self.store.push(row_of(frame, y), frame.format, sigs[y]);
+            let number = self.store.push(row_of(frame, y), frame.format, sigs[y], depth(&band, y));
             let piece = &mut self.layout.pieces[at];
             let position = piece.end();
             piece.rows.push_back(number);
@@ -902,7 +1313,7 @@ impl Stitcher {
             y += piece.rows.len() as u32;
         }
         Progress {
-            width: self.size.width,
+            width: self.columns.kept.len() as u32,
             height: self.height().min(MAX_HEIGHT),
             frames: self.layout.frames,
             header,
@@ -922,18 +1333,22 @@ impl Stitcher {
         let order = self.order();
         let tw = self.store.thumb_width;
         let w = self.size.width as usize;
+        let kept = &self.columns.kept;
+        let from = (kept.start * tw / w).min(tw - 1);
+        let to = (kept.end * tw).div_ceil(w).clamp(from + 1, tw);
+        let pw = to - from;
         let height = (order.len() * tw).div_ceil(w).max(1);
-        let mut data = Vec::with_capacity(height * tw * 4);
+        let mut data = Vec::with_capacity(height * pw * 4);
         for j in 0..height {
             let row = ((j * w + w / 2) / tw).min(order.len().saturating_sub(1));
             match order.get(row) {
-                Some(&number) => data.extend_from_slice(self.store.thumb(number)),
-                None => data.resize(data.len() + tw * 4, 0),
+                Some(&number) => data.extend_from_slice(&self.store.thumb(number)[from * 4..to * 4]),
+                None => data.resize(data.len() + pw * 4, 0),
             }
         }
         Frame {
-            size: PhysicalSize::new(tw as u32, height as u32),
-            bytes_per_row: tw * 4,
+            size: PhysicalSize::new(pw as u32, height as u32),
+            bytes_per_row: pw * 4,
             format: PixelFormat::Rgba8,
             color: self.color.clone(),
             scale: self.scale,
@@ -941,14 +1356,17 @@ impl Stitcher {
         }
     }
 
-    /// The whole result as one frame. Pieces a gap still parts follow each other end to end.
+    /// The whole result as one frame, of the columns that moved with the page. Pieces a gap still
+    /// parts follow each other end to end.
     pub fn finish(&self) -> Result<Frame> {
         let order = self.order();
         if order.is_empty() {
             return Err(CaptureError::InvalidArgument("nothing was captured".into()));
         }
         let bytes = self.size.width as usize * 4;
-        let mut data = vec![0u8; bytes * order.len()];
+        let kept = self.columns.kept.start * 4..self.columns.kept.end * 4;
+        let out_bytes = kept.len();
+        let mut data = vec![0u8; out_bytes * order.len()];
         // Each strip is decoded once, for all of its rows.
         let mut by_strip: Vec<Vec<(usize, usize)>> = Vec::new();
         for (out, &number) in order.iter().enumerate() {
@@ -968,12 +1386,12 @@ impl Stitcher {
                 let source = pixels.get(from..from + bytes).ok_or_else(|| {
                     CaptureError::Backend(format!("strip {strip} is missing row {row} of the scrolling capture"))
                 })?;
-                data[out * bytes..(out + 1) * bytes].copy_from_slice(source);
+                data[out * out_bytes..(out + 1) * out_bytes].copy_from_slice(&source[kept.clone()]);
             }
         }
         Frame::new(
-            PhysicalSize::new(self.size.width, order.len() as u32),
-            bytes,
+            PhysicalSize::new(self.columns.kept.len() as u32, order.len() as u32),
+            out_bytes,
             PixelFormat::Rgba8,
             self.color.clone(),
             self.scale,
@@ -986,6 +1404,11 @@ impl Stitcher {
 struct Grown {
     /// The result reached `MAX_HEIGHT` and rows were left out.
     full: bool,
+}
+
+/// How far row `y` lies inside `band`, in rows from the nearer edge.
+fn depth(band: &Range<usize>, y: usize) -> u16 {
+    (y - band.start).min(band.end - 1 - y).min(u16::MAX as usize) as u16
 }
 
 /// Row `y` of `frame`, without its padding.
@@ -1059,7 +1482,8 @@ mod tests {
             stitcher.push(&frame(rows));
         }
         let out = stitcher.finish().unwrap();
-        let rows = out.data.chunks_exact(out.bytes_per_row).map(|r| r[..W * 4].to_vec()).collect();
+        let width = out.size.width as usize * 4;
+        let rows = out.data.chunks_exact(out.bytes_per_row).map(|r| r[..width].to_vec()).collect();
         (rows, stitcher.progress().gaps)
     }
 
@@ -1137,5 +1561,72 @@ mod tests {
                 assert!(rows == expected, "step {step}, down {down}: the rows differ from the page");
             }
         }
+    }
+
+    // An area over a window holds more than the page: a side bar that stays in place and a scroll
+    // bar whose knob runs its own way. Signed over the whole width, no row matched where the page
+    // moved it, so the result was the first frame and the last one end to end.
+    #[test]
+    fn a_side_bar_and_a_scroll_bar_stay_out_of_the_result() {
+        let (content, side) = (text(1500, 5, false), text(200, 9, false));
+        let h = 200;
+        let page = |offset: usize, sidebar: bool, knob: bool| -> Vec<Vec<u8>> {
+            (0..h)
+                .map(|y| {
+                    let mut r = content[offset + y].clone();
+                    if sidebar {
+                        r[..16 * 4].copy_from_slice(&side[y][..16 * 4]);
+                    }
+                    if knob {
+                        let on = (offset * h / 1500..(offset + h) * h / 1500).contains(&y);
+                        let c = if on { 90 } else { 250 };
+                        for x in W - 4..W {
+                            r[x * 4..x * 4 + 3].copy_from_slice(&[c, c, c]);
+                        }
+                    }
+                    r
+                })
+                .collect()
+        };
+        let offsets: Vec<usize> = (0..=1200).step_by(30).collect();
+        // The side bar's columns and the knob's go; the page's empty margin stays.
+        for (sidebar, knob, kept) in [(true, false, 16..W), (false, true, 0..W - 4), (true, true, 16..W - 4)] {
+            let frames: Vec<_> = offsets.iter().map(|&o| page(o, sidebar, knob)).collect();
+            let expected: Vec<Vec<u8>> =
+                content[..1200 + h].iter().map(|r| r[kept.start * 4..kept.end * 4].to_vec()).collect();
+            let (rows, gaps) = stitch(&frames);
+            assert!(gaps.is_empty(), "side bar {sidebar}, knob {knob}: gaps at {gaps:?}");
+            assert_eq!(rows.len(), expected.len(), "side bar {sidebar}, knob {knob}");
+            assert!(rows == expected, "side bar {sidebar}, knob {knob}: the rows differ from the page");
+        }
+    }
+
+    // A row the window keeps at the band's edge (its border) entered the result on every move,
+    // between rows of the page, and a page that painted what scrolled in a moment late left those
+    // rows empty. Both split the result into pieces once enough of them gathered in a band.
+    #[test]
+    fn an_edge_row_and_rows_painted_late_leave_the_result() {
+        let content = text(1500, 5, false);
+        let h = 200;
+        let step = 30;
+        let border = vec![150u8; W * 4];
+        let offsets: Vec<usize> = (0..=900).step_by(step).collect();
+        let view = |offset: usize, painted: bool| -> Vec<Vec<u8>> {
+            let mut rows = content[offset..offset + h - 1].to_vec();
+            if !painted {
+                for r in &mut rows[h - 1 - step..] {
+                    *r = vec![255u8; W * 4];
+                }
+            }
+            rows.push(border.clone());
+            rows
+        };
+        let mut frames: Vec<_> = offsets.iter().enumerate().map(|(i, &o)| view(o, i == 0)).collect();
+        frames.push(view(900, true));
+        let expected = [&content[..900 + h - 1], std::slice::from_ref(&border)].concat();
+        let (rows, gaps) = stitch(&frames);
+        assert!(gaps.is_empty(), "gaps at {gaps:?}");
+        assert_eq!(rows.len(), expected.len());
+        assert!(rows == expected, "the rows differ from the page");
     }
 }
