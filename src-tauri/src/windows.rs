@@ -498,10 +498,11 @@ pub fn open(app: &AppHandle, kind: WindowKind) {
         return;
     }
     let (width, height) = kind.size();
+    let (min_width, min_height) = kind.min_size();
     let built = WebviewWindowBuilder::new(app, label, WebviewUrl::App("index.html".into()))
         .title(kind.title())
         .inner_size(width, height)
-        .min_inner_size(width.min(480.0), height.min(360.0))
+        .min_inner_size(min_width, min_height)
         // Where the window stays when no screen can be read.
         .center()
         .visible(false)

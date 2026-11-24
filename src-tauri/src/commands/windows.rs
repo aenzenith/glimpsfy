@@ -48,6 +48,16 @@ impl WindowKind {
         }
     }
 
+    /// The smallest size in points the user can make the window. Settings stops at 640 pt wide:
+    /// below that its sidebar, a folder path and a device menu no longer fit side by side.
+    pub fn min_size(self) -> (f64, f64) {
+        let (width, height) = self.size();
+        match self {
+            WindowKind::Settings => (640.0, height.min(360.0)),
+            _ => (width.min(480.0), height.min(360.0)),
+        }
+    }
+
     /// The window's first size in points (DESIGN.md's window sizes).
     pub fn size(self) -> (f64, f64) {
         match self {
