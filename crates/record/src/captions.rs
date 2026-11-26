@@ -475,7 +475,7 @@ fn tx3g() -> Vec<u8> {
 }
 
 fn text_trak(plan: &Plan, samples: &Samples, chunk: u64) -> Vec<u8> {
-    let wide = |values: &[u64]| values.iter().any(|v| *v > u32::MAX.into());
+    let wide = |values: &[u64]| values.iter().any(|v| *v > u64::from(u32::MAX));
     let times = |b: &mut Vec<u8>, version_1: bool, values: &[u64]| {
         for v in values {
             if version_1 {
