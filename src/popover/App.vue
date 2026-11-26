@@ -1,6 +1,8 @@
 <script setup lang="ts">
-// The menu bar popover (DESIGN.md "Popover"): a strip of capture modes with a line that names the
-// one under the pointer or the focus and its live shortcut, the one-shot delay at that line's end,
+// The menu bar popover (DESIGN.md "Popover"): a strip of the five main capture modes and the More
+// menu at its end, which holds the rarer tools (copy text, pick a colour, measure, scrolling and
+// all-display captures, interval capture, the clipboard's image); a line that names the cell under
+// the pointer or the focus and its live shortcut, the one-shot delay at that line's end,
 // a large preview of the picked capture over a strip of the five latest, the picked capture's
 // actions (Copy and its own second action labelled, the rest as icons), and History, Settings and
 // Quit. The window is a transparent native panel that is made once at launch and stays alive,
@@ -28,6 +30,7 @@ import {
   CAPTURE_INTERVAL,
   capture_cancel_delay,
   capture_delay,
+  capture_displays,
   capture_interval,
   capture_set_delay,
   capture_start,
@@ -35,6 +38,7 @@ import {
   capture_stop_interval,
   type CaptureMode,
   type DelayState,
+  type Display,
   type IntervalState,
 } from "../lib/api/capture";
 import { on } from "../lib/api/core";
@@ -52,6 +56,7 @@ import {
   type EntryId,
 } from "../lib/api/history";
 import { output_reveal } from "../lib/api/output";
+import { editor_open_clipboard } from "../lib/api/render";
 import { permissions_open_settings, permissions_request, permissions_status, type Permissions } from "../lib/api/permissions";
 import {
   onRecordState,
@@ -85,13 +90,14 @@ import {
   app_quit,
   app_restart,
   pin_open,
+  pin_open_clipboard,
   popover_drag_out,
   popover_fit,
   popover_hide,
   window_open,
   type WindowKind,
 } from "../lib/api/windows";
-import { PERMISSIONS_CHANGED, SETTINGS_CHANGED } from "../lib/events";
+import { DISPLAYS_CHANGED, PERMISSIONS_CHANGED, SETTINGS_CHANGED } from "../lib/events";
 import { language, t, tp, type Key } from "../lib/i18n";
 import { capsOf, capsText, chord, type ShortcutAction } from "../lib/keys";
 import { uploadsAllowed } from "../lib/network";
@@ -109,19 +115,40 @@ const RECENT = 5;
 /** How far the pointer moves with the button held before a thumbnail is dragged out as a file. */
 const DRAG_SLOP = 4;
 
-/** A capture mode, or `record`, which opens the recording's setup; `sep` draws a line before it.
- * Capture window is left out where a single window cannot be captured (`windowCapture`). */
-type Row = { mode: CaptureMode | "record"; icon: string; label: Key; shortcut: ShortcutAction; sep?: true };
+/** A capture mode, or `record`, which opens the recording's setup. Capture window is left out
+ * where a single window cannot be captured (`windowCapture`). */
+type Row = { mode: CaptureMode | "record"; icon: string; label: Key; shortcut: ShortcutAction };
 const ROWS: Row[] = (
   [
     { mode: "area", icon: "area", label: "popover.capture.area", shortcut: "captureArea" },
     { mode: "window", icon: "window", label: "popover.capture.window", shortcut: "captureWindow" },
     { mode: "display", icon: "display", label: "popover.capture.display", shortcut: "captureDisplay" },
     { mode: "repeatLastArea", icon: "repeat", label: "popover.capture.repeat", shortcut: "repeatLastArea" },
-    { mode: "copyText", icon: "ocr", label: "popover.capture.copyText", shortcut: "copyText", sep: true },
     { mode: "record", icon: "record", label: "popover.capture.record", shortcut: "recordScreen" },
   ] satisfies Row[]
 ).filter((row) => row.mode !== "window" || can("windowCapture"));
+/** The More cell's place in the strip, after the modes: the line names it as it names a mode. */
+const MORE = ROWS.length;
+
+/** The More menu's items: a capture mode, the interval form, or the clipboard's image in the
+ * editor or on a pin. `sep` draws a line before the item. */
+type Other = {
+  id: Exclude<CaptureMode, "area" | "window" | "display" | "repeatLastArea" | "areaDelayed"> | "interval" | "clipboardEdit" | "clipboardPin";
+  icon: string;
+  label: Key;
+  shortcut: ShortcutAction;
+  sep?: true;
+};
+const OTHERS: Other[] = [
+  { id: "copyText", icon: "ocr", label: "popover.capture.copyText", shortcut: "copyText" },
+  { id: "pickColor", icon: "eyedropper", label: "popover.capture.pickColor", shortcut: "pickColor" },
+  { id: "ruler", icon: "ruler", label: "popover.capture.measure", shortcut: "measureScreen" },
+  { id: "scrollCapture", icon: "chevron-up-down", label: "popover.capture.scroll", shortcut: "scrollCapture" },
+  { id: "allDisplays", icon: "displays", label: "popover.capture.allDisplays", shortcut: "captureAllDisplays" },
+  { id: "interval", icon: "grid", label: "popover.interval.open", shortcut: "intervalCapture" },
+  { id: "clipboardEdit", icon: "clipboard", label: "popover.clipboard.edit", shortcut: "openClipboardInEditor", sep: true },
+  { id: "clipboardPin", icon: "pin", label: "popover.clipboard.pin", shortcut: "pinClipboard" },
+];
 
 const DELAYS = [0, 3, 5, 10] as const;
 
@@ -177,8 +204,19 @@ const slots = computed(() => Array.from({ length: RECENT }, (_, i) => entries.va
 const pointMode = ref<number | null>(null);
 const focusMode = ref<number | null>(null);
 const lastMode = ref(0);
-const shownIndex = computed(() => pointMode.value ?? focusMode.value ?? 0);
-const shownMode = computed(() => ROWS[shownIndex.value]!);
+const shownIndex = computed(() => (moreOpen.value ? MORE : (pointMode.value ?? focusMode.value ?? 0)));
+/** The mode the line names, or null for the More cell, which has no keys of its own. */
+const shownMode = computed<Row | null>(() => ROWS[shownIndex.value] ?? null);
+
+/** The More menu and the cell that opens it. Scrolling capture is left out where the platform has
+ * none, and Capture all displays while there is only one display, where it is Capture display. */
+const moreOpen = ref(false);
+const moreToggle = ref<HTMLElement | null>(null);
+const displayCount = ref(1);
+const others = computed(() =>
+  OTHERS.filter((o) => (o.id !== "scrollCapture" || can("scrollCapture")) && (o.id !== "allDisplays" || displayCount.value > 1)),
+);
+const otherKeys = (o: Other) => capsText(shortcuts.value?.[o.shortcut]);
 
 const delayOpen = ref(false);
 const delayName = (seconds: number) => (seconds === 0 ? t("popover.delay.off") : t("popover.delay.seconds", { n: seconds }));
@@ -243,6 +281,14 @@ async function loadRecording(): Promise<void> {
   }
 }
 
+async function loadDisplays(): Promise<void> {
+  try {
+    displayCount.value = (await capture_displays()).length;
+  } catch (error) {
+    console.warn("capture_displays", error);
+  }
+}
+
 async function loadInterval(): Promise<void> {
   try {
     interval.value = await capture_interval();
@@ -257,10 +303,11 @@ async function opened(): Promise<void> {
   // A question or a menu left open when the panel closed is not shown again on its own.
   asking.value = null;
   delayOpen.value = false;
+  moreOpen.value = false;
   formOpen.value = false;
   pointMode.value = null;
   sel.value = 0;
-  await Promise.all([loadSettings(), loadHistory(), loadPermissions(), loadDelay(), loadRecording(), loadInterval()]);
+  await Promise.all([loadSettings(), loadHistory(), loadPermissions(), loadDelay(), loadRecording(), loadInterval(), loadDisplays()]);
   await nextTick();
   root.value?.focus({ preventScroll: true });
   // A series that runs takes the modes' place, and Return on the panel stops it.
@@ -294,7 +341,14 @@ function natural(): number {
   if (!body.value) return Math.ceil(panel.getBoundingClientRect().height);
   const style = getComputedStyle(panel);
   const padding = parseFloat(style.paddingTop) + parseFloat(style.paddingBottom);
-  return Math.ceil(body.value.getBoundingClientRect().height + padding);
+  const content = body.value.getBoundingClientRect().height + padding;
+  // An open menu floats over the content and can reach past a short panel (the history failed to
+  // load), where the window would cut it off. Its top stays put while it grows from its corner,
+  // so its layout height gives its final bottom.
+  const menu = panel.querySelector<HTMLElement>(".s-more-menu, .s-delay-menu");
+  if (!menu) return Math.ceil(content);
+  const reach = menu.getBoundingClientRect().top + menu.offsetHeight - panel.getBoundingClientRect().top + parseFloat(style.paddingBottom);
+  return Math.ceil(Math.max(content, reach));
 }
 
 function sizeWindow(height: number, again = false): void {
@@ -388,6 +442,7 @@ const delayToggle = ref<HTMLElement | null>(null);
 /** Opens the delay's menu with the focus on the chosen value, so ↑↓ and Return pick another. */
 function openDelayMenu(): void {
   if (blocked.value) return;
+  closeMoreMenu();
   delayOpen.value = true;
   void nextTick(() => root.value?.querySelector<HTMLElement>(".s-delay-menu [aria-checked='true']")?.focus());
 }
@@ -398,14 +453,54 @@ function closeDelayMenu(refocus = false): void {
   if (refocus) delayToggle.value?.focus();
 }
 
-/** A press anywhere outside the delay's menu and its button closes the menu. */
+/** A press anywhere outside a menu and its button closes the menu. */
 function pressOutside(event: PointerEvent): void {
-  if (delayOpen.value && !(event.target as Element | null)?.closest(".s-delay-pick")) closeDelayMenu();
+  const target = event.target as Element | null;
+  if (delayOpen.value && !target?.closest(".s-delay-pick")) closeDelayMenu();
+  if (moreOpen.value && !target?.closest(".s-more-menu, .s-more")) closeMoreMenu();
+}
+
+// ----------------------------------------------------------------------------- the More menu
+
+/** Opens the More menu with the focus on its first item, so ↑↓ and Return pick one. */
+function openMoreMenu(): void {
+  if (blocked.value) return;
+  closeDelayMenu();
+  moreOpen.value = true;
+  void nextTick(() => root.value?.querySelector<HTMLElement>(".s-more-menu .g-menu-item")?.focus());
+}
+
+function closeMoreMenu(refocus = false): void {
+  if (!moreOpen.value) return;
+  moreOpen.value = false;
+  if (refocus) moreToggle.value?.focus();
+}
+
+/** The picked tool: a capture mode starts as the strip's modes do, Interval capture opens its form
+ * in the panel, and the clipboard's image opens in the editor or on a pin. An empty clipboard is
+ * said in the notice line, and the panel stays open. */
+async function runOther(other: Other): Promise<void> {
+  closeMoreMenu(true);
+  if (blocked.value || recordingNow.value) return;
+  notice.value = null;
+  const id = other.id;
+  try {
+    if (id === "interval") {
+      openIntervalForm();
+    } else if (id === "clipboardEdit" || id === "clipboardPin") {
+      const opened = id === "clipboardEdit" ? await editor_open_clipboard() : await pin_open_clipboard();
+      if (opened) hide();
+      else notice.value = { tone: "warn", text: t("clipboard.empty") };
+    } else {
+      await capture_start(id);
+      hide();
+    }
+  } catch (error) {
+    fail(error);
+  }
 }
 
 // ------------------------------------------------------------------------- the interval series
-
-const intervalKeys = computed(() => capsText(shortcuts.value?.intervalCapture));
 
 function openIntervalForm(): void {
   closeDelayMenu();
@@ -415,7 +510,7 @@ function openIntervalForm(): void {
 
 function closeIntervalForm(): void {
   formOpen.value = false;
-  void nextTick(() => delayToggle.value?.focus());
+  void nextTick(() => moreToggle.value?.focus());
 }
 
 /** The area target opens the overlay and the series starts with its selection; the others start
@@ -888,16 +983,16 @@ function modeButtons(): HTMLElement[] {
   return [...(root.value?.querySelectorAll<HTMLElement>(".s-mode:not([aria-disabled='true'])") ?? [])];
 }
 
-/** ↑↓ move through the delay's menu while it is open, Esc closes it and nothing else. */
-function onDelayMenuKey(event: KeyboardEvent): boolean {
+/** ↑↓ move through an open menu (the delay's or More), Esc closes it and nothing else. */
+function onMenuKey(event: KeyboardEvent, menu: string, close: () => void): boolean {
   if (event.key === "Escape") {
     event.preventDefault();
-    closeDelayMenu(true);
+    close();
     return true;
   }
   if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return false;
   event.preventDefault();
-  const items = [...(root.value?.querySelectorAll<HTMLElement>(".s-delay-menu .g-menu-item") ?? [])];
+  const items = [...(root.value?.querySelectorAll<HTMLElement>(`${menu} .g-menu-item`) ?? [])];
   const at = items.indexOf(document.activeElement as HTMLElement);
   const next = at === -1 ? 0 : Math.max(0, Math.min(items.length - 1, at + (event.key === "ArrowDown" ? 1 : -1)));
   items[next]?.focus();
@@ -910,7 +1005,8 @@ function onKey(event: KeyboardEvent): void {
   // ⌘ on macOS, where ⌃ has always worked too; Ctrl elsewhere, where the Windows key is the system's.
   const mod = isMac() ? event.metaKey || event.ctrlKey : event.ctrlKey;
 
-  if (delayOpen.value && onDelayMenuKey(event)) return;
+  if (delayOpen.value && onMenuKey(event, ".s-delay-menu", () => closeDelayMenu(true))) return;
+  if (moreOpen.value && onMenuKey(event, ".s-more-menu", () => closeMoreMenu(true))) return;
 
   if (event.key === "Escape") {
     event.preventDefault();
@@ -963,6 +1059,12 @@ function onKey(event: KeyboardEvent): void {
   }
 
   if (event.key === "ArrowDown") {
+    // On the More cell ↓ opens its menu, as it would a menu bar's.
+    if (active && active === moreToggle.value) {
+      event.preventDefault();
+      openMoreMenu();
+      return;
+    }
     if (atMode === -1 && !onPanel && !onDelay) return;
     event.preventDefault();
     if (onPanel && modes.length) modes[Math.min(lastMode.value, modes.length - 1)]!.focus();
@@ -997,6 +1099,7 @@ onMounted(async () => {
     await on<Permissions>(PERMISSIONS_CHANGED, (next) => (permissions.value = next)),
     await on<DelayState>(CAPTURE_COUNTDOWN, (state) => (delay.value = state)),
     await on<IntervalState>(CAPTURE_INTERVAL, (state) => (interval.value = state)),
+    await on<Display[]>(DISPLAYS_CHANGED, (displays) => (displayCount.value = displays.length)),
     await onHistoryChanged(historyChanged),
     await onRecordState((state) => {
       recording.value = state;
@@ -1142,33 +1245,63 @@ const emptyParts = computed(() => {
       </div>
 
       <!-- the capture modes, the line that names one, and the one-shot delay -->
-      <div v-else class="g-popover-section">
+      <div v-else class="g-popover-section s-top">
         <div class="s-modes" role="menu" :aria-label="t('popover.capture.label')" @pointerleave="pointMode = null">
-          <template v-for="(row, i) in ROWS" :key="row.mode">
-            <span v-if="row.sep" class="s-modes-sep" role="separator" />
-            <button
-              type="button"
-              class="s-mode"
-              role="menuitem"
-              :aria-label="t(row.label)"
-              :aria-disabled="blocked ? 'true' : undefined"
-              :data-on="i === shownIndex ? '' : undefined"
-              @pointerenter="pointMode = i"
-              @focus="(focusMode = i), (lastMode = i)"
-              @blur="focusMode = null"
-              @click="capture(row)"
-            >
-              <GIcon :name="row.icon" :size="20" />
-            </button>
-          </template>
+          <button
+            v-for="(row, i) in ROWS"
+            :key="row.mode"
+            type="button"
+            class="s-mode"
+            role="menuitem"
+            :aria-label="t(row.label)"
+            :aria-disabled="blocked ? 'true' : undefined"
+            :data-on="i === shownIndex ? '' : undefined"
+            @pointerenter="pointMode = i"
+            @focus="(focusMode = i), (lastMode = i)"
+            @blur="focusMode = null"
+            @click="capture(row)"
+          >
+            <GIcon :name="row.icon" :size="20" />
+          </button>
+          <span class="s-modes-sep" role="separator" />
+          <button
+            ref="moreToggle"
+            type="button"
+            class="s-mode s-more"
+            role="menuitem"
+            aria-haspopup="menu"
+            :aria-expanded="moreOpen"
+            :aria-label="t('popover.more')"
+            :aria-disabled="blocked ? 'true' : undefined"
+            :data-on="shownIndex === MORE ? '' : undefined"
+            @pointerenter="pointMode = MORE"
+            @focus="(focusMode = MORE), (lastMode = MORE)"
+            @blur="focusMode = null"
+            @click="moreOpen ? closeMoreMenu() : openMoreMenu()"
+          >
+            <GIcon name="more" :size="20" />
+          </button>
         </div>
+        <!-- the rarer tools, under the strip at its right edge, over the line and the preview -->
+        <Transition name="s-menu" @after-enter="fit" @after-leave="fit">
+          <div v-if="moreOpen" class="g-menu solid s-more-menu" role="menu" :aria-label="t('popover.more')">
+            <template v-for="other in others" :key="other.id">
+              <div v-if="other.sep" class="g-menu-separator" role="separator" />
+              <button type="button" class="g-menu-item" role="menuitem" @click="runOther(other)">
+                <GIcon :name="other.icon" :size="16" />
+                <span class="s-more-name">{{ t(other.label) }}</span>
+                <span v-if="otherKeys(other)" class="g-menu-key">{{ otherKeys(other) }}</span>
+              </button>
+            </template>
+          </div>
+        </Transition>
         <div v-if="delay.remainingSeconds !== null" class="s-line" role="status">
           <span class="s-line-count"><GIcon name="timer" :size="16" />{{ t("popover.delay.counting", { n: delay.remainingSeconds }) }}</span>
           <button type="button" class="g-button" data-variant="plain" @click="cancelDelay">{{ t("popover.delay.cancel") }}</button>
         </div>
         <div v-else class="s-line" :aria-disabled="blocked ? 'true' : undefined">
-          <b class="s-line-name">{{ t(shownMode.label) }}</b>
-          <KeyCaps :accelerator="shortcuts?.[shownMode.shortcut]" />
+          <b class="s-line-name">{{ shownMode ? t(shownMode.label) : t("popover.more") }}</b>
+          <KeyCaps v-if="shownMode" :accelerator="shortcuts?.[shownMode.shortcut]" />
           <div class="s-delay-pick">
             <TipWrap :tip="`${t('popover.delay.label')}: ${delayName(delay.pendingSeconds)}`" align="end">
               <button
@@ -1186,7 +1319,7 @@ const emptyParts = computed(() => {
                 <GIcon name="timer" :size="16" />{{ delayButton }}<GIcon name="chevron-down" :size="12" />
               </button>
             </TipWrap>
-            <Transition name="s-menu">
+            <Transition name="s-menu" @after-enter="fit" @after-leave="fit">
               <div v-if="delayOpen" class="g-menu solid s-delay-menu" role="menu" :aria-label="t('popover.delay.aria')">
                 <button
                   v-for="seconds in DELAYS"
@@ -1199,12 +1332,6 @@ const emptyParts = computed(() => {
                 >
                   <span class="g-menu-check"><GIcon name="check" :size="16" /></span>
                   <span>{{ delayName(seconds) }}</span>
-                </button>
-                <div class="g-menu-separator" role="separator" />
-                <button type="button" class="g-menu-item" role="menuitem" @click="openIntervalForm">
-                  <span class="g-menu-check" />
-                  <span>{{ t("popover.interval.open") }}</span>
-                  <span v-if="intervalKeys" class="g-menu-key">{{ intervalKeys }}</span>
                 </button>
               </div>
             </Transition>
@@ -1457,6 +1584,15 @@ button:is(.s-thumb, .s-mode) { margin: 0; padding: 0; border: 0; font: inherit; 
 .s-mode[aria-disabled="true"] { color: var(--win-text-disabled); --rec: currentColor; }
 .s-mode[aria-disabled="true"]::before { opacity: 0; }
 .s-modes-sep { flex: none; width: 1px; height: 20px; margin: 0 2px; background: var(--win-line); }
+
+/* The More menu (~/Downloads/glimpsfy-diger-menusu, Y1) hangs under the strip at its right edge,
+   over the line and the preview, and grows out of the More cell's corner like the delay's menu.
+   It widens for a long language up to the panel's width; a name that still does not fit is cut
+   short and the keys keep their column. */
+.s-top { position: relative; }
+.s-more-menu { position: absolute; right: 0; top: calc(44px + 4px); z-index: 5; min-width: 240px; max-width: 100%; box-sizing: border-box; transform-origin: top right; }
+.s-more-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.s-more-menu .g-menu-key { flex: none; }
 
 /* The line under the modes names the one under the pointer and ends with the delay. */
 .s-line { position: relative; display: flex; align-items: center; gap: 8px; min-height: 32px; margin-top: 4px; padding-left: 6px; }

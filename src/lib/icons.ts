@@ -64,6 +64,11 @@ const ICONS: Record<string, IconDef> = {
 
     /* ------------------------------------------------- capture and recording */
     display: '<rect x="2.75" y="3.5" width="14.5" height="10" rx="2"/><path d="M10 13.5v3M7 16.5h6"/>',
+    /* The popover's More menu (~/Downloads/glimpsfy-diger-menusu, Y1): every display, the ruler and
+       the clipboard's image; only here, not in the kit */
+    displays: '<rect x="2.25" y="4.75" width="7.25" height="6.75" rx="1.4"/><rect x="10.5" y="4.75" width="7.25" height="6.75" rx="1.4"/><path d="M5.9 11.5v2.75M14.1 11.5v2.75M4.15 15.25h3.5M12.35 15.25h3.5"/>',
+    ruler: '<rect x="2.75" y="6.5" width="14.5" height="7" rx="1.6"/><path d="M6 6.5v2.75M8.75 6.5v1.75M11.5 6.5v2.75M14.25 6.5v1.75"/>',
+    clipboard: '<rect x="4.5" y="4.5" width="11" height="12.25" rx="2"/><path d="M7.75 4.5V4a1.25 1.25 0 0 1 1.25-1.25h2A1.25 1.25 0 0 1 12.25 4v.5"/><path d="M7.5 9h5M7.5 12h3.5"/>',
     window: '<rect x="2.75" y="4.25" width="14.5" height="11.5" rx="2.25"/><path d="M2.75 7.75h14.5"/>',
     area: '<path d="M3.25 6.5v-.75a1.5 1.5 0 0 1 1.5-1.5H6M14 4.25h1.25a1.5 1.5 0 0 1 1.5 1.5v.75M16.75 13.5v.75a1.5 1.5 0 0 1-1.5 1.5H14M6 15.75H4.75a1.5 1.5 0 0 1-1.5-1.5v-.75M9 4.25h2M9 15.75h2M3.25 9v2M16.75 9v2"/>',
     cursor: '<path d="M5.5 3.5v11.6l3.05-2.95 2.05 4.6 2.15-.95-2.05-4.55h4.25Z"/>',

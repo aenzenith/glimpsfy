@@ -273,6 +273,8 @@ export type PinOptionKey = { held: boolean };
 
 /** Opens a pin; the overlay closes its capture itself afterwards. */
 export const pin_open = (source: PinSource) => call<PinInfo>("pin_open", { source });
+/** Pins the clipboard's image under the pointer; `null` when the clipboard holds no image. */
+export const pin_open_clipboard = () => call<PinInfo | null>("pin_open_clipboard");
 /** The pin this window shows. */
 export const pin_info = () => call<PinInfo>("pin_info");
 /** This pin's image as bytes, for a blob URL. */

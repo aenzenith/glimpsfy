@@ -221,6 +221,7 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Syn
         windows::popover_fit,
         windows::popover_drag_out,
         windows::pin_open,
+        windows::pin_open_clipboard,
         windows::pin_info,
         windows::pin_image,
         windows::pin_frame,
