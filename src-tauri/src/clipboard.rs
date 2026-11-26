@@ -70,14 +70,17 @@ pub fn pin(app: &AppHandle) {
     let app = app.clone();
     // Reading files and making the window block, and the screen's scale waits for the main
     // thread, where shortcuts arrive.
-    tauri::async_runtime::spawn_blocking(move || match read() {
-        None => empty(&app),
-        Some(pasted) => {
-            if let Err(error) = pin_pasted(&app, pasted) {
-                crate::windows::toast_failure(&app, None, &error);
-            }
-        }
+    tauri::async_runtime::spawn_blocking(move || match pin_now(&app) {
+        Ok(Some(_)) => {}
+        Ok(None) => empty(&app),
+        Err(error) => crate::windows::toast_failure(&app, None, &error),
     });
+}
+
+/// Pins the clipboard's image as `pin` does and answers the pin, or `None` when the clipboard
+/// holds no image; the caller says so its own way. It blocks, so call it off the main thread.
+pub fn pin_now(app: &AppHandle) -> CommandResult<Option<pins::PinInfo>> {
+    read().map(|pasted| pin_pasted(app, pasted)).transpose()
 }
 
 fn pin_pasted(app: &AppHandle, pasted: Pasted) -> CommandResult<pins::PinInfo> {

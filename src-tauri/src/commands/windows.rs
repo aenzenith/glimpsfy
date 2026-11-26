@@ -536,6 +536,16 @@ pub async fn pin_open(app: AppHandle, source: PinSource) -> CommandResult<PinInf
     pins::open(&app, source).await
 }
 
+/// Pins the clipboard's image on the screen under the pointer, as Pin clipboard to screen does
+/// from its shortcut (`clipboard.rs`). `None` when the clipboard holds no image: the popover says
+/// so in its own notice line instead of the amber toast.
+#[tauri::command]
+pub async fn pin_open_clipboard(app: AppHandle) -> CommandResult<Option<PinInfo>> {
+    tauri::async_runtime::spawn_blocking(move || crate::clipboard::pin_now(&app))
+        .await
+        .map_err(|e| CommandError::internal(e.to_string()))?
+}
+
 /// The pin this window shows.
 #[tauri::command]
 pub fn pin_info(window: WebviewWindow) -> CommandResult<PinInfo> {
