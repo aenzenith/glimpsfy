@@ -27,6 +27,7 @@ use glimpsfy_capture::{CaptureError, MicrophoneSource, PhysicalSize, StreamTarge
 use serde::{Deserialize, Serialize};
 
 pub mod audio;
+pub mod captions;
 pub mod cuts;
 pub mod devices;
 pub mod export;
@@ -422,6 +423,20 @@ impl Default for ExportAudio {
     }
 }
 
+/// The subtitles an MP4 export carries, made from the recording's transcript.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ExportCaptions {
+    #[default]
+    None,
+    /// A SubRip file next to the saved MP4, under the same name.
+    Srt,
+    /// A WebVTT file next to the saved MP4, under the same name.
+    Vtt,
+    /// A subtitle track inside the MP4, which players switch on and off.
+    Track,
+}
+
 /// What an export does with its file.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -453,6 +468,10 @@ pub struct ExportOptions {
     /// recording itself is never changed.
     #[serde(default)]
     pub cuts: Vec<TrimRange>,
+    /// The subtitles of an MP4. A copy or an upload carries only the track: its one file has no
+    /// room for a second one.
+    #[serde(default)]
+    pub captions: ExportCaptions,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -473,6 +492,10 @@ pub struct ExportResult {
     /// quietest moment nearby.
     #[serde(default)]
     pub kept: Vec<TrimRange>,
+    /// The SRT or VTT file written next to the MP4, when the export asked for one and the kept
+    /// parts hold speech.
+    #[serde(default)]
+    pub captions_path: Option<PathBuf>,
 }
 
 /// How a microphone or a camera is connected.

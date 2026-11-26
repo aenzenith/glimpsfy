@@ -1,7 +1,17 @@
 // What the export panel holds, and how it becomes the `ExportOptions` of `record_export`: the
-// format with its options, which audio the MP4 keeps, the trim and the cuts made from the text.
+// format with its options, which audio the MP4 keeps, its subtitles, the trim and the cuts made
+// from the text.
 
-import type { ExportFormat, ExportOptions, ExportPurpose, Mp4Quality, RecordingInfo, Resolution, TrimRange } from "../lib/api/record";
+import type {
+  ExportCaptions,
+  ExportFormat,
+  ExportOptions,
+  ExportPurpose,
+  Mp4Quality,
+  RecordingInfo,
+  Resolution,
+  TrimRange,
+} from "../lib/api/record";
 import type { Settings } from "../lib/settings";
 import { cutsWithin } from "./cuts";
 import { GIF_WIDTHS } from "./estimate";
@@ -17,6 +27,8 @@ export type ExportChoice = {
   /** 0 keeps the recording's own width. */
   gifWidth: number;
   loopForever: boolean;
+  /** The MP4's subtitles; they are written only once the text panel has read the speech. */
+  captions: ExportCaptions;
 };
 
 // The same rates as Settings › Recording › GIF export. A GIF's delay is whole centiseconds, so
@@ -67,6 +79,7 @@ export function initialChoice(info: RecordingInfo, settings: Settings | null): E
     gifFps: GIF_FPS.find((f) => f === r?.gifFps) ?? 15,
     gifWidth: widths.includes(wanted) ? wanted : widths.includes(640) ? 640 : 0,
     loopForever: true,
+    captions: "none",
   };
 }
 
@@ -106,6 +119,7 @@ export function exportOptions(
   range: TrimRange,
   purpose: ExportPurpose,
   cuts: readonly TrimRange[] = [],
+  textReady = false,
 ): ExportOptions {
   return {
     format: exportFormat(choice),
@@ -114,5 +128,6 @@ export function exportOptions(
     audio: exportAudio(choice, info),
     purpose,
     cuts: cutsWithin(cuts, range),
+    captions: choice.format === "mp4" && textReady ? choice.captions : "none",
   };
 }

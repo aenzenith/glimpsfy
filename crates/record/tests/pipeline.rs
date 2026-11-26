@@ -400,6 +400,7 @@ fn options(format: ExportFormat, trim: Option<TrimRange>) -> ExportOptions {
         audio: ExportAudio::default(),
         purpose: ExportPurpose::Save,
         cuts: Vec::new(),
+        captions: Default::default(),
     }
 }
 

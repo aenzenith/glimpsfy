@@ -23,6 +23,7 @@ import {
   transcript_get,
   transcript_model,
   transcript_model_download,
+  transcript_save_edits,
   transcript_start,
   type SpeechModelInfo,
   type SpeechModelProgress,
@@ -32,6 +33,7 @@ import {
   type TranscriptSilence,
   type TranscriptState,
   type TranscriptWord,
+  type WordEdit,
 } from "../lib/api/transcript";
 import { language, t, tp, type Key } from "../lib/i18n";
 import { online } from "../lib/network";
@@ -80,6 +82,8 @@ const emit = defineEmits<{
   play: [ms: number, exempt: TrimRange | null];
   /** How far the speech is read while it is read, for the timeline; `null` otherwise. */
   transcribed: [ms: number | null];
+  /** Whether the speech is read and holds words, so the export can make subtitles of it. */
+  ready: [ready: boolean];
   /** The cut whose menu is open, outlined on the timeline. */
   pick: [cut: TrimRange | null];
   settings: [settings: Settings];
@@ -100,6 +104,10 @@ type Phase =
 
 type Download = { job: string | null; received: number; total: number; remainingMs: number | null };
 type Meta = { language: string; auto: boolean; probability: number | null };
+
+/** The languages written without spaces between words, as `engine::unspaced` in the speech crate
+ * names them: their words join without a space. */
+const UNSPACED = new Set(["ja", "zh", "yue", "th", "lo", "my", "km", "bo"]);
 type Selection = { from: number; to: number };
 
 const root = ref<HTMLElement | null>(null);
@@ -113,6 +121,14 @@ const words = shallowRef<TranscriptWord[]>([]);
 const silences = shallowRef<TranscriptSilence[]>([]);
 const meta = shallowRef<Meta | null>(null);
 const selection = shallowRef<Selection | null>(null);
+/** The words being corrected in place, and the text typed over them. */
+const fixing = ref<{ from: number; to: number; draft: string } | null>(null);
+let fixEl: HTMLInputElement | null = null;
+function setFixEl(el: unknown): void {
+  fixEl = el instanceof HTMLInputElement ? el : null;
+}
+/** A word as the panel and the subtitles show it: the user's correction, or the model's text. */
+const shown = (w: TranscriptWord) => w.edited ?? w.text;
 const hideCut = ref(false);
 /** The text took the focus from a press, which shows no focus ring; Tab still does. */
 const pointerFocus = ref(false);
@@ -279,6 +295,8 @@ const paras = computed<Para[]>(() => {
       }
       items.push({ k: "w", i });
       sig += cut[i] ? "x" : list[i]!.filler ? "f" : "w";
+      const edited = list[i]!.edited;
+      if (edited !== undefined) sig += `e${i}:${edited}\u0000`;
     };
     const pushSilence = (k: number) => {
       const st = states[k]!;
@@ -312,6 +330,10 @@ const selKey = (p: Para) => {
   return !s || s.to < p.first || s.from > p.last ? "" : `${Math.max(s.from, p.first)}-${Math.min(s.to, p.last)}`;
 };
 const nowKey = (p: Para) => (nowIndex.value >= p.first && nowIndex.value <= p.last ? nowIndex.value : -1);
+const fixKey = (p: Para) => {
+  const f = fixing.value;
+  return !f || f.to < p.first || f.from > p.last ? "" : `${f.from}-${f.to}`;
+};
 type Run = { key: string; sel: boolean; items: Item[] };
 
 /** A paragraph's items in up to three runs, the selected one in the middle: the selection is one
@@ -338,7 +360,7 @@ function silenceLabel(k: number): string {
 }
 
 function markLabel(it: { from: number; to: number }): string {
-  return t("record.transcript.cutMark", { text: words.value.slice(it.from, it.to + 1).map((w) => w.text.trim()).join(" ") });
+  return t("record.transcript.cutMark", { text: words.value.slice(it.from, it.to + 1).map((w) => shown(w).trim()).join(" ") });
 }
 
 // ----------------------------------------------------------------------------- clean-ups
@@ -463,6 +485,7 @@ function clearText(): void {
   silences.value = [];
   meta.value = null;
   selection.value = null;
+  fixing.value = null;
   anchor = -1;
   press = null;
 }
@@ -836,8 +859,11 @@ const menuItems = computed<TextMenuItem[]>(() => {
   if (!m) return [];
   if (m.kind === "selection") {
     const s = selection.value;
+    const edited = !!s && words.value.slice(s.from, s.to + 1).some((w) => w.edited !== undefined);
     return [
       { label: t("record.transcript.cut"), icon: "scissors", keys: "⌫", disabled: !editable.value || !s, run: () => void cutSelection() },
+      { label: t("record.transcript.fix"), icon: "rename", keys: "↩", disabled: !editable.value || !s, run: () => void fixSelection() },
+      ...(edited ? [{ label: t("record.transcript.original"), icon: "undo", disabled: !editable.value, run: restoreSelection }] : []),
       { label: t("record.transcript.playFrom"), icon: "play", disabled: !s, run: () => s && emit("play", words.value[s.from]!.startMs, null) },
       { label: t("record.transcript.copyText"), icon: "copy", keys: "⌘C", disabled: !s, run: () => void copySelection() },
     ];
@@ -895,6 +921,106 @@ function cutSelection(): boolean {
   return true;
 }
 
+// ------------------------------------------------------------------- corrections
+
+/** Opens the words `from`…`to` for a correction in place, with the text they show now. */
+function startFix(from: number, to: number): boolean {
+  const list = words.value;
+  if (!editable.value || from < 0 || to >= list.length || from > to) return false;
+  closeMenu();
+  const spaced = !UNSPACED.has(meta.value?.language ?? "");
+  const draft = list.slice(from, to + 1).map((w) => shown(w).trim()).filter(Boolean).join(spaced ? " " : "");
+  fixing.value = { from, to, draft };
+  selection.value = null;
+  void nextTick(() => {
+    fixEl?.focus({ preventScroll: true });
+    fixEl?.select();
+  });
+  return true;
+}
+
+/** ↩ corrects the selected words. */
+function fixSelection(): boolean {
+  const s = selection.value;
+  return !!s && startFix(s.from, s.to);
+}
+
+/** Saves the draft: with as many words typed as were open, each word takes its own; otherwise
+ * the first word takes the whole text and the others are hidden, so their times still hold it.
+ * ↩ gives the focus back to the text; a click elsewhere leaves it where the click put it. */
+function commitFix(refocus = false): void {
+  const f = fixing.value;
+  if (!f) return;
+  fixing.value = null;
+  const list = words.value;
+  const tokens = f.draft.trim().split(/\s+/).filter(Boolean);
+  const count = f.to - f.from + 1;
+  const edits: WordEdit[] = [];
+  for (let k = 0; k < count; k++) {
+    const w = list[f.from + k]!;
+    const text = tokens.length === count ? tokens[k]! : k === 0 ? tokens.join(" ") : "";
+    const next = text === w.text.trim() ? null : text;
+    if (next !== (w.edited ?? null)) edits.push({ index: f.from + k, text: next });
+  }
+  if (edits.length) void saveEdits(edits);
+  if (refocus) textEl.value?.focus({ preventScroll: true });
+}
+
+function cancelFix(): void {
+  if (!fixing.value) return;
+  fixing.value = null;
+  textEl.value?.focus({ preventScroll: true });
+}
+
+function fixKeydown(event: KeyboardEvent): void {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    commitFix(true);
+  } else if (event.key === "Escape") {
+    event.preventDefault();
+    cancelFix();
+  }
+}
+
+/** Gives the selected words back the model's text. */
+function restoreSelection(): void {
+  const s = selection.value;
+  if (!s || !editable.value) return;
+  const edits = words.value
+    .slice(s.from, s.to + 1)
+    .flatMap((w, k) => (w.edited === undefined ? [] : [{ index: s.from + k, text: null }]));
+  if (edits.length) void saveEdits(edits);
+}
+
+/** Shows the corrections at once and saves them with the transcript; a failed save takes them
+ * back, so the panel never shows text the subtitles would not. */
+async function saveEdits(edits: WordEdit[]): Promise<void> {
+  const id = current;
+  const before = words.value;
+  const next = before.slice();
+  for (const e of edits) {
+    const { edited: _old, ...word } = next[e.index]!;
+    next[e.index] = e.text === null ? word : { ...word, edited: e.text };
+  }
+  words.value = next;
+  try {
+    const saved = await transcript_save_edits(id, edits);
+    if (id === current && words.value === next) words.value = saved;
+  } catch (error) {
+    console.warn("The correction was not saved.", error);
+    if (id === current && words.value === next) words.value = before;
+  }
+}
+
+function dblclicked(event: MouseEvent): void {
+  const hit = hitOf(event.target);
+  if (hit?.kind !== "w") return;
+  event.preventDefault();
+  const s = selection.value;
+  if (s && hit.i >= s.from && hit.i <= s.to) startFix(s.from, s.to);
+  else startFix(hit.i, hit.i);
+}
+
 /** ⌘C copies the selected words that are kept, while the panel has the focus (`target`), and
  * the recording's file otherwise. */
 function copySelection(target?: EventTarget | null): boolean {
@@ -905,7 +1031,8 @@ function copySelection(target?: EventTarget | null): boolean {
   const text = words.value
     .slice(s.from, s.to + 1)
     .filter((_, k) => !cut[s.from + k])
-    .map((w) => w.text.trim())
+    .map((w) => shown(w).trim())
+    .filter(Boolean)
     .join(" ");
   navigator.clipboard?.writeText(text).catch((error) => console.warn("The text could not be copied.", error));
   return true;
@@ -913,7 +1040,8 @@ function copySelection(target?: EventTarget | null): boolean {
 
 /** Esc closes the menu, then the search, then the selection. */
 function escape(): boolean {
-  if (menu.value) closeMenu();
+  if (fixing.value) cancelFix();
+  else if (menu.value) closeMenu();
   else if (search.open) closeSearch();
   else if (selection.value) selection.value = null;
   else return false;
@@ -926,7 +1054,7 @@ const search = reactive({ open: false, query: "", index: 0 });
 
 const normalized = computed(() => {
   const locale = textLocale.value;
-  return words.value.map((w) => bare(w.text, locale));
+  return words.value.map((w) => bare(shown(w), locale));
 });
 
 /** The runs of words that read as the query: one word holds it, or several words in a row start
@@ -1060,6 +1188,7 @@ function scrolled(): void {
 // --------------------------------------------------------------------------- lifecycle
 
 watch(() => props.settings, readSettings, { immediate: true });
+watch(() => phase.value.kind === "ready" && words.value.length > 0, (ready) => emit("ready", ready), { immediate: true });
 watch(() => props.info.result.id, () => void load(), { immediate: true });
 
 onMounted(async () => {
@@ -1079,6 +1208,7 @@ onUnmounted(() => {
 
 defineExpose({
   cutSelection,
+  fixSelection,
   copySelection,
   escape,
   openSearch,
@@ -1276,13 +1406,14 @@ defineExpose({
         @pointerup="up"
         @pointercancel="cancelPress"
         @click="clicked"
+        @dblclick="dblclicked"
         @contextmenu="context"
         @wheel.passive="scrolled"
       >
         <p
           v-for="p in paras"
           :key="p.key"
-          v-memo="[p.sig, selKey(p), nowKey(p), hits.sig.get(p.key) ?? '', language, phase.kind === 'transcribing']"
+          v-memo="[p.sig, selKey(p), nowKey(p), fixKey(p), hits.sig.get(p.key) ?? '', language, phase.kind === 'transcribing']"
           class="r-tp-para"
           :data-p="p.key"
         >
@@ -1291,15 +1422,31 @@ defineExpose({
           <template v-for="run in runsOf(p)" :key="run.key">
             <span class="r-trun" :data-sel="run.sel ? '' : undefined"
               ><template v-for="(it, k) in run.items" :key="it.k === 'm' ? `m${it.from}` : `${it.k}${it.i}`">
-                <span
-                  v-if="it.k === 'w'"
+                <input
+                  v-if="it.k === 'w' && fixing && it.i === fixing.from"
+                  :ref="setFixEl"
+                  v-model="fixing.draft"
+                  class="r-tw-fix"
+                  type="text"
+                  spellcheck="false"
+                  :size="Math.max(3, [...fixing.draft].length + 1)"
+                  :aria-label="t('record.transcript.fixLabel')"
+                  @keydown="fixKeydown"
+                  @blur="commitFix()"
+                  @pointerdown.stop
+                  @click.stop
+                  @dblclick.stop
+                  @contextmenu.stop
+                /><template v-else-if="it.k === 'w' && fixing && it.i > fixing.from && it.i <= fixing.to" /><span
+                  v-else-if="it.k === 'w'"
                   class="r-tw"
                   :data-i="it.i"
                   :data-f="words[it.i]!.filler && !cutFlags[it.i] ? '' : undefined"
                   :data-cut="cutFlags[it.i] ? '' : undefined"
+                  :data-ed="words[it.i]!.edited !== undefined ? '' : undefined"
                   :data-now="it.i === nowIndex ? '' : undefined"
                   :data-hit="hits.flags[it.i] === 2 ? 'now' : hits.flags[it.i] === 1 ? '' : undefined"
-                  >{{ words[it.i]!.text }}</span
+                  >{{ shown(words[it.i]!) }}</span
                 ><span
                   v-else-if="it.k === 's'"
                   class="r-tsil"
@@ -1386,6 +1533,14 @@ defineExpose({
 /* The selection is one band around its run, so a filler inside keeps its own tint. */
 .r-trun[data-sel] { border-radius: 3px; background: var(--win-selection-soft); box-shadow: 0 0 0 2px var(--win-selection-soft); }
 .r-tw[data-now] { border-radius: 0; box-shadow: inset 0 -2px 0 var(--iris); }
+/* A corrected word keeps a dotted iris underline, so what the user wrote over the model's text
+   can always be found again. */
+.r-tw[data-ed]:not([data-cut]) { text-decoration: underline dotted var(--iris) 1.5px; text-underline-offset: 4px; }
+/* The field is as wide as its text where the engine sizes fields by content, and close to it by
+   its `size` elsewhere. */
+.r-tw-fix { field-sizing: content; width: auto; min-width: 2ch; height: 22px; margin: 0 -1px; padding: 0 4px; border: 0; border-radius: 4px; outline: 0;
+  font: inherit; color: var(--win-text); background: var(--win-field); box-shadow: 0 0 0 2px var(--win-focus);
+  vertical-align: 0; -webkit-user-select: text; user-select: text; cursor: text; }
 .r-tsil { display: inline-flex; align-items: center; height: 18px; padding: 0 6px; border-radius: 9px; background: var(--win-fill); color: var(--win-text-2);
   font: var(--type-num-small); white-space: nowrap; vertical-align: 1px; cursor: pointer; }
 .r-tsil[data-short] { background: var(--win-selection-soft); color: var(--win-iris-text); }

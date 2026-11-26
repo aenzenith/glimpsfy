@@ -120,6 +120,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             audio: ExportAudio::default(),
             purpose: ExportPurpose::Save,
             cuts: Vec::new(),
+            captions: Default::default(),
         };
         let wanted = export::wanted_path(&folder, &result.path, &format, false);
         let wanted =

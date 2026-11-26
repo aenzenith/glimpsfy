@@ -21,6 +21,17 @@ pub struct Word {
     pub filler: Option<FillerKind>,
     /// The model's confidence, from 0 to 1. A filler found from the sound alone has 0.
     pub probability: f32,
+    /// The text the user wrote over the model's in the trim window's text panel. It replaces
+    /// `text` wherever the word is shown or written out (subtitles); an empty one hides the word.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edited: Option<String>,
+}
+
+impl Word {
+    /// The word as the user sees it: their correction, or the model's text.
+    pub fn shown(&self) -> &str {
+        self.edited.as_deref().unwrap_or(&self.text)
+    }
 }
 
 /// What kind of filler a word is.
