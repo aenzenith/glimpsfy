@@ -155,6 +155,7 @@ pub fn hide_overlays(app: &AppHandle) {
     {
         let handle = app.clone();
         crate::macos::on_main(app, move |mtm| {
+            crate::macos::restore_cursor();
             for (_, window) in overlays(&handle) {
                 crate::macos::hide_overlay(&window, mtm);
             }
