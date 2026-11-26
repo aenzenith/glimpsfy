@@ -40,7 +40,13 @@ export type TranscriptWord = {
   filler?: FillerKind;
   /** The model's confidence, from 0 to 1. */
   probability: number;
+  /** The user's correction, which replaces `text` in the panel and the subtitles; an empty one
+   * hides the word. */
+  edited?: string;
 };
+
+/** A correction of the word at `index`; `null` gives it back the model's text. */
+export type WordEdit = { index: number; text: string | null };
 
 /** A stretch without speech, found from the sound's level, at least half a second long. */
 export type TranscriptSilence = { startMs: number; endMs: number };
@@ -118,4 +124,9 @@ export function transcript_cancel(job: string | null = null): Promise<void> {
 /** Saves the cuts with the transcript, so the recording opens with them again. */
 export function transcript_save_cuts(recordingId: RecordingId, cuts: TrimRange[]): Promise<void> {
   return call("transcript_save_cuts", { recordingId, cuts });
+}
+
+/** Saves corrections of words with the transcript and answers its words as saved. */
+export function transcript_save_edits(recordingId: RecordingId, edits: WordEdit[]): Promise<TranscriptWord[]> {
+  return call("transcript_save_edits", { recordingId, edits });
 }

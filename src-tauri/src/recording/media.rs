@@ -12,9 +12,11 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use glimpsfy_capture::{ImageEncoding, PhysicalSize};
+use glimpsfy_record::captions::Caption;
+use glimpsfy_record::export::Subtitles;
 use glimpsfy_record::{
-    ExportFormat, ExportOptions, ExportPurpose, ExportResult, MediaInfo, RecordingId, RecordingResult, TrackInfo,
-    TrackKind, VideoCodec,
+    ExportCaptions, ExportFormat, ExportOptions, ExportPurpose, ExportResult, MediaInfo, RecordingId, RecordingResult,
+    TrackInfo, TrackKind, TrimRange, VideoCodec,
 };
 use serde::{Deserialize, Serialize};
 use tauri::http::{header, Request, Response, StatusCode};
@@ -361,12 +363,39 @@ fn run_export(
             ExportProgress { recording_id: id.clone(), format, fraction: p.fraction, remaining_ms: p.remaining_ms };
         let _ = app.emit(events::EXPORT_PROGRESS, payload);
     };
-    let result =
-        glimpsfy_record::export::export(&known.result.id, &known.result.path, options, &wanted, cancel, &mut progress)?;
+    // The subtitles come from the saved transcript, with the user's corrections; the trim window
+    // offers them only once the speech is read.
+    let transcript = match options.format {
+        ExportFormat::Mp4 { .. } if options.captions != ExportCaptions::None => {
+            Some(super::transcript::for_export(app, known)?)
+        }
+        _ => None,
+    };
+    let build = |kept: &[TrimRange]| transcript.as_ref().map(|t| captions_of(t, kept)).unwrap_or_default();
+    let subtitles = transcript.as_ref().map(|t| Subtitles { language: &t.language, captions: &build });
+    let result = glimpsfy_record::export::export_with(
+        &known.result.id,
+        &known.result.path,
+        options,
+        &wanted,
+        subtitles.as_ref(),
+        cancel,
+        &mut progress,
+    )?;
     if options.purpose == ExportPurpose::Copy {
         copy_file(&result.path)?;
     }
     Ok(result)
+}
+
+/// The captions of a file that holds the `kept` parts of the recording `transcript` was read from.
+fn captions_of(transcript: &glimpsfy_speech::Transcript, kept: &[TrimRange]) -> Vec<Caption> {
+    let spans: Vec<glimpsfy_speech::Span> =
+        kept.iter().map(|k| glimpsfy_speech::Span { start_ms: k.start_ms, end_ms: k.end_ms }).collect();
+    glimpsfy_speech::captions::cues(&transcript.words, &transcript.language, &spans)
+        .into_iter()
+        .map(|c| Caption { start_ms: c.start_ms, end_ms: c.end_ms, text: c.text })
+        .collect()
 }
 
 #[cfg(target_os = "macos")]

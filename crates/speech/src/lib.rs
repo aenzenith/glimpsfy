@@ -35,6 +35,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 pub mod audio;
+pub mod captions;
 pub mod engine;
 pub mod fillers;
 pub mod model;
@@ -295,6 +296,7 @@ impl<'a> Stage<'a> {
                     end_ms,
                     filler: Some(FillerKind::Sound),
                     probability: 0.0,
+                    edited: None,
                 });
             }
         }

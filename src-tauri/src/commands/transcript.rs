@@ -143,3 +143,14 @@ pub async fn transcript_save_cuts(
     let cuts = cuts.into_iter().map(|c| Span { start_ms: c.start_ms, end_ms: c.end_ms }).collect();
     off_main(move || work::save_cuts(&app, &recording_id, cuts)).await
 }
+
+/// Saves the user's corrections of words in the recording's transcript (the subtitles show
+/// them); a `null` text gives a word back its own. Returns the words as saved.
+#[tauri::command]
+pub async fn transcript_save_edits(
+    app: AppHandle,
+    recording_id: RecordingId,
+    edits: Vec<work::WordEdit>,
+) -> CommandResult<Vec<glimpsfy_speech::Word>> {
+    off_main(move || work::save_edits(&app, &recording_id, edits)).await
+}

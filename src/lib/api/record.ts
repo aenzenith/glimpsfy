@@ -135,6 +135,9 @@ export type ExportFormat =
  * `upload` writes it to the cache for `upload_file`. */
 export type ExportPurpose = "save" | "copy" | "upload";
 
+/** The subtitles of an MP4, from the transcript: a file next to it, or a track inside it. */
+export type ExportCaptions = "none" | "srt" | "vtt" | "track";
+
 export type ExportOptions = {
   format: ExportFormat;
   trim: TrimRange | null;
@@ -146,6 +149,9 @@ export type ExportOptions = {
   /** The parts cut from the text (source milliseconds, sorted and apart, inside `trim`), which
    * the file skips; the recording itself never changes. A file with cuts is named "… (trimmed)". */
   cuts: TrimRange[];
+  /** An SRT or VTT file is written only when the MP4 is saved; a copy or an upload carries
+   * only the track. */
+  captions: ExportCaptions;
 };
 
 export type ExportResult = {
@@ -160,6 +166,9 @@ export type ExportResult = {
   trim: TrimRange;
   /** The source ranges the file holds, in order, once the cuts were skipped. */
   kept: TrimRange[];
+  /** The SRT or VTT file written next to the MP4, when one was asked for and the file holds
+   * speech. */
+  captionsPath: string | null;
 };
 
 export type ExportProgress = {

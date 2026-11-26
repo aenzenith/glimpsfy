@@ -81,6 +81,8 @@ const history = new CutHistory();
 let exempt: TrimRange | null = null;
 /** How far the speech is read while the Text panel reads it, for the timeline. */
 const transcribedMs = ref<number | null>(null);
+/** The text panel has read the speech and holds words, so the export can write subtitles. */
+const textReady = ref(false);
 /** The gap whose menu is open, outlined on the timeline. */
 const pickedCut = shallowRef<TrimRange | null>(null);
 const textPanel = ref<InstanceType<typeof Transcript> | null>(null);
@@ -98,6 +100,7 @@ const choice = reactive<ExportChoice>({
   gifFps: 15,
   gifWidth: 640,
   loopForever: true,
+  captions: "none",
 });
 
 type Job = { token: number; recordingId: string; format: "mp4" | "gif"; fraction: number; remainingMs: number | null; adopted: boolean };
@@ -417,7 +420,7 @@ async function runExport(purpose: ExportPurpose): Promise<ExportResult | null> {
   const mine = ++token;
   job.value = { token: mine, recordingId: i.result.id, format: choice.format, fraction: 0, remainingMs: null, adopted: false };
   try {
-    return await record_export(i.result.id, exportOptions(choice, i, range, purpose, cuts.value));
+    return await record_export(i.result.id, exportOptions(choice, i, range, purpose, cuts.value, textReady.value));
   } catch (error) {
     if (info.value?.result.id === i.result.id) fail(error, "export");
     return null;
@@ -620,6 +623,10 @@ function onKeyDown(event: KeyboardEvent): void {
       // ⌫ cuts the words selected in the Text panel.
       if (!textPanel.value?.cutSelection()) return;
       break;
+    case "Enter":
+      // ↩ opens the words selected in the Text panel for a correction.
+      if (onButton || !textPanel.value?.fixSelection()) return;
+      break;
     case "Escape":
       if (!textPanel.value?.escape()) return;
       break;
@@ -728,6 +735,7 @@ onUnmounted(() => {
         @seek="(ms) => seekTo(clamp(ms, range.startMs, range.endMs))"
         @play="playFrom"
         @transcribed="(ms) => (transcribedMs = ms)"
+        @ready="(ready) => (textReady = ready)"
         @pick="(cut) => (pickedCut = cut)"
         @settings="(next) => (settings = next)"
       />
@@ -796,7 +804,7 @@ onUnmounted(() => {
         />
       </div>
 
-      <ExportPanel :info="info" :choice="choice" :kept-ms="keptMs" :estimate="estimate" :locked="locked">
+      <ExportPanel :info="info" :choice="choice" :kept-ms="keptMs" :estimate="estimate" :locked="locked" :text-ready="textReady">
         <template #foot>
           <div v-if="job" class="r-export-foot">
             <div class="r-progress-head">

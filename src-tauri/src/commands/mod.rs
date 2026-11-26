@@ -173,6 +173,7 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Syn
         transcript::transcript_start,
         transcript::transcript_cancel,
         transcript::transcript_save_cuts,
+        transcript::transcript_save_edits,
         // agents (the local MCP server)
         agents::agents_state,
         agents::agents_answer,

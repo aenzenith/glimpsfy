@@ -16,7 +16,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use glimpsfy_record::{RecordingId, TrackKind, TrimRange};
 use glimpsfy_speech::model::SpeechModelStore;
 use glimpsfy_speech::{CancelToken, Fingerprint, Span, Transcript, Word};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
 
 use super::media::Known;
@@ -52,6 +52,8 @@ pub struct TranscriptState {
 /// runs shows the text that is already read.
 struct Job {
     recording_id: RecordingId,
+    /// The transcript file's name, so removing a recording's text also stops the job writing it.
+    key: String,
     cancel: CancelToken,
     /// The same cancel for the audio decoder, which takes a plain flag.
     stop: Arc<AtomicBool>,
@@ -191,6 +193,7 @@ pub async fn start(app: AppHandle, id: RecordingId, language: String) -> Command
         }
         *job = Some(Job {
             recording_id: id.clone(),
+            key: key(&known),
             cancel: cancel.clone(),
             stop: stop.clone(),
             progress: TranscriptProgress {
@@ -314,6 +317,9 @@ fn run(
         cuts,
         created_at_ms: now_ms(),
     };
+    // The check and the write hold the job's lock, which `forget` takes to cancel: a transcript is
+    // written either before its recording's text is removed, or not at all.
+    let _job = lock(&speech(app).job);
     if cancel.is_cancelled() {
         return Err(CommandError::new(ErrorCode::Cancelled, "the transcription was cancelled"));
     }
@@ -393,6 +399,45 @@ pub fn save_cuts(app: &AppHandle, id: &RecordingId, cuts: Vec<Span>) -> CommandR
     write(&path_of(app, &key(&known))?, &transcript)
 }
 
+/// The longest correction a word takes; a longer text is no correction of one word.
+const MAX_EDIT_CHARS: usize = 200;
+
+/// A correction of one word in the text panel: its index in the transcript and the text that
+/// replaces it, or `None` to give it back the model's text.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WordEdit {
+    pub index: usize,
+    pub text: Option<String>,
+}
+
+/// Saves corrections of words with the recording's transcript and returns its words. A
+/// correction equal to the model's text clears it, and an empty one hides the word.
+pub fn save_edits(app: &AppHandle, id: &RecordingId, edits: Vec<WordEdit>) -> CommandResult<Vec<Word>> {
+    let known = known(app, id)?;
+    let mut transcript =
+        saved(app, &known)?.ok_or_else(|| CommandError::not_found("the recording has no transcript yet"))?;
+    for edit in &edits {
+        let word = transcript
+            .words
+            .get_mut(edit.index)
+            .ok_or_else(|| CommandError::invalid("a correction names a word the transcript does not hold"))?;
+        let text = edit.text.as_deref().map(|t| t.split_whitespace().collect::<Vec<_>>().join(" "));
+        if text.as_ref().is_some_and(|t| t.chars().count() > MAX_EDIT_CHARS) {
+            return Err(CommandError::invalid("a correction is too long for one word"));
+        }
+        word.edited = text.filter(|t| *t != word.text.trim());
+    }
+    write(&path_of(app, &key(&known))?, &transcript)?;
+    Ok(transcript.words)
+}
+
+/// The transcript an export's subtitles are made from: the saved one, while it belongs to the
+/// file.
+pub fn for_export(app: &AppHandle, known: &Known) -> CommandResult<Transcript> {
+    saved(app, known)?.ok_or_else(|| CommandError::not_found("the recording has no transcript yet"))
+}
+
 /// Cuts as the file keeps them: inside `0..duration`, sorted, with overlapping and touching
 /// ones merged, and empty ones dropped.
 fn tidy(mut cuts: Vec<Span>, duration_ms: u64) -> Vec<Span> {
@@ -412,13 +457,23 @@ fn tidy(mut cuts: Vec<Span>, duration_ms: u64) -> Vec<Span> {
     out
 }
 
-/// Removes the transcript of a recording that went to the Trash.
-pub fn forget(app: &AppHandle, known: &Known) {
-    if let Ok(path) = path_of(app, &key(known)) {
-        let _ = std::fs::remove_file(path);
+/// Cancels the running transcription when it writes one of `keys`. A transcription that goes on
+/// after its recording was removed would write the text back once it ends.
+fn cancel_writing(app: &AppHandle, keys: &[String]) {
+    if let Some(job) = lock(&speech(app).job).as_ref().filter(|j| keys.contains(&j.key)) {
+        job.cancel.cancel();
+        job.stop.store(true, Ordering::SeqCst);
     }
-    if let Ok(path) = path_of(app, &format!("r-{}", clean(&known.result.id.0))) {
-        let _ = std::fs::remove_file(path);
+}
+
+/// Removes the transcript of a recording that went to the Trash, and stops the reading of it.
+pub fn forget(app: &AppHandle, known: &Known) {
+    let keys = [key(known), format!("r-{}", clean(&known.result.id.0))];
+    cancel_writing(app, &keys);
+    for key in &keys {
+        if let Ok(path) = path_of(app, key) {
+            let _ = std::fs::remove_file(path);
+        }
     }
 }
 
@@ -426,8 +481,10 @@ pub fn forget(app: &AppHandle, known: &Known) {
 /// recording stays on disk.
 pub fn forget_entries(app: &AppHandle, ids: &[glimpsfy_history::EntryId]) {
     let Some(dir) = folder(app) else { return };
-    for id in ids {
-        let _ = std::fs::remove_file(dir.join(format!("{}.json", clean(&id.0))));
+    let keys: Vec<String> = ids.iter().map(|id| clean(&id.0)).collect();
+    cancel_writing(app, &keys);
+    for key in &keys {
+        let _ = std::fs::remove_file(dir.join(format!("{key}.json")));
     }
 }
 

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // The export panel of the trim window (design `exportPanel`): MP4 or GIF; for an MP4 the
-// resolution, the quality and the audio the file holds; for a GIF the frame rate, the width and
-// the loop. The estimate follows every change and warns when a GIF grows past what chat apps
+// resolution, the quality, the audio the file holds and its subtitles; for a GIF the frame rate,
+// the width and the loop. The estimate follows every change and warns when a GIF grows past what chat apps
 // accept. The footer (actions or progress) comes from the window through the `foot` slot.
 import { computed } from "vue";
 
@@ -9,7 +9,7 @@ import FormRow from "../components/FormRow.vue";
 import GIcon from "../components/GIcon.vue";
 import SelectControl from "../components/SelectControl.vue";
 import SwitchControl from "../components/SwitchControl.vue";
-import type { Mp4Quality, RecordingInfo, Resolution } from "../lib/api/record";
+import type { ExportCaptions, Mp4Quality, RecordingInfo, Resolution } from "../lib/api/record";
 import { t } from "../lib/i18n";
 import { audioLayout, gifWidths, GIF_FPS, type ExportChoice } from "./choice";
 import { GIF_WARN_BYTES, halfSize, type Estimate } from "./estimate";
@@ -22,6 +22,8 @@ const props = defineProps<{
   keptMs: number;
   estimate: Estimate;
   locked: boolean;
+  /** The text panel has read the speech, so subtitles can be made of it. */
+  textReady: boolean;
 }>();
 
 const size = computed(() => props.info.result.size);
@@ -45,6 +47,27 @@ const QUALITIES: { value: Mp4Quality; label: "record.export.small" | "record.exp
 const widths = computed(() =>
   gifWidths(props.info).map((w) => ({ value: w, label: w ? t("record.export.px", { width: w }) : t("record.export.original") })),
 );
+
+const CAPTIONS: { value: ExportCaptions; label: "record.export.captionsNone" | "record.export.captionsSrt" | "record.export.captionsVtt" | "record.export.captionsTrack" }[] = [
+  { value: "none", label: "record.export.captionsNone" },
+  { value: "srt", label: "record.export.captionsSrt" },
+  { value: "vtt", label: "record.export.captionsVtt" },
+  { value: "track", label: "record.export.captionsTrack" },
+];
+const captionOptions = computed(() => CAPTIONS.map((c) => ({ value: c.value, label: t(c.label) })));
+
+/** Until the speech is read the choice shows "None", which is what the export writes then. */
+const captions = computed({
+  get: () => (props.textReady ? props.choice.captions : "none"),
+  set: (value: ExportCaptions) => {
+    props.choice.captions = value;
+  },
+});
+const captionsHelp = computed(() => {
+  if (!props.textReady) return t("record.export.captionsWait");
+  if (props.choice.captions === "srt" || props.choice.captions === "vtt") return t("record.export.captionsFile");
+  return props.choice.captions === "track" ? t("record.export.captionsInside") : "";
+});
 
 /** One "Sound" switch drives both flags when the file holds one source. */
 const sound = computed({
@@ -176,6 +199,21 @@ function formatKey(event: KeyboardEvent): void {
       </div>
       <p v-else-if="choice.format === 'mp4'" class="g-help">{{ t("record.export.noSound") }}</p>
       <p v-else class="g-help">{{ t("record.export.gifSilent") }}</p>
+
+      <template v-if="choice.format === 'mp4' && layout !== 'none'">
+        <div class="g-group">
+          <FormRow :label="t('record.export.captions')" for="r-export-captions" stacked>
+            <SelectControl
+              id="r-export-captions"
+              v-model="captions"
+              class="r-fill"
+              :options="captionOptions"
+              :disabled="locked || !textReady"
+            />
+          </FormRow>
+        </div>
+        <p v-if="captionsHelp" class="g-help">{{ captionsHelp }}</p>
+      </template>
     </div>
 
     <div class="r-export-sec r-export-est" aria-live="polite">
@@ -200,6 +238,7 @@ function formatKey(event: KeyboardEvent): void {
 .r-est-label { font: var(--type-caption-strong); color: var(--win-text-2); }
 .r-est { margin-top: 2px; font: var(--type-display); font-variant-numeric: tabular-nums; color: var(--win-text); }
 .r-export-sec > .g-group + .g-group { margin-top: var(--space-12); }
+.r-export-sec > .g-help + .g-group { margin-top: var(--space-12); }
 .r-export-sec > .g-help { margin-top: var(--space-8); }
 .r-export-est { margin-top: auto; }
 /* `.g-form-label > label` makes a label a block; the icon and its words stay one row with a gap. */

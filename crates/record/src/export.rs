@@ -16,6 +16,11 @@
 //! and the kept audio track, on two threads) and handed in time order to the take writer in its
 //! offline mode, which drops nothing, with its sound faded in and out at every join. A GIF with
 //! cuts leaves the cut parts out the same way.
+//!
+//! Subtitles ([`ExportOptions::captions`], [`Subtitles`]) are made once the kept parts are known,
+//! so they follow a pass-through trim to its keyframe and every cut. A track goes into the
+//! working file before it takes its name; an SRT or VTT file is written under a working name
+//! first, so a full disk fails the whole export, and takes the MP4's name with its own extension.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -25,13 +30,14 @@ use std::time::{Duration, Instant};
 use glimpsfy_capture::{ColorSpace, PhysicalSize, VideoFrame};
 
 use crate::audio::{self, CHANNELS};
+use crate::captions::{self, Caption};
 use crate::cuts::{self, Span};
 use crate::files;
 use crate::gif::{GifEncoder, Picture};
 use crate::session::{self, TakeWriter, WriterSpec};
 use crate::{
-    ExportAudio, ExportFormat, ExportOptions, ExportResult, MediaInfo, Mp4Quality, RecordError, RecordingId,
-    Resolution, Result, TrackKind, TrimRange, VideoCodec,
+    ExportAudio, ExportCaptions, ExportFormat, ExportOptions, ExportPurpose, ExportResult, MediaInfo, Mp4Quality,
+    RecordError, RecordingId, Resolution, Result, TrackKind, TrimRange, VideoCodec,
 };
 
 /// How long an export waits for an encoder that takes nothing before it gives up.
@@ -144,6 +150,15 @@ pub fn gif_size(source: PhysicalSize, width: Option<u32>) -> PhysicalSize {
     }
 }
 
+/// Where the subtitles of an export come from: the speech of the recording, which only the app
+/// holds.
+pub struct Subtitles<'a> {
+    /// The language of the speech, as a transcript names it ("tr", "en").
+    pub language: &'a str,
+    /// The captions of a file that holds these parts of the recording, in the file's time.
+    pub captions: &'a dyn Fn(&[TrimRange]) -> Vec<Caption>,
+}
+
 /// Exports `source` (the recording `id`) as `options` asks into `wanted`, or the first free name
 /// next to it, and returns what was written. `progress` is called as the export goes on;
 /// setting `cancel` stops it and leaves no file behind.
@@ -152,6 +167,20 @@ pub fn export(
     source: &Path,
     options: &ExportOptions,
     wanted: &Path,
+    cancel: &AtomicBool,
+    progress: &mut dyn FnMut(Progress),
+) -> Result<ExportResult> {
+    export_with(id, source, options, wanted, None, cancel, progress)
+}
+
+/// [`export`] with the subtitles `options.captions` asks for; without `subtitles` the file gets
+/// none.
+pub fn export_with(
+    id: &RecordingId,
+    source: &Path,
+    options: &ExportOptions,
+    wanted: &Path,
+    subtitles: Option<&Subtitles<'_>>,
     cancel: &AtomicBool,
     progress: &mut dyn FnMut(Progress),
 ) -> Result<ExportResult> {
@@ -179,13 +208,39 @@ pub fn export(
             return Err(if cancel.load(Ordering::SeqCst) { RecordError::Cancelled } else { e });
         }
     };
+    let sidecar = match add_captions(id, options, wanted, &part, &kept, subtitles) {
+        Ok(sidecar) => sidecar,
+        Err(e) => {
+            let _ = std::fs::remove_file(&part);
+            return Err(if cancel.load(Ordering::SeqCst) { RecordError::Cancelled } else { e });
+        }
+    };
+    if cancel.load(Ordering::SeqCst) {
+        let _ = std::fs::remove_file(&part);
+        if let Some((sidecar, _)) = &sidecar {
+            let _ = std::fs::remove_file(sidecar);
+        }
+        return Err(RecordError::Cancelled);
+    }
     let path = match files::place_without_replacing(&part, wanted) {
         Ok(path) => path,
         Err(e) => {
             let _ = std::fs::remove_file(&part);
+            if let Some((sidecar, _)) = sidecar {
+                let _ = std::fs::remove_file(sidecar);
+            }
             return Err(e.into());
         }
     };
+    // The text file takes the name the MP4 got, so a player finds it; a name that is taken
+    // makes it the next free one instead of replacing a file.
+    let captions_path = sidecar.and_then(|(sidecar, ext)| {
+        let placed = files::place_without_replacing(&sidecar, &path.with_extension(ext));
+        if placed.is_err() {
+            let _ = std::fs::remove_file(&sidecar);
+        }
+        placed.ok()
+    });
     report(1.0);
     let file_bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
     Ok(ExportResult {
@@ -197,7 +252,50 @@ pub fn export(
         reencoded,
         trim,
         kept,
+        captions_path,
     })
+}
+
+/// Puts the subtitles `options` asks for into the working MP4 `part`, or writes them under a
+/// working name next to `wanted`, which it returns with the extension the file takes.
+fn add_captions(
+    id: &RecordingId,
+    options: &ExportOptions,
+    wanted: &Path,
+    part: &Path,
+    kept: &[TrimRange],
+    subtitles: Option<&Subtitles<'_>>,
+) -> Result<Option<(PathBuf, &'static str)>> {
+    let Some(subtitles) = subtitles else { return Ok(None) };
+    if options.captions == ExportCaptions::None || !matches!(options.format, ExportFormat::Mp4 { .. }) {
+        return Ok(None);
+    }
+    let list = (subtitles.captions)(kept);
+    if list.is_empty() {
+        return Ok(None);
+    }
+    let (text, ext) = match options.captions {
+        ExportCaptions::None => return Ok(None),
+        ExportCaptions::Track => {
+            captions::add_track(part, &list, subtitles.language)?;
+            return Ok(None);
+        }
+        // A copy or an upload hands on one file.
+        _ if options.purpose != ExportPurpose::Save => return Ok(None),
+        ExportCaptions::Srt => (captions::srt(&list), "srt"),
+        ExportCaptions::Vtt => (captions::vtt(&list), "vtt"),
+    };
+    let sidecar = files::part_path(&wanted.with_extension(ext), &id.0);
+    let written = std::fs::OpenOptions::new().write(true).create_new(true).open(&sidecar).and_then(|mut file| {
+        use std::io::Write;
+        file.write_all(text.as_bytes())?;
+        file.sync_all()
+    });
+    if let Err(e) = written {
+        let _ = std::fs::remove_file(&sidecar);
+        return Err(e.into());
+    }
+    Ok(Some((sidecar, ext)))
 }
 
 /// What `write` wrote: the trim really exported, whether the video was encoded again, the

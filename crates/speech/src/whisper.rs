@@ -368,6 +368,7 @@ fn segment_words(segment: &Segment, end_of_text: i32, unspaced: bool) -> Vec<Wor
             end_ms: 0,
             filler: None,
             probability: word.probability / word.tokens.max(1) as f32,
+            edited: None,
         });
     }
     // A word lasts until the next one starts; the last one until the segment ends.
