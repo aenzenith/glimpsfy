@@ -344,6 +344,15 @@ pub fn key_overlay(window: &WebviewWindow, keep: &[WebviewWindow], mtm: MainThre
     ns_window.makeKeyAndOrderFront(None);
 }
 
+/// Gives the pointer back before the overlays go. The colour picker hides it with CSS
+/// `cursor: none`, for which WebKit also calls `[NSCursor hideUntilChanged]`; once the overlay
+/// was ordered out nothing changed the cursor again, since the app in front sets its own only
+/// when clicked, so the pointer stayed hidden until the next click. It has to be set while the
+/// overlay is still the key window under the pointer, or the window server ignores it.
+pub fn restore_cursor() {
+    objc2_app_kit::NSCursor::arrowCursor().set();
+}
+
 pub fn hide_overlay(window: &WebviewWindow, mtm: MainThreadMarker) {
     if let Some(ns_window) = ns_window(window, mtm) {
         ns_window.orderOut(None);
