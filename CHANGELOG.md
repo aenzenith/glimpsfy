@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.6.0](https://github.com/aenzenith/glimpsfy/compare/v0.5.1...v0.6.0) (2026-11-26)
+
+
+### Features
+
+* **annotate:** the Magnifier tool (Z) enlarged a detail inside the capture ([fe2f6b6](https://github.com/aenzenith/glimpsfy/commit/fe2f6b69d4528c3a8cc0112bee4b9336dc299643))
+* **popover:** rarer capture tools moved into a More menu at the end of the mode strip ([b5e25eb](https://github.com/aenzenith/glimpsfy/commit/b5e25eba920c3875f5c0fe9685f1181f63cc98c6))
+* **record:** exports carried subtitles from the transcript ([3c129d9](https://github.com/aenzenith/glimpsfy/commit/3c129d9e193937f97d7a4b2a06b92350b25686b0))
+
+
+### Bug Fixes
+
+* **overlay:** the pointer stayed hidden after Esc closed the colour picker ([8dafd3f](https://github.com/aenzenith/glimpsfy/commit/8dafd3fd65ada7cea9f5c5617bee3657cba006f3))
+* **record:** the subtitle track compiled on Linux, where gstreamer made a u64 comparison ambiguous ([865203e](https://github.com/aenzenith/glimpsfy/commit/865203e4e212200d19b0eec11071585da08f7709))
+
 ## [0.5.1](https://github.com/aenzenith/glimpsfy/compare/v0.5.0...v0.5.1) (2026-11-24)
 
 
