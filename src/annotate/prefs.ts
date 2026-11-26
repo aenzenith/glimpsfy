@@ -1,21 +1,22 @@
 // What the annotation tools remember between captures: the last ink, width, size and choice of
-// every tool, the crop ratio, whether the redaction notice was dismissed, and whether smart
+// every tool, the crop ratio, the magnifier's factor and pixel mode, whether the redaction notice was dismissed, and whether smart
 // redaction (D28) blurs or pixelates. It lives in the
 // settings file as the top-level `annotate` section. settings.rs keeps a section it does not know
 // and writes it back unchanged, so this needs no field on the Rust side; if Settings ever gains a
 // typed `annotate` section, it must keep these names.
 
-import type { Ink } from "../lib/annotate";
+import { MAGNIFY_FACTORS, type Ink, type MagnifyFactor } from "../lib/annotate";
 import { settings_get, settings_set } from "../lib/api/settings";
 import type { Settings } from "../lib/settings";
 import { CROP_RATIOS, HIGHLIGHTER_INKS, INKS, type CropRatio } from "./style";
 
-export type ToolId = "arrow" | "line" | "rect" | "ellipse" | "pen" | "highlighter" | "text" | "step" | "blur" | "pixelate" | "spotlight" | "crop";
+export type ToolId = "arrow" | "line" | "rect" | "ellipse" | "pen" | "highlighter" | "text" | "step" | "magnify" | "blur" | "pixelate" | "spotlight" | "crop";
 
-export const TOOL_IDS: readonly ToolId[] = ["arrow", "line", "rect", "ellipse", "pen", "highlighter", "text", "step", "blur", "pixelate", "spotlight", "crop"];
+export const TOOL_IDS: readonly ToolId[] = ["arrow", "line", "rect", "ellipse", "pen", "highlighter", "text", "step", "magnify", "blur", "pixelate", "spotlight", "crop"];
 
-/** One tool's choices. `width`, `size` and `level` are indexes into the strip's three choices. */
-export type ToolOptions = { ink: Ink; width: number; size: number; background: boolean; level: number; ratio: CropRatio };
+/** One tool's choices. `width`, `size` and `level` are indexes into the strip's three choices;
+ * `factor` and `smooth` are the magnifier's (2×, Sharp by default). */
+export type ToolOptions = { ink: Ink; width: number; size: number; background: boolean; level: number; ratio: CropRatio; factor: MagnifyFactor; smooth: boolean };
 
 /** How smart redaction hides what it found; the strength is the chosen tool's level. */
 export type SensitiveMethod = "blur" | "pixelate";
@@ -23,7 +24,7 @@ export type SensitiveMethod = "blur" | "pixelate";
 export type AnnotatePrefs = { tools: Record<ToolId, ToolOptions>; redactionNoticeSeen: boolean; sensitiveMethod: SensitiveMethod };
 
 function defaults(tool: ToolId): ToolOptions {
-  return { ink: tool === "highlighter" ? "yellow" : "red", width: 1, size: 1, background: true, level: 1, ratio: "free" };
+  return { ink: tool === "highlighter" ? "yellow" : "red", width: 1, size: 1, background: true, level: 1, ratio: "free", factor: 2, smooth: false };
 }
 
 export function defaultPrefs(): AnnotatePrefs {
@@ -55,6 +56,8 @@ export function readPrefs(raw: unknown): AnnotatePrefs {
       background: typeof saved.background === "boolean" ? saved.background : d.background,
       level: index(saved.level, d.level),
       ratio: typeof saved.ratio === "string" && (CROP_RATIOS as readonly string[]).includes(saved.ratio) ? (saved.ratio as CropRatio) : d.ratio,
+      factor: (MAGNIFY_FACTORS as readonly unknown[]).includes(saved.factor) ? (saved.factor as MagnifyFactor) : d.factor,
+      smooth: typeof saved.smooth === "boolean" ? saved.smooth : d.smooth,
     };
   }
   return prefs;

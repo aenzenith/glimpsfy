@@ -74,7 +74,7 @@ import { uploadsAllowed } from "../lib/network";
 import { can, isMac } from "../lib/platform";
 import type { ImageFormat, Settings } from "../lib/settings";
 import { jobName } from "../ocr/text";
-import { TOOLS, toolForKey, type ToolId } from "../overlay/tools";
+import { TOOLS, toolForKey, toolIcon, type ToolId } from "../overlay/tools";
 import FirstUploadDialog from "../upload/FirstUploadDialog.vue";
 import ObjectsPanel from "./ObjectsPanel.vue";
 import Overview from "./Overview.vue";
@@ -1505,7 +1505,7 @@ onUnmounted(() => {
               :disabled="!source || (item.id === 'undo' && !undoable) || (item.id === 'redo' && !redoable)"
               @click="chooseTool(item.id)"
             >
-              <GIcon :name="item.id" />
+              <GIcon :name="toolIcon(item.id)" />
             </button>
           </TipWrap>
         </template>
@@ -1591,7 +1591,7 @@ onUnmounted(() => {
           @mousedown.prevent
         >
           <span class="e-options-tool">
-            <GIcon :name="pick.tool" :size="16" />
+            <GIcon :name="toolIcon(pick.tool)" :size="16" />
             <span class="e-options-name">{{ t(`tool.${pick.tool}` as Key) }}</span>
           </span>
           <span class="g-divider" role="separator" />

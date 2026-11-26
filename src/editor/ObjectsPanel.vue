@@ -11,6 +11,7 @@ import type { AnnotationObject, Color } from "../lib/annotate";
 import { t, type Key } from "../lib/i18n";
 import { TOOL_OF, type AnnotationEngine } from "../annotate/engine";
 import { HIGHLIGHTER_FACTOR } from "../annotate/style";
+import { toolIcon } from "../overlay/tools";
 
 const props = defineProps<{ engine: AnnotationEngine }>();
 const emit = defineEmits<{ close: [] }>();
@@ -49,6 +50,8 @@ function describe(o: AnnotationObject): string {
       return `“${o.text.split("\n")[0]}”`;
     case "step":
       return `${inkName(o.color)} · ${px(o.diameter)}`;
+    case "magnify":
+      return `${inkName(o.color)} · ${o.factor}×`;
     case "blur":
       return t(`overlay.${o.strength}` as Key);
     case "pixelate":
@@ -60,7 +63,7 @@ function describe(o: AnnotationObject): string {
   }
 }
 
-const icon = (o: AnnotationObject) => TOOL_OF[o.kind];
+const icon = (o: AnnotationObject) => toolIcon(TOOL_OF[o.kind]);
 
 function onDragStart(e: DragEvent, id: string): void {
   dragged.value = id;

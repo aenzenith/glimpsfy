@@ -1,7 +1,7 @@
 {
   "version": {
     "major": 1,
-    "minor": 2
+    "minor": 3
   },
   "image": {
     "width": 2880,
@@ -254,6 +254,27 @@
         "name": "red"
       },
       "diameter": 44.0
+    },
+    {
+      "id": "magnify-1",
+      "hidden": false,
+      "locked": false,
+      "kind": "magnify",
+      "source": {
+        "x": 1450.5,
+        "y": 250.25
+      },
+      "radius": 40.0,
+      "at": {
+        "x": 1580.0,
+        "y": 560.0
+      },
+      "factor": 3,
+      "smooth": true,
+      "color": {
+        "kind": "ink",
+        "name": "cyan"
+      }
     },
     {
       "id": "spotlight-1",

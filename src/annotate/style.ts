@@ -117,6 +117,23 @@ export const SNAP_SPOT_PAD = 6;
 /** How far a press may miss a word and still start on it. */
 export const SNAP_REACH = 2;
 
+// ------------------------------------------------------------------------ magnifier
+
+/** The magnifier's lines in points (design/canvas row 41, Ortak): the ring around the source, the
+ * line that joins it to the loupe, and the loupe's frame. */
+export const MAGNIFY_RING = 2;
+export const MAGNIFY_LINK = 1.5;
+export const MAGNIFY_FRAME = 3;
+/** The smallest source is 8 points across. */
+export const MAGNIFY_MIN_RADIUS = 4;
+/** The room a new loupe keeps from its ring, and with its shadow from the edge of the exported
+ * area, in points. */
+export const MAGNIFY_GAP = 16;
+export const MAGNIFY_MARGIN = 6;
+/** The loupe floats a little above the page: the row's drop shadow, 2 points down with a
+ * deviation of 3.5 points at 28 %. */
+export const MAGNIFY_SHADOW = { color: "rgba(0, 0, 0, 0.28)", blur: 7, y: 2 } as const;
+
 // -------------------------------------------------------------------------- drawing
 
 /** The rectangle's corner radius. */

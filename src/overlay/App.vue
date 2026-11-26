@@ -96,7 +96,7 @@ import * as annotations from "./annotations";
 import { read as readColor } from "../lib/color";
 import { cssColor, drawLens, ensureContext, hex, loadFrame, pixelAt } from "./frame";
 import { place, placeLoupe, type Placement, type Rect } from "./layout";
-import { ACTIONS, TOOLS, WORKING_ACTIONS, actionForChord, toolForKey, type ActionId, type ToolId } from "./tools";
+import { ACTIONS, TOOLS, WORKING_ACTIONS, actionForChord, toolForKey, toolIcon, type ActionId, type ToolId } from "./tools";
 import { uploadsAllowed } from "../lib/network";
 import FirstUploadDialog from "../upload/FirstUploadDialog.vue";
 import { modelsMissing } from "../ocr/models";
@@ -2371,7 +2371,7 @@ onUnmounted(() => {
             :disabled="(item.id === 'undo' && !undoable) || (item.id === 'redo' && !redoable)"
             @click="setTool(item.id)"
           >
-            <GIcon :name="item.id" />
+            <GIcon :name="toolIcon(item.id)" />
           </button>
           <span class="g-tip" role="tooltip">{{ t(item.label) }}<kbd class="g-kbd">{{ chord(item.key) }}</kbd></span>
         </span>

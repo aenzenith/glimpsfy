@@ -12,6 +12,7 @@ export type ToolId =
   | "highlighter"
   | "text"
   | "step"
+  | "magnify"
   | "blur"
   | "pixelate"
   | "spotlight"
@@ -46,6 +47,7 @@ export const TOOLS: (Tool | null)[] = [
   null,
   { id: "text", label: "tool.text", key: "T" },
   { id: "step", label: "tool.step", key: "N" },
+  { id: "magnify", label: "tool.magnify", key: "Z" },
   null,
   { id: "blur", label: "tool.blur", key: "B" },
   { id: "pixelate", label: "tool.pixelate", key: "X" },
@@ -96,6 +98,11 @@ export const WORKING_ACTIONS: ActionId[] = [
 ];
 
 export const INKS = ["red", "orange", "yellow", "green", "cyan", "blue", "white", "black"] as const;
+
+/** The icon of a tool, which is the tool's id except for the magnifier's loupe. */
+export function toolIcon(id: string): string {
+  return id === "magnify" ? "loupe" : id;
+}
 
 /** A tool's key for the keyboard, or `undefined` when no tool has it. */
 export function toolForKey(key: string): Tool | undefined {

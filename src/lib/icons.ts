@@ -19,6 +19,8 @@ const ICONS: Record<string, IconDef> = {
     highlighter: '<path d="m8.6 13.2-2.8-2.8 6.6-6.6a1.4 1.4 0 0 1 2 0l.8.8a1.4 1.4 0 0 1 0 2Z"/><path d="m5.8 10.4-1.6 3.2 2.2 2.2 3.2-1.6"/><path d="M11.5 16.5h5"/>',
     text: '<path d="M5 5.25h10M10 5.25v10.5M8 15.75h4"/>',
     step: '<circle cx="10" cy="10" r="7"/><path d="M8.7 8.1 10.4 7v6.25"/>',
+    /* the magnifier (design/canvas row 41, Ortak): a small source square joined to a circle that holds it larger; only here, not in the kit */
+    loupe: '<rect x="2.75" y="13.25" width="4" height="4" rx="1"/><path d="M6.75 13.25 9.05 10.95"/><circle cx="12.75" cy="7.25" r="5.25"/><rect x="10.5" y="5" width="4.5" height="4.5" rx="1"/>',
     blur: '<path d="M10 3.5S5.25 8.6 5.25 11.75a4.75 4.75 0 0 0 9.5 0C14.75 8.6 10 3.5 10 3.5Z"/><path d="M7.9 12.2a2.2 2.2 0 0 0 1.8 2" opacity=".65"/>',
     pixelate: '<rect x="3.5" y="3.5" width="13" height="13" rx="2"/><path class="f" d="M7.83 3.5h4.34v4.33H7.83zM3.5 7.83h4.33v4.34H3.5zM12.17 7.83h4.33v4.34h-4.33zM7.83 12.17h4.34v4.5H7.83z"/>',
     /* redrawn: a stage light casting one cone onto the floor, instead of the frame and lens that read as a camera */

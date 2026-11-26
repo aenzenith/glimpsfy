@@ -12,7 +12,7 @@
 export type Version = { major: number; minor: number };
 
 /** The version this build writes; it reads every document whose major version is not higher. */
-export const CURRENT_VERSION: Version = { major: 1, minor: 2 };
+export const CURRENT_VERSION: Version = { major: 1, minor: 3 };
 
 export type ImageSize = { width: number; height: number };
 export type Point = { x: number; y: number };
@@ -31,6 +31,9 @@ export const CELL_SIZES = ["fine", "medium", "coarse"] as const;
 export type CellSize = (typeof CELL_SIZES)[number];
 export const SPOTLIGHT_DIMS = ["light", "medium", "dark"] as const;
 export type SpotlightDim = (typeof SPOTLIGHT_DIMS)[number];
+/** How many times a magnifier enlarges its source (format 1.3). */
+export const MAGNIFY_FACTORS = [2, 3, 4] as const;
+export type MagnifyFactor = (typeof MAGNIFY_FACTORS)[number];
 
 export type Shape =
   | { kind: "arrow"; from: Point; to: Point; stroke: Stroke }
@@ -49,6 +52,9 @@ export type Shape =
       maxWidth: number | null;
     }
   | { kind: "step"; center: Point; number: number; color: Color; diameter: number }
+  /** The circle of `radius` around `source` enlarged `factor` times into a loupe centred on `at`
+   * (format 1.3); see `Shape::Magnify` for what the loupe shows. */
+  | { kind: "magnify"; source: Point; radius: number; at: Point; factor: MagnifyFactor; smooth: boolean; color: Color }
   | { kind: "blur"; rect: Rect; strength: BlurStrength }
   | { kind: "pixelate"; rect: Rect; cell: CellSize }
   | { kind: "spotlight"; rect: Rect; dim: SpotlightDim }
@@ -66,6 +72,7 @@ export const OBJECT_KINDS = [
   "highlighter",
   "text",
   "step",
+  "magnify",
   "blur",
   "pixelate",
   "spotlight",
@@ -259,6 +266,18 @@ function readStroke(value: unknown, path: string): Stroke {
   return { color: readColor(field(s, "color", path), `${path}.color`), width: length(s, "width", path) };
 }
 
+function bool(from: Fields, key: string, path: string): boolean {
+  const value = field(from, key, path);
+  if (typeof value !== "boolean") throw new DocumentError(`${path}.${key}`, "true or false is expected");
+  return value;
+}
+
+function readFactor(from: Fields, key: string, path: string): MagnifyFactor {
+  const value = num(from, key, path);
+  if (!(MAGNIFY_FACTORS as readonly number[]).includes(value)) throw new DocumentError(`${path}.${key}`, `a magnifier enlarges 2, 3 or 4 times, not ${value}`);
+  return value as MagnifyFactor;
+}
+
 function readPath(value: unknown, path: string): Point[] {
   if (!Array.isArray(value)) throw new DocumentError(path, "an array of points is expected");
   if (value.length === 0) throw new DocumentError(path, "the path has no points");
@@ -319,6 +338,16 @@ function readShape(o: Fields, path: string): Shape {
         diameter: length(o, "diameter", path),
       };
     }
+    case "magnify":
+      return {
+        kind,
+        source: readPoint(field(o, "source", path), at("source")),
+        radius: length(o, "radius", path),
+        at: readPoint(field(o, "at", path), at("at")),
+        factor: readFactor(o, "factor", path),
+        smooth: bool(o, "smooth", path),
+        color: readColor(field(o, "color", path), at("color")),
+      };
     case "blur":
       return { kind, rect: readRect(field(o, "rect", path), at("rect")), strength: oneOf(o, "strength", path, BLUR_STRENGTHS) };
     case "pixelate":
@@ -348,7 +377,8 @@ export function migrateDocument(raw: unknown): unknown {
   if (older(version, { major: 1, minor: 1 }) && Array.isArray(objects)) {
     objects = objects.map((o: unknown) => (typeof o === "object" && o !== null && !Array.isArray(o) ? { hidden: false, locked: false, ...o } : o));
   }
-  // 1.1 → 1.2: the beautify style, which an older document has none of; only the version changes.
+  // 1.1 → 1.2: the beautify style, which an older document has none of. 1.2 → 1.3: the magnifier,
+  // a new kind no older document holds. Only the version changes in both steps.
   return { ...d, version: { ...CURRENT_VERSION }, objects };
 }
 
@@ -511,6 +541,16 @@ function writeShape(object: AnnotationObject): unknown {
       };
     case "step":
       return { kind: object.kind, center: writePoint(object.center), number: object.number, color: writeColor(object.color), diameter: object.diameter };
+    case "magnify":
+      return {
+        kind: object.kind,
+        source: writePoint(object.source),
+        radius: object.radius,
+        at: writePoint(object.at),
+        factor: object.factor,
+        smooth: object.smooth,
+        color: writeColor(object.color),
+      };
     case "blur":
       return { kind: object.kind, rect: writeRect(object.rect), strength: object.strength };
     case "pixelate":

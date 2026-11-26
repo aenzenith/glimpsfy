@@ -5,17 +5,21 @@
 // 1. the image pixels of the area, with every visible blur and pixelate written over them
 //    (`putImageData`, which replaces pixels and never blends them),
 // 2. every other visible object in stacking order, the spotlights' shared dim at the place of the
-//    topmost spotlight.
+//    topmost spotlight. A magnifier's loupe shows what steps 1 and 2 have put under it so far: the
+//    pixels of its ring with the redactions flattened in and the drawings below it, never itself
+//    or anything above it (`Loupes`, magnify.ts).
 //
 // The live view keeps a copy of the area's original pixels on a canvas and the redacted patches as
 // `ImageData`, so a redraw while the user drags an arrow costs a canvas copy and the drawing; the
 // export flattens the redactions into one pixel array (redact.ts), which is the exact same data.
 
 import type { AnnotationDocument, AnnotationObject } from "../lib/annotate";
-import { drawObject, drawSpotlights } from "./draw";
+import { drawMagnifier, drawObject, drawSpotlights } from "./draw";
+import { loupePatch, loupePixels, smoothAt, sourceRegion, type LoupePatch, type Magnify } from "./magnify";
 import { PatchCache, flattenRedactions, intersect, isRedaction, type Bytes, type PixelRect, type Pixels } from "./redact";
 
 type Ctx = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
+type Canvas = HTMLCanvasElement | OffscreenCanvas;
 type Spotlight = Extract<AnnotationObject, { kind: "spotlight" }>;
 
 /** The document's image: its RGBA pixels, their colour space, and a canvas holding them for fast
@@ -58,17 +62,112 @@ export function context2d(canvas: HTMLCanvasElement | OffscreenCanvas, colorSpac
 
 /** Draws every visible object that is drawn rather than computed, in stacking order, on a context
  * whose origin is the image's (the caller translates it to the area). */
-export function drawDrawings(ctx: Ctx, doc: AnnotationDocument, area: PixelRect, layer: HTMLCanvasElement | OffscreenCanvas, skip: string | null): void {
+export function drawDrawings(ctx: Ctx, doc: AnnotationDocument, area: PixelRect, layer: Canvas, skip: string | null, loupes: Loupes): void {
   const visible = doc.objects.filter((o) => !o.hidden && o.id !== skip);
-  const spots = visible.filter((o): o is Spotlight => o.kind === "spotlight");
-  const top = spots.length > 0 ? spots[spots.length - 1].id : null;
-  for (const object of visible) {
+  drawRange(ctx, visible, visible.length, doc, area, layer, loupes);
+}
+
+/** The index of the topmost spotlight in `visible`, where the shared dim is drawn; -1 for none. */
+function topSpot(visible: readonly AnnotationObject[]): number {
+  for (let i = visible.length - 1; i >= 0; i--) if (visible[i].kind === "spotlight") return i;
+  return -1;
+}
+
+/** Draws the first `end` objects of `visible` over `area`. The dim follows the whole list, so a
+ * loupe's pixels hold it only when the topmost spotlight lies below the magnifier, exactly as the
+ * image holds it at that point. */
+function drawRange(ctx: Ctx, visible: readonly AnnotationObject[], end: number, doc: AnnotationDocument, area: PixelRect, layer: Canvas, loupes: Loupes): void {
+  const top = topSpot(visible);
+  for (let i = 0; i < end; i++) {
+    const object = visible[i];
     if (isRedaction(object) || object.kind === "crop") continue;
     if (object.kind === "spotlight") {
-      if (object.id === top) drawSpotlights(ctx, spots, area, doc.scale, layer);
+      if (i === top) drawSpotlights(ctx, visible.filter((o): o is Spotlight => o.kind === "spotlight"), area, doc.scale, layer);
+      continue;
+    }
+    if (object.kind === "magnify") {
+      loupes.draw(ctx, object, visible, i, doc, area);
       continue;
     }
     drawObject(ctx, object, doc.scale);
+  }
+}
+
+type LoupeEntry = { key: string; below: readonly AnnotationObject[]; canvas: Canvas; x: number; y: number };
+
+/**
+ * The loupes of one image. A loupe's pixels are the ring's pixels with the redactions flattened in
+ * (`loupePixels`); when drawings lie below the magnifier, they are drawn over those pixels on a
+ * canvas of the ring's size first, nested magnifiers included, and the result is enlarged the same
+ * way. The enlarged pixels go into the canvas one to one. The live view keeps them while nothing
+ * they depend on changes, so dragging another object does not enlarge them again.
+ */
+export class Loupes {
+  private entries = new Map<string, LoupeEntry>();
+  private pixels: Pixels | null = null;
+  private layer: Canvas | null = null;
+
+  constructor(
+    private readonly source: ImageSource,
+    private readonly patches?: PatchCache,
+  ) {}
+
+  /** Draws magnifier `visible[index]` on `ctx`, which holds `clip` of the image. */
+  draw(ctx: Ctx, object: Magnify, visible: readonly AnnotationObject[], index: number, doc: AnnotationDocument, clip: PixelRect): void {
+    const patch = this.patch(object, visible, index, doc, clip);
+    drawMagnifier(ctx, object, doc.scale, (c) => {
+      if (patch) c.drawImage(patch.canvas, patch.x, patch.y);
+    });
+  }
+
+  private patch(o: Magnify, visible: readonly AnnotationObject[], index: number, doc: AnnotationDocument, clip: PixelRect): LoupeEntry | null {
+    const src = this.source.pixels;
+    if (src !== this.pixels) {
+      this.entries.clear();
+      this.pixels = src;
+    }
+    const region = sourceRegion(o, src.width, src.height);
+    if (!region) return null;
+    const below = visible.slice(0, index);
+    const id = `${o.id}|${clip.x},${clip.y},${clip.width},${clip.height}`;
+    const key = `${region.x},${region.y},${region.width},${region.height}|${o.source.x},${o.source.y},${o.at.x},${o.at.y}|${o.factor}|${smoothAt(o, doc.scale)}|${doc.scale}`;
+    const kept = this.entries.get(id);
+    if (kept && kept.key === key && kept.below.length === below.length && kept.below.every((b, i) => b === below[i])) return kept;
+    const patch = this.drawsBelow(visible, index) ? this.composed(o, visible, index, doc, region, clip) : loupePixels(src, doc.objects, doc.scale, o, this.patches, clip);
+    if (!patch) {
+      this.entries.delete(id);
+      return null;
+    }
+    const { colorSpace } = this.source;
+    const canvas = scratchCanvas(patch.width, patch.height);
+    context2d(canvas, colorSpace).putImageData(new ImageData(patch.data, patch.width, patch.height, { colorSpace }), 0, 0);
+    // Entries of objects that no longer exist would pile up during a drag; a small cap is enough.
+    if (this.entries.size > 32) this.entries.clear();
+    const entry = { key, below, canvas, x: patch.x, y: patch.y };
+    this.entries.set(id, entry);
+    return entry;
+  }
+
+  /** Whether anything below `visible[index]` paints on the image: a drawing, or the dim. */
+  private drawsBelow(visible: readonly AnnotationObject[], index: number): boolean {
+    const top = topSpot(visible);
+    if (top >= 0 && top < index) return true;
+    return visible.slice(0, index).some((o) => !isRedaction(o) && o.kind !== "crop" && o.kind !== "spotlight");
+  }
+
+  /** The loupe's pixels over the redacted ring with the drawings below drawn in. */
+  private composed(o: Magnify, visible: readonly AnnotationObject[], index: number, doc: AnnotationDocument, region: PixelRect, clip: PixelRect): LoupePatch | null {
+    const { colorSpace } = this.source;
+    const base = flattenRedactions(this.source.pixels, doc.objects, doc.scale, region, this.patches);
+    const canvas = scratchCanvas(region.width, region.height);
+    const ctx = context2d(canvas, colorSpace, true);
+    ctx.putImageData(new ImageData(base, region.width, region.height, { colorSpace }), 0, 0);
+    ctx.save();
+    ctx.translate(-region.x, -region.y);
+    drawRange(ctx, visible, index, doc, region, (this.layer ??= scratchCanvas(1, 1)), this);
+    ctx.restore();
+    const data = ctx.getImageData(0, 0, region.width, region.height, { colorSpace }).data as Bytes;
+    return loupePatch(data, region, o, doc.scale, clip);
   }
 }
 
@@ -79,6 +178,7 @@ export class Composer {
   private base: HTMLCanvasElement | OffscreenCanvas | null = null;
   private baseKey = "";
   private layer: HTMLCanvasElement | OffscreenCanvas | null = null;
+  private loupes: Loupes | null = null;
 
   constructor(readonly source: ImageSource) {}
 
@@ -115,15 +215,17 @@ export class Composer {
       ctx.putImageData(data, patch.region.x - area.x, patch.region.y - area.y, part.x - patch.region.x, part.y - patch.region.y, part.width, part.height);
     }
     this.layer ??= scratchCanvas(1, 1);
+    this.loupes ??= new Loupes(this.source, this.patches);
     ctx.save();
     ctx.translate(-area.x, -area.y);
-    drawDrawings(ctx, doc, area, this.layer, skip);
+    drawDrawings(ctx, doc, area, this.layer, skip, this.loupes);
     ctx.restore();
   }
 
   /** Forgets the copies, after the image changed. */
   reset(): void {
     this.patches.clear();
+    this.loupes = null;
     this.base = null;
     this.baseKey = "";
   }
@@ -146,7 +248,7 @@ export function renderExport(source: ImageSource, doc: AnnotationDocument): Rend
   ctx.putImageData(new ImageData(base, width, height, { colorSpace: source.colorSpace }), 0, 0);
   ctx.save();
   ctx.translate(-area.x, -area.y);
-  drawDrawings(ctx, doc, area, scratchCanvas(1, 1), null);
+  drawDrawings(ctx, doc, area, scratchCanvas(1, 1), null, new Loupes(source));
   ctx.restore();
   const data = ctx.getImageData(0, 0, width, height, { colorSpace: source.colorSpace }).data;
   return { area, width, height, colorSpace: source.colorSpace, data };
