@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // The controls of the options strip for one tool (DESIGN.md "Annotation bars"): the eight inks
-// (six for the highlighter) and three widths, the text sizes and the background, or the tool's
-// levels and ratios. The page supplies the container around them: the overlay's `g-strip`, the
+// (six for the highlighter) and three widths, the text sizes and the background, the magnifier's
+// factors and, where they differ, its Sharp and Smooth pixels, or the tool's levels and ratios. The page supplies the container around them: the overlay's `g-strip`, the
 // editor's options strip. A choice is
 // remembered for the tool and, when an object of that tool is selected, applied to it. A tool that
 // snaps to words ends with a warning when the text could not be read, which says why it draws
@@ -10,8 +10,10 @@ import { computed } from "vue";
 
 import GIcon from "../components/GIcon.vue";
 import TipWrap from "../components/TipWrap.vue";
-import { t, type Key } from "../lib/i18n";
+import { MAGNIFY_FACTORS } from "../lib/annotate";
+import { language, t, type Key } from "../lib/i18n";
 import type { AnnotationEngine } from "./engine";
+import { beyondPixels } from "./magnify";
 import type { ToolId, ToolOptions } from "./prefs";
 import { snaps } from "./snap";
 import { CROP_RATIOS, HIGHLIGHTER_INKS, HIGHLIGHTER_WIDTHS, INKS, STEP_SIZES, STROKE_WIDTHS, TEXT_SIZES } from "./style";
@@ -61,6 +63,14 @@ const levels = computed<Key[]>(() => {
     default:
       return [];
   }
+});
+
+// Sharp and Smooth only differ where the factor goes past the capture's own pixels, so the choice
+// shows only then, with a tip that says why it is there.
+const beyond = computed(() => props.tool === "magnify" && beyondPixels(current.value.factor, props.engine.scale));
+const beyondTip = computed(() => {
+  const scale = new Intl.NumberFormat(language.value, { maximumFractionDigits: 2 }).format(props.engine.scale);
+  return t("annotate.magnify.beyond", { scale, factor: current.value.factor });
 });
 
 const ratioLabel = (r: (typeof CROP_RATIOS)[number]) => (r === "free" ? t("overlay.free") : r === "original" ? t("annotate.ratio.original") : r);
@@ -126,6 +136,40 @@ function choose(change: Partial<ToolOptions>): void {
     >
       <GIcon name="textbg" />
     </button>
+  </template>
+  <template v-if="tool === 'magnify'">
+    <div class="a-group" role="radiogroup" :aria-label="t('annotate.magnify.factor')">
+      <button
+        v-for="f in MAGNIFY_FACTORS"
+        :key="`f${f}`"
+        type="button"
+        class="g-option"
+        role="radio"
+        :aria-checked="current.factor === f"
+        :aria-label="t('annotate.magnify.factorN', { n: f })"
+        :aria-keyshortcuts="String(f)"
+        @mousedown.prevent
+        @click="choose({ factor: f })"
+      >
+        {{ f }}×
+      </button>
+    </div>
+    <template v-if="beyond">
+      <span class="g-divider" role="separator" />
+      <div class="a-group" role="radiogroup" :aria-label="t('annotate.magnify.pixels')">
+        <button type="button" class="g-option" role="radio" :aria-checked="!current.smooth" @mousedown.prevent @click="choose({ smooth: false })">
+          {{ t("annotate.magnify.sharp") }}
+        </button>
+        <button type="button" class="g-option" role="radio" :aria-checked="current.smooth" @mousedown.prevent @click="choose({ smooth: true })">
+          {{ t("annotate.magnify.smooth") }}
+        </button>
+      </div>
+      <TipWrap :tip="beyondTip" :side="segmented ? 'below' : undefined" align="end">
+        <button type="button" class="g-btn" data-size="small" :aria-label="t('annotate.magnify.why')" @mousedown.prevent>
+          <GIcon name="info" :size="16" />
+        </button>
+      </TipWrap>
+    </template>
   </template>
   <div v-if="levels.length" :class="segmented ? 'g-seg' : 'a-group'" role="radiogroup" :aria-label="t(tool === 'pixelate' ? 'overlay.size' : 'overlay.strength')">
     <button

@@ -12,9 +12,10 @@
 
 import { ref } from "vue";
 
-import type { AnnotationDocument, AnnotationObject, BeautifyStyle, Color, Point, Rect } from "../lib/annotate";
+import type { AnnotationDocument, AnnotationObject, BeautifyStyle, Color, MagnifyFactor, Point, Rect } from "../lib/annotate";
 import { textSize } from "./draw";
 import { boxTo, clamp, contains, frameOf, handlesOf, hits, moved, rectFrom, resized, snapAngle, type Handle } from "./geometry";
+import { keepLoupe, keepRing, magnifyPart, placeLoupe, sizeRing, type Magnify, type MagnifyPart } from "./magnify";
 import type { AnnotatePrefs, ToolId, ToolOptions } from "./prefs";
 import { endWord, range, shapesFor, snaps, wordAt, type SnapShape, type SnapWord } from "./snap";
 import {
@@ -53,6 +54,7 @@ export const KIND_OF: Record<ToolId, Kind> = {
   highlighter: "highlighter",
   text: "text",
   step: "step",
+  magnify: "magnify",
   blur: "blur",
   pixelate: "pixelate",
   spotlight: "spotlight",
@@ -96,8 +98,11 @@ type DrawGesture = {
 
 type Gesture =
   | DrawGesture
-  | { kind: "move"; id: string; start: Point; origin: AnnotationObject }
-  | { kind: "handle"; id: string; handle: string; origin: AnnotationObject }
+  /** `part` is the part of a magnifier that was pressed: its ring or its loupe moves alone, and
+   * `null` moves the whole object. */
+  | { kind: "move"; id: string; start: Point; origin: AnnotationObject; part: Exclude<MagnifyPart, "link"> | null }
+  /** `last` is the pointer, where a magnifier shows its ring's diameter. */
+  | { kind: "handle"; id: string; handle: string; origin: AnnotationObject; last: Point | null }
   /** The whole group follows the pointer; `id` is the member that was pressed. */
   | { kind: "group"; id: string; start: Point; origins: ReadonlyMap<string, AnnotationObject> };
 
@@ -362,6 +367,25 @@ export class AnnotationEngine {
     return this.doc.objects.map((o) => (o.id === id ? next : o));
   }
 
+  /** The object after a move that knows nothing of the image: a magnifier's ring goes back inside
+   * the image, the only pixels its loupe can show. */
+  private inImage(o: AnnotationObject): AnnotationObject {
+    return o.kind === "magnify" ? keepRing(o, this.doc.image.width, this.doc.image.height) : o;
+  }
+
+  /** The exported part of the image, which a loupe stays inside: the crop (the overlay's
+   * selection) within the image, or all of it. */
+  private exportRect(): Rect {
+    const image = { x: 0, y: 0, width: this.doc.image.width, height: this.doc.image.height };
+    const crop = this.crop();
+    if (!crop) return image;
+    const x0 = Math.max(0, crop.x);
+    const y0 = Math.max(0, crop.y);
+    const x1 = Math.min(image.width, crop.x + crop.width);
+    const y1 = Math.min(image.height, crop.y + crop.height);
+    return x1 > x0 && y1 > y0 ? { x: x0, y: y0, width: x1 - x0, height: y1 - y0 } : image;
+  }
+
   /** Starts a fresh document (a new capture or a new image); the history goes with the old one.
    * `unsaved` marks drawings that exist nowhere else yet, such as the overlay's hand-over. */
   load(doc: AnnotationDocument, unsaved = false): void {
@@ -515,7 +539,7 @@ export class AnnotationEngine {
     const source = this.selected();
     if (!source || source.kind === "crop") return;
     const offset = 10 * this.scale;
-    let copy = { ...moved(source, offset, offset), id: newId(source.kind) } as AnnotationObject;
+    let copy = { ...this.inImage(moved(source, offset, offset)), id: newId(source.kind) } as AnnotationObject;
     if (copy.kind === "step") copy = { ...copy, number: this.nextStep() };
     const at = this.doc.objects.indexOf(source) + 1;
     this.apply((objects) => [...objects.slice(0, at), copy, ...objects.slice(at)]);
@@ -560,12 +584,12 @@ export class AnnotationEngine {
 
   nudge(dx: number, dy: number): void {
     if (this.groupIds.length) {
-      this.apply((objects) => objects.map((o) => (this.inGroup(o.id) ? moved(o, dx, dy) : o)));
+      this.apply((objects) => objects.map((o) => (this.inGroup(o.id) ? this.inImage(moved(o, dx, dy)) : o)));
       return;
     }
     const object = this.selected();
     if (!object || object.locked) return;
-    this.apply(() => this.replace(object.id, moved(object, dx, dy)));
+    this.apply(() => this.replace(object.id, this.inImage(moved(object, dx, dy))));
   }
 
   // ----------------------------------------------------------------------- tool options
@@ -603,6 +627,8 @@ export class AnnotationEngine {
         };
       case "step":
         return { ...saved, ink: inkOf(object.color), width: nearestIndex(STEP_SIZES, object.diameter / s - STEP_BASE) };
+      case "magnify":
+        return { ...saved, ink: inkOf(object.color), factor: object.factor, smooth: object.smooth };
       case "blur":
         return { ...saved, level: BLUR_LEVELS.indexOf(object.strength) };
       case "pixelate":
@@ -614,13 +640,16 @@ export class AnnotationEngine {
     }
   }
 
-  /** Changes a choice: the tool remembers it, and the selected object of that tool takes it. */
+  /** Changes a choice: the tool remembers it, and the selected object of that tool takes it. A
+   * magnifier takes only the choice that changed, so a new ink keeps the factor it has; a new
+   * factor grows or shrinks its loupe around the loupe's centre. */
   choose(tool: ToolId, change: Partial<ToolOptions>): void {
+    const shown = this.current(tool);
     this.prefs = { ...this.prefs, tools: { ...this.prefs.tools, [tool]: { ...this.prefs.tools[tool], ...change } } };
     this.onPrefs(this.prefs);
     const object = this.selected();
     if (object && TOOL_OF[object.kind] === tool) {
-      const next = this.styled(object, this.prefs.tools[tool]);
+      const next = this.styled(object, object.kind === "magnify" ? { ...shown, ...change } : this.prefs.tools[tool]);
       // While a text is being typed, its style belongs to the same undo step as its words.
       if (object.id === this.editingId) this.set(this.replace(object.id, next));
       else if (next !== object) this.apply(() => this.replace(object.id, next));
@@ -665,6 +694,10 @@ export class AnnotationEngine {
         };
       case "step":
         return { ...object, color: ink(o.ink), diameter: (STEP_BASE + STEP_SIZES[o.width]) * s };
+      case "magnify":
+        return object.factor === o.factor && object.smooth === o.smooth && object.color.kind === "ink" && object.color.name === o.ink
+          ? object
+          : { ...object, color: ink(o.ink), factor: o.factor, smooth: o.smooth };
       case "blur":
         return { ...object, strength: BLUR_LEVELS[o.level] };
       case "pixelate":
@@ -740,6 +773,12 @@ export class AnnotationEngine {
       }
       case "step":
         return { ...base, kind: "step", center: p, number: this.nextStep(), color: ink(o.ink), diameter: (STEP_BASE + STEP_SIZES[o.width]) * s };
+      case "magnify": {
+        // The press is the centre of the source; the ring starts at its smallest and the drag
+        // grows it.
+        const ring = sizeRing(p, 0, this.doc.image.width, this.doc.image.height, s);
+        return { ...base, kind: "magnify", ...ring, ...placeLoupe(ring.source, ring.radius, o.factor, this.exportRect(), s), smooth: o.smooth, color: ink(o.ink) };
+      }
       case "blur":
         return { ...base, kind: "blur", rect: box, strength: BLUR_LEVELS[o.level] };
       case "pixelate":
@@ -871,7 +910,7 @@ export class AnnotationEngine {
     if (handle) {
       const target = crop ? this.get(CROP_ID) : this.selected();
       if (target && !target.locked) {
-        this.begin({ kind: "handle", id: target.id, handle: handle.id, origin: target });
+        this.begin({ kind: "handle", id: target.id, handle: handle.id, origin: target, last: null });
         return "handle";
       }
     }
@@ -880,7 +919,7 @@ export class AnnotationEngine {
       const current = this.crop();
       if (current && contains(current, p)) {
         const object = this.get(CROP_ID)!;
-        this.begin({ kind: "move", id: CROP_ID, start: p, origin: object });
+        this.begin({ kind: "move", id: CROP_ID, start: p, origin: object, part: null });
         return "object";
       }
     } else if (this.tool !== "crop" && !over) {
@@ -894,7 +933,8 @@ export class AnnotationEngine {
       this.groupIds = [];
       if (object) {
         this.selectedId = object.id;
-        this.begin({ kind: "move", id: object.id, start: p, origin: object });
+        const part = object.kind === "magnify" ? magnifyPart(object, p, reach, this.tool === null) : null;
+        this.begin({ kind: "move", id: object.id, start: p, origin: object, part: part === "link" ? null : part });
         return "object";
       }
     }
@@ -953,7 +993,7 @@ export class AnnotationEngine {
       const dy = p.y - g.start.y;
       this.set(this.doc.objects.map((o) => {
         const origin = g.origins.get(o.id);
-        return origin ? moved(origin, dx, dy) : o;
+        return origin ? this.inImage(moved(origin, dx, dy)) : o;
       }));
       return;
     }
@@ -965,10 +1005,20 @@ export class AnnotationEngine {
         dx = clamp(dx, -r.x, this.doc.image.width - r.x - r.width);
         dy = clamp(dy, -r.y, this.doc.image.height - r.y - r.height);
       }
-      this.set(this.replace(g.id, moved(g.origin, dx, dy)));
+      if (g.origin.kind === "magnify" && g.part) {
+        this.set(this.replace(g.id, this.movedPart(g.origin, g.part, dx, dy)));
+        return;
+      }
+      this.set(this.replace(g.id, this.inImage(moved(g.origin, dx, dy))));
       return;
     }
     if (g.kind === "handle") {
+      g.last = p;
+      if (g.origin.kind === "magnify") {
+        const ring = resized(g.origin, g.handle, p, null, textSize) as Magnify;
+        this.set(this.replace(g.id, { ...ring, ...sizeRing(ring.source, ring.radius, this.doc.image.width, this.doc.image.height, this.scale) }));
+        return;
+      }
       const ratio = object.kind === "crop" ? this.ratio() : mods.shift && object.kind !== "pen" && object.kind !== "highlighter" ? 1 : null;
       let to = object.kind === "crop" ? this.clampToImage(p) : p;
       if ((object.kind === "arrow" || object.kind === "line") && mods.shift && g.origin.kind === object.kind) {
@@ -976,6 +1026,24 @@ export class AnnotationEngine {
       }
       this.set(this.replace(g.id, resized(g.origin, g.handle, to, ratio, textSize)));
     }
+  }
+
+  /** A magnifier with only its ring or only its loupe moved: the ring stays inside the image, the
+   * loupe inside the exported area. */
+  private movedPart(origin: Magnify, part: "source" | "loupe", dx: number, dy: number): Magnify {
+    if (part === "source") return keepRing({ ...origin, source: { x: origin.source.x + dx, y: origin.source.y + dy } }, this.doc.image.width, this.doc.image.height);
+    return { ...origin, at: keepLoupe(origin, { x: origin.at.x + dx, y: origin.at.y + dy }, this.exportRect(), this.scale) };
+  }
+
+  /** The diameter chip beside the pointer while a magnifier's ring is drawn or resized: where the
+   * pointer is, in image pixels, and the ring's diameter in points. */
+  sizeHint(): { at: Point; points: number } | null {
+    const g = this.gesture;
+    if (!g || (g.kind !== "draw" && g.kind !== "handle")) return null;
+    const at = g.kind === "draw" ? (g.travelled > 0 ? g.last : null) : g.last;
+    const object = this.get(g.id);
+    if (!at || !object || object.kind !== "magnify") return null;
+    return { at, points: Math.round((2 * object.radius) / this.scale) };
   }
 
   /** A drawing gesture's move: the free object follows the pointer, and a snapping tool shows it
@@ -1002,6 +1070,14 @@ export class AnnotationEngine {
       case "step":
         next = { ...object, center: at };
         break;
+      case "magnify": {
+        // The ring grows from its centre to the pointer, and the loupe opens live where it would
+        // when let go, at the remembered factor or the largest that fits.
+        const { width, height } = this.doc.image;
+        const ring = sizeRing(object.source, Math.hypot(at.x - object.source.x, at.y - object.source.y), width, height, this.scale);
+        next = { ...object, ...ring, ...placeLoupe(ring.source, ring.radius, this.prefs.tools.magnify.factor, this.exportRect(), this.scale) };
+        break;
+      }
       case "crop":
         next = { ...object, rect: boxTo(g.start, at, this.ratio()) };
         break;
@@ -1044,7 +1120,7 @@ export class AnnotationEngine {
         object.kind === "step" ||
         object.kind === "pen" ||
         (object.kind === "highlighter" && g.travelled >= min) ||
-        ((object.kind === "arrow" || object.kind === "line") && g.travelled >= min) ||
+        ((object.kind === "arrow" || object.kind === "line" || object.kind === "magnify") && g.travelled >= min) ||
         ("rect" in object && object.rect.width >= min && object.rect.height >= min);
       if (!keep) {
         this.set(before);
@@ -1130,8 +1206,9 @@ export class AnnotationEngine {
   /**
    * The keys the engine answers, whichever surface it is on: ⌫ deletes, ⌘D duplicates, ⌘] and ⌘[
    * change the order, ⌘L locks, ⇧⌘H hides, ⌥C changes the colour, the arrows nudge (⇧ by ten),
-   * ⌘A picks every object up as a group, and Esc ends a gesture or drops the selection. A group
-   * answers only to ⌫, the arrows and Esc. Returns whether the key was used.
+   * ⌘A picks every object up as a group, 2, 3 and 4 set the magnifier's factor, and Esc ends a
+   * gesture or drops the selection. A group answers only to ⌫, the arrows and Esc. Returns whether
+   * the key was used.
    */
   key(e: KeyboardEvent): boolean {
     if (this.editingId) return false;
@@ -1150,6 +1227,16 @@ export class AnnotationEngine {
     // ⌘A is always the engine's, even with nothing drawn, so the page never selects its own text.
     if (command && !e.shiftKey && !e.altKey && e.code === "KeyA") {
       if (!this.gesture) this.selectAll();
+      return true;
+    }
+    // 2, 3 and 4 set the magnifier's factor while its tool is on or one is selected; a layout that
+    // types other characters on those keys is read by their place.
+    const digit = command || e.altKey ? 0 : /^[234]$/.test(e.key) ? Number(e.key) : /^Digit[234]$/.test(e.code) ? Number(e.code.slice(5)) : 0;
+    if (digit && this.optionsTool() === "magnify" && (!this.gesture || this.gesture.kind === "draw")) {
+      this.choose("magnify", { factor: digit as MagnifyFactor });
+      // A ring being drawn opens its loupe at the new factor at once.
+      const g = this.gesture;
+      if (g?.kind === "draw" && g.travelled > 0) this.drawTo(g, g.last, {});
       return true;
     }
     const arrows: Record<string, [number, number]> = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };

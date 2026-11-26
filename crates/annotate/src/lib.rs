@@ -57,6 +57,7 @@
 //! | 1.0 | The first format. |
 //! | 1.1 | Every object gains `hidden` and `locked` (the objects panel); both default to `false`. |
 //! | 1.2 | The document gains `beautify` ([`BeautifyStyle`]); a document without it is not beautified. |
+//! | 1.3 | A new kind, `magnify` ([`Shape::Magnify`]). Nothing else changes, so a 1.3 document without a magnifier reads in a 1.2 build; a 1.2 build refuses one that holds a magnifier, and the history then opens the exported image without the document and leaves the document on disk untouched. |
 
 pub mod beautify;
 
@@ -100,7 +101,7 @@ impl fmt::Display for Version {
 
 /// The version this build writes. A reader accepts every document whose major version is not
 /// higher than this one.
-pub const CURRENT_VERSION: Version = Version { major: 1, minor: 2 };
+pub const CURRENT_VERSION: Version = Version { major: 1, minor: 3 };
 
 /// Gives the size of the document's image in pixels.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -311,6 +312,23 @@ pub enum Shape {
         rect: Rect,
         cell: CellSize,
     },
+    /// Enlarges the round area of radius `radius` around `source` `factor` times into a round
+    /// loupe of radius `radius * factor` centred on `at`, and joins the two circles with a thin
+    /// line. The loupe shows the image with every redaction flattened in and the drawings below
+    /// the magnifier, never itself or anything above it, so a blurred area stays hidden in it.
+    /// `smooth` samples the pixels bilinearly instead of as blocks; a renderer applies it only
+    /// where the factor goes past the capture's own pixels (`factor` > [`Document::scale`]).
+    /// The ring, the line and the loupe's frame have fixed widths in points, which the renderer
+    /// multiplies by the scale, so they are not stored.
+    Magnify {
+        source: Point,
+        radius: f64,
+        at: Point,
+        /// 2, 3 or 4.
+        factor: u8,
+        smooth: bool,
+        color: Color,
+    },
     /// Keeps `rect` bright and dims everything outside it, drawings below the spotlight included.
     /// Several spotlights share one dim layer (see the module docs).
     Spotlight {
@@ -337,6 +355,7 @@ pub enum ObjectKind {
     Highlighter,
     Text,
     Step,
+    Magnify,
     Blur,
     Pixelate,
     Spotlight,
@@ -345,7 +364,7 @@ pub enum ObjectKind {
 
 impl ObjectKind {
     /// Lists every kind in the order of the tool bar.
-    pub const ALL: [ObjectKind; 12] = [
+    pub const ALL: [ObjectKind; 13] = [
         ObjectKind::Arrow,
         ObjectKind::Line,
         ObjectKind::Rectangle,
@@ -354,6 +373,7 @@ impl ObjectKind {
         ObjectKind::Highlighter,
         ObjectKind::Text,
         ObjectKind::Step,
+        ObjectKind::Magnify,
         ObjectKind::Blur,
         ObjectKind::Pixelate,
         ObjectKind::Spotlight,
@@ -372,6 +392,7 @@ impl Shape {
             Shape::Highlighter { .. } => ObjectKind::Highlighter,
             Shape::Text { .. } => ObjectKind::Text,
             Shape::Step { .. } => ObjectKind::Step,
+            Shape::Magnify { .. } => ObjectKind::Magnify,
             Shape::Blur { .. } => ObjectKind::Blur,
             Shape::Pixelate { .. } => ObjectKind::Pixelate,
             Shape::Spotlight { .. } => ObjectKind::Spotlight,
@@ -471,7 +492,7 @@ impl Document {
 
     /// Checks the rules the JSON shape cannot express: a non-empty image, a positive scale,
     /// unique non-empty ids, finite numbers, non-negative sizes, at least one point in every path,
-    /// marker numbers from 1, and at most one crop.
+    /// marker numbers from 1, magnifier factors of 2, 3 or 4, and at most one crop.
     pub fn validate(&self) -> Result<()> {
         let invalid = |message: String| Err(AnnotateError::Invalid(message));
         if self.image.width == 0 || self.image.height == 0 {
@@ -538,7 +559,8 @@ pub fn migrate(mut value: Value) -> Result<Value> {
         }
     }
     // 1.1 → 1.2: `beautify` is optional and absent means no beautification, so nothing is filled
-    // in; only the version changes.
+    // in. 1.2 → 1.3: the magnifier is a new kind that no older document holds. Only the version
+    // changes in both steps.
     document.insert("version".into(), serde_json::to_value(CURRENT_VERSION)?);
     Ok(value)
 }
@@ -604,6 +626,15 @@ fn check_shape(shape: &Shape) -> std::result::Result<(), String> {
             length("diameter", *diameter)?;
             if *n == 0 {
                 return Err("a step marker starts at 1".into());
+            }
+            Ok(())
+        }
+        Shape::Magnify { source, radius, at, factor, .. } => {
+            point("source", source)?;
+            length("radius", *radius)?;
+            point("at", at)?;
+            if !(2..=4).contains(factor) {
+                return Err(format!("a magnifier enlarges 2, 3 or 4 times, not {factor}"));
             }
             Ok(())
         }

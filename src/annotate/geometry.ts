@@ -4,7 +4,8 @@
 // can measure, so the functions that need it take a `TextSize` from the renderer.
 
 import type { AnnotationObject, Point, Rect } from "../lib/annotate";
-import { arrowMetrics } from "./style";
+import { loupeBox, magnifyPart, sourceBox } from "./magnify";
+import { MAGNIFY_FRAME, MAGNIFY_SHADOW, arrowMetrics } from "./style";
 
 export type TextSize = (object: Extract<AnnotationObject, { kind: "text" }>) => { width: number; height: number };
 
@@ -52,7 +53,7 @@ function pointsBox(points: readonly Point[]): Rect {
 }
 
 /** The box an object's handles sit on: the rectangle of a box shape, the box of a path's points,
- * the text block, the step disc. Strokes are not included. */
+ * the text block, the step disc, the magnifier's ring. Strokes are not included. */
 export function frameOf(object: AnnotationObject, textSize: TextSize): Rect {
   switch (object.kind) {
     case "arrow":
@@ -67,9 +68,15 @@ export function frameOf(object: AnnotationObject, textSize: TextSize): Rect {
     }
     case "step":
       return { x: object.center.x - object.diameter / 2, y: object.center.y - object.diameter / 2, width: object.diameter, height: object.diameter };
+    case "magnify":
+      return sourceBox(object);
     default:
       return object.rect;
   }
+}
+
+function union(a: Rect, b: Rect): Rect {
+  return rectFrom({ x: Math.min(a.x, b.x), y: Math.min(a.y, b.y) }, { x: Math.max(a.x + a.width, b.x + b.width), y: Math.max(a.y + a.height, b.y + b.height) });
 }
 
 /** Everything the object paints, strokes and heads included, for the object bar's place and for
@@ -88,14 +95,20 @@ export function boundsOf(object: AnnotationObject, textSize: TextSize): Rect {
       return inflate(frame, object.stroke.width / 2 + 1);
     case "highlighter":
       return inflate(frame, object.width / 2 + 1);
+    case "magnify": {
+      // The ring's stroke, the loupe's frame and its shadow are sized in points, and the bounds
+      // know no scale, so they leave room for them on a 2x capture.
+      const room = 2 * (MAGNIFY_FRAME + MAGNIFY_SHADOW.blur + MAGNIFY_SHADOW.y);
+      return union(inflate(frame, 2 * MAGNIFY_FRAME), inflate(loupeBox(object), room));
+    }
     default:
       return frame;
   }
 }
 
 /** The handles of an object: two endpoints for an arrow or a line (they are rotated by their
- * ends), eight for a shape that can be resized as a box, none for a step marker or text, which
- * change size through the strip. */
+ * ends), eight for a shape that can be resized as a box, the four corners of a magnifier's ring,
+ * which stays round, and none for a step marker or text, which change size through the strip. */
 export function handlesOf(object: AnnotationObject, textSize: TextSize): Handle[] {
   switch (object.kind) {
     case "arrow":
@@ -107,6 +120,10 @@ export function handlesOf(object: AnnotationObject, textSize: TextSize): Handle[
     case "step":
     case "text":
       return [];
+    case "magnify": {
+      const r = sourceBox(object);
+      return BOX_HANDLES.filter(([, , kind]) => kind === "corner").map(([fx, fy]) => ({ id: `${fx},${fy}`, x: r.x + fx * r.width, y: r.y + fy * r.height, kind: "corner" }));
+    }
     default: {
       const r = frameOf(object, textSize);
       return BOX_HANDLES.map(([fx, fy, kind]) => ({ id: `${fx},${fy}`, x: r.x + fx * r.width, y: r.y + fy * r.height, kind }));
@@ -168,6 +185,8 @@ export function hits(object: AnnotationObject, p: Point, reach: number, interior
       return contains(inflate(frameOf(object, textSize), reach / 2), p);
     case "step":
       return Math.hypot(p.x - object.center.x, p.y - object.center.y) <= object.diameter / 2 + reach / 2;
+    case "magnify":
+      return magnifyPart(object, p, reach, interior) !== null;
     case "blur":
     case "pixelate":
     case "spotlight":
@@ -194,6 +213,8 @@ export function moved(object: AnnotationObject, dx: number, dy: number): Annotat
       return { ...object, origin: at(object.origin) };
     case "step":
       return { ...object, center: at(object.center) };
+    case "magnify":
+      return { ...object, source: at(object.source), at: at(object.at) };
     default:
       return { ...object, rect: { ...object.rect, x: object.rect.x + dx, y: object.rect.y + dy } };
   }
@@ -221,11 +242,15 @@ export function boxTo(anchor: Point, p: Point, ratio: number | null): Rect {
 /**
  * The object after dragging handle `id` to `p`, starting from `origin` (the object when the drag
  * began). An endpoint moves that end; a box handle moves its edges, and the opposite corner or
- * edge stays put. A path is scaled with its box.
+ * edge stays put. A path is scaled with its box. A magnifier's ring keeps its centre and reaches
+ * the handle; its loupe keeps its own centre and grows with the ring.
  */
 export function resized(origin: AnnotationObject, id: string, p: Point, ratio: number | null, textSize: TextSize): AnnotationObject {
   if (origin.kind === "arrow" || origin.kind === "line") {
     return id === "from" ? { ...origin, from: p } : { ...origin, to: p };
+  }
+  if (origin.kind === "magnify") {
+    return { ...origin, radius: Math.max(Math.abs(p.x - origin.source.x), Math.abs(p.y - origin.source.y)) };
   }
   const box = frameOf(origin, textSize);
   const [fx, fy] = id.split(",").map(Number);

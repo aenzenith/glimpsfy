@@ -1,15 +1,21 @@
 // Canvas 2D drawing of the objects that are drawn rather than computed: arrows, lines, shapes,
-// paths, text, step markers and the spotlight's dim. The canvas is in image pixels (the caller
-// only translates it to the exported area), so a drawing lands on the same pixels in the preview
-// and in the export. Blur and pixelate are not drawn here; they are pixels (redact.ts).
+// paths, text, step markers, the spotlight's dim and the magnifier's ring, line and frame. The
+// canvas is in image pixels (the caller only translates it to the exported area), so a drawing
+// lands on the same pixels in the preview and in the export. Blur and pixelate are not drawn here;
+// they are pixels (redact.ts), and so is what the loupe shows (magnify.ts).
 
 import type { AnnotationObject, Point, Rect } from "../lib/annotate";
+import { linkEnds, loupeRadius, type Magnify } from "./magnify";
 import {
   DIM_ALPHA,
   FONT_FAMILY,
   DIM_RGB,
   HIGHLIGHTER_ALPHA,
   LINE_HEIGHT,
+  MAGNIFY_FRAME,
+  MAGNIFY_LINK,
+  MAGNIFY_RING,
+  MAGNIFY_SHADOW,
   RECT_RADIUS,
   SHADOW,
   SHADOW_STRONG,
@@ -83,7 +89,7 @@ export const textSize = (object: Text) => {
   return { width: layout.width, height: layout.height };
 };
 
-function shadow(ctx: Ctx, kind: typeof SHADOW | typeof SHADOW_STRONG | null, scale: number): void {
+function shadow(ctx: Ctx, kind: { color: string; blur: number; y: number } | null, scale: number): void {
   if (!kind) {
     ctx.shadowColor = "transparent";
     ctx.shadowBlur = 0;
@@ -269,6 +275,47 @@ export function drawObject(ctx: Ctx, object: AnnotationObject, scale: number): v
     default:
       break;
   }
+  ctx.restore();
+}
+
+/**
+ * Draws a magnifier: the line, the ring around the source, and the loupe, a white disc that casts
+ * the shadow, with `content` drawn inside its circle (the enlarged pixels) and the frame on top.
+ * The white only shows where the image itself is transparent.
+ */
+export function drawMagnifier(ctx: Ctx, object: Magnify, scale: number, content: (ctx: Ctx) => void): void {
+  const r = loupeRadius(object);
+  const circle = (c: Point, radius: number) => {
+    ctx.beginPath();
+    ctx.arc(c.x, c.y, radius, 0, Math.PI * 2);
+  };
+  ctx.save();
+  ctx.lineCap = "round";
+  ctx.strokeStyle = cssOf(object.color);
+  const link = linkEnds(object, scale);
+  if (link) {
+    ctx.beginPath();
+    ctx.moveTo(link[0].x, link[0].y);
+    ctx.lineTo(link[1].x, link[1].y);
+    ctx.lineWidth = MAGNIFY_LINK * scale;
+    ctx.stroke();
+  }
+  circle(object.source, object.radius);
+  ctx.lineWidth = MAGNIFY_RING * scale;
+  ctx.stroke();
+  shadow(ctx, MAGNIFY_SHADOW, scale);
+  circle(object.at, r);
+  ctx.fillStyle = "#ffffff";
+  ctx.fill();
+  shadow(ctx, null, scale);
+  ctx.save();
+  circle(object.at, r);
+  ctx.clip();
+  content(ctx);
+  ctx.restore();
+  circle(object.at, r);
+  ctx.lineWidth = MAGNIFY_FRAME * scale;
+  ctx.stroke();
   ctx.restore();
 }
 

@@ -1,8 +1,8 @@
 <script setup lang="ts">
 // The annotation layer over an image, shared by the overlay and the editor: the composed canvas
 // (the image with its redactions and drawings, from compose.ts), the selected object's outline and
-// handles, the faded outline of the object under the pointer, and the field the user types a text
-// into. The page around it owns the pointer and
+// handles, the faded outline of the object under the pointer, the diameter chip of a magnifier's
+// ring while it is drawn, and the field the user types a text into. The page around it owns the pointer and
 // converts it with the same `view`; this component only shows the engine's state.
 //
 // The canvas holds the composed area at the image's own resolution and is scaled by CSS, so what
@@ -13,6 +13,7 @@ import type { AnnotationObject } from "../lib/annotate";
 import { Composer, type ImageSource } from "./compose";
 import { layoutText } from "./draw";
 import type { AnnotationEngine } from "./engine";
+import { loupeBox } from "./magnify";
 import type { PixelRect } from "./redact";
 import { TEXT_PAD, TEXT_RADIUS, arrowMetrics, cssOf, textFont } from "./style";
 import type { View } from "./textLayer";
@@ -87,12 +88,15 @@ onBeforeUnmount(() => cancelAnimationFrame(frame));
 const selection = computed(() => {
   void rev.value;
   const e = props.engine;
-  if (!props.chrome || !e.selectedId || e.busy() || e.editingId) return null;
+  if (!props.chrome || !e.selectedId || e.busy() || e.editingId) return [];
   // An arrow or a line is held by its two ends; a box around a slanted stroke reads as a crop.
-  const kind = e.selected()?.kind;
-  if (kind === "arrow" || kind === "line") return null;
+  const o = e.selected();
+  if (!o || o.kind === "arrow" || o.kind === "line") return [];
   const r = e.frame(e.selectedId);
-  return r ? screen(r) : null;
+  if (!r) return [];
+  // A magnifier is outlined at its ring, which has the handles, and at its loupe, which moves on
+  // its own.
+  return o.kind === "magnify" ? [screen(r), screen(loupeBox(o))] : [screen(r)];
 });
 
 /** Space between an outlined arrow or line and its capsule, in screen points. */
@@ -100,25 +104,29 @@ const CAPSULE_MARGIN = 4;
 
 /** The outline around an object on the screen: its frame, or for an arrow or a line a capsule
  * along the stroke, because a box around a slanted stroke reads as a crop. */
-function outline(o: AnnotationObject) {
+function outline(o: AnnotationObject): Record<string, string>[] {
   const { k, ox, oy } = props.view;
   if (o.kind === "arrow" || o.kind === "line") {
     const length = Math.hypot(o.to.x - o.from.x, o.to.y - o.from.y);
     const reach = o.kind === "arrow" ? arrowMetrics(o.stroke.width, length).headHalf : o.stroke.width / 2;
     const half = reach * k + CAPSULE_MARGIN;
     const angle = Math.atan2(o.to.y - o.from.y, o.to.x - o.from.x);
-    return {
-      left: px(ox + o.from.x * k - half),
-      top: px(oy + o.from.y * k - half),
-      width: px(length * k + half * 2),
-      height: px(half * 2),
-      borderRadius: px(half),
-      transformOrigin: `${px(half)} 50%`,
-      transform: `rotate(${angle}rad)`,
-    };
+    return [
+      {
+        left: px(ox + o.from.x * k - half),
+        top: px(oy + o.from.y * k - half),
+        width: px(length * k + half * 2),
+        height: px(half * 2),
+        borderRadius: px(half),
+        transformOrigin: `${px(half)} 50%`,
+        transform: `rotate(${angle}rad)`,
+      },
+    ];
   }
   const r = props.engine.frame(o.id);
-  return r ? { ...screen(r), borderRadius: "2px" } : null;
+  if (!r) return [];
+  const box = { ...screen(r), borderRadius: "2px" };
+  return o.kind === "magnify" ? [box, { ...screen(loupeBox(o)), borderRadius: "2px" }] : [box];
 }
 
 // The object under the pointer: the selection's outline, faded and without handles, so the user
@@ -127,7 +135,7 @@ const hover = computed(() => {
   void rev.value;
   const e = props.engine;
   const o = e.get(e.hovered.value);
-  if (!props.chrome || !o || o.id === e.selectedId || e.inGroup(o.id) || o.hidden || o.locked || e.busy() || e.editingId) return null;
+  if (!props.chrome || !o || o.id === e.selectedId || e.inGroup(o.id) || o.hidden || o.locked || e.busy() || e.editingId) return [];
   return outline(o);
 });
 
@@ -137,10 +145,18 @@ const group = computed(() => {
   void rev.value;
   const e = props.engine;
   if (!props.chrome || e.busy() || e.editingId) return [];
-  return e.group().flatMap((o) => {
-    const style = outline(o);
-    return style ? [{ key: o.id, style }] : [];
-  });
+  return e.group().flatMap((o) => outline(o).map((style, i) => ({ key: `${o.id}-${i}`, style })));
+});
+
+// A magnifier's ring shows its diameter in points beside the pointer while it is drawn or
+// resized, the way a selection shows its size.
+const sizeHint = computed(() => {
+  void rev.value;
+  if (!props.chrome) return null;
+  const hint = props.engine.sizeHint();
+  if (!hint) return null;
+  const { k, ox, oy } = props.view;
+  return { text: `Ø ${hint.points}`, style: { left: px(ox + hint.at.x * k + 14), top: px(oy + hint.at.y * k + 10) } };
 });
 
 const handles = computed(() => {
@@ -227,10 +243,11 @@ function onBlur(): void {
 
 <template>
   <canvas v-if="composed && source" :key="source.colorSpace" ref="canvas" class="a-canvas" :style="canvasStyle" aria-hidden="true" />
-  <div v-if="hover" class="a-objhover" :style="hover" aria-hidden="true" />
-  <div v-if="selection" class="a-objsel" :style="selection" aria-hidden="true" />
+  <div v-for="(h, i) in hover" :key="`h${i}`" class="a-objhover" :style="h" aria-hidden="true" />
+  <div v-for="(s, i) in selection" :key="`s${i}`" class="a-objsel" :style="s" aria-hidden="true" />
   <div v-for="g in group" :key="g.key" class="a-objsel" data-group :style="g.style" aria-hidden="true" />
   <span v-for="h in handles" :key="h.key" class="g-handle a-handle" :data-handle="h.kind" :style="h.style" aria-hidden="true" />
+  <span v-if="sizeHint" class="g-size a-size" :style="sizeHint.style" aria-hidden="true">{{ sizeHint.text }}</span>
   <div
     v-if="editing"
     :key="editing.id"
@@ -302,6 +319,12 @@ function onBlur(): void {
 .a-handle {
   z-index: 7;
   pointer-events: none;
+}
+.a-size {
+  position: absolute;
+  z-index: 9;
+  pointer-events: none;
+  white-space: nowrap;
 }
 /* The text being typed: the label itself, with a caret and an iris ring. */
 .a-textfield {
